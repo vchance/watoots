@@ -1,0 +1,11 @@
+[package]
+name = "watoots-cli"
+description = "Command-line interface for watoots: inspect, run, record, and replay WebAssembly component plugins."
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true

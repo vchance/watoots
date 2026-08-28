@@ -1,0 +1,11 @@
+[package]
+name = "watoots-capi"
+description = "C API for watoots, the sandboxed plugin host for native applications on the WebAssembly component model."
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true

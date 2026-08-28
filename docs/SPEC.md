@@ -208,7 +208,7 @@ Each becomes an ADR in `docs/adr/` when made.
 
 - ~~**Name.**~~ Decided 2026-08-28: **watoots** — see `adr/0001-name.md`.
 - **C API on day one, or Rust-first?** Recommendation: day one. It doubles the addressable audience, it's the clearest differentiator from every component host today, and it plays to a C++ background as a showcase.
-- **License.** Apache-2.0 with LLVM exception matches the Bytecode Alliance ecosystem and removes friction for Zed-style adopters.
+- ~~**License.**~~ Decided 2026-08-28: Apache-2.0 WITH LLVM-exception — see `adr/0002-license.md`.
 - **Host-side dynamic typing.** WAVE for the C API and CLI keeps us off the bindgen treadmill; confirm WAVE handles resources well enough for our traces before committing.
 - **Validation targets.** Which two maintainers to ask for early review — wasvy (actively wants a permission model) and Helm's plugin team (wrote down the permission need) are the warmest.
 

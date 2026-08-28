@@ -24,7 +24,7 @@ same content as the published scoping page (read-only reference).
   memory or engine state. We do not reimplement `wasm-tools component
   semver-check` or `targets` — call/wrap them.
 
-## Layout (intended; create as needed)
+## Layout (workspace exists; crates are v0.0.0 placeholders until M1 fills them)
 - `crates/host/`        core library (`Host`, `Plugin`, manifest, limits, registry, cache)
 - `crates/host-capi/`   cbindgen C API + `include/` C++ RAII header + CMake package
 - `crates/trace/`       trace format (WAVE text + binary), recorder shim, replay runner
@@ -43,7 +43,7 @@ same content as the published scoping page (read-only reference).
 - Rust 2024 edition, MSRV = whatever Wasmtime 48 requires.
 - `cargo clippy --all-targets -- -D warnings` and `cargo fmt --check` must pass.
 - Any decision listed under "Open decisions" in the spec gets an ADR in
-  `docs/adr/NNNN-title.md` when made. Don't silently pick. ADR-0001 (name) is done.
+  `docs/adr/NNNN-title.md` when made. Don't silently pick. ADR-0001 (name) and ADR-0002 (license: Apache-2.0 WITH LLVM-exception) are done.
 - Prefer `wasmtime::component::Val` + WAVE for dynamic calls; `bindgen!` only
   where the Rust host has a static world.
 - Tests live next to code; integration tests under `crates/*/tests/` use the
