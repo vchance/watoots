@@ -41,9 +41,13 @@ same content as the published scoping page (read-only reference).
 
 ## Conventions
 - Rust 2024 edition, MSRV = whatever Wasmtime 48 requires.
+- C/C++ (ADR-0003): Google style, C++20 floor for shipped headers, no
+  exceptions. `cmake --preset dev && ctest --preset dev`; `tools/format.sh
+  --check` and `tools/tidy.sh` must pass. clang-tidy needs `brew install llvm`.
 - `cargo clippy --all-targets -- -D warnings` and `cargo fmt --check` must pass.
 - Any decision listed under "Open decisions" in the spec gets an ADR in
-  `docs/adr/NNNN-title.md` when made. Don't silently pick. ADR-0001 (name) and ADR-0002 (license: Apache-2.0 WITH LLVM-exception) are done.
+  `docs/adr/NNNN-title.md` when made. Don't silently pick. ADR-0001 (name), ADR-0002 (license: Apache-2.0 WITH LLVM-exception), and
+  ADR-0003 (C++ toolchain) are done.
 - Prefer `wasmtime::component::Val` + WAVE for dynamic calls; `bindgen!` only
   where the Rust host has a static world.
 - Tests live next to code; integration tests under `crates/*/tests/` use the

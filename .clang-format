@@ -1,0 +1,27 @@
+# Google C++ style. See docs/adr/0003-cpp-toolchain.md.
+# Run: tools/format.sh [--check]
+---
+Language: Cpp
+BasedOnStyle: Google
+Standard: c++20
+ColumnLimit: 80
+DerivePointerAlignment: false
+PointerAlignment: Left
+ReferenceAlignment: Left
+SortIncludes: CaseSensitive
+IncludeBlocks: Regroup
+IncludeCategories:
+  # C system headers.
+  - Regex: '^<[a-z_]+\.h>$'
+    Priority: 1
+  # C++ standard library.
+  - Regex: '^<[a-z_]+>$'
+    Priority: 2
+  # Third-party.
+  - Regex: '^<'
+    Priority: 3
+  # Our own public headers.
+  - Regex: '^"watoots'
+    Priority: 4
+  - Regex: '.*'
+    Priority: 5

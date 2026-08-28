@@ -210,6 +210,9 @@ Each becomes an ADR in `docs/adr/` when made.
 - **C API on day one, or Rust-first?** Recommendation: day one. It doubles the addressable audience, it's the clearest differentiator from every component host today, and it plays to a C++ background as a showcase.
 - ~~**License.**~~ Decided 2026-08-28: Apache-2.0 WITH LLVM-exception — see `adr/0002-license.md`.
 - **Host-side dynamic typing.** WAVE for the C API and CLI keeps us off the bindgen treadmill; confirm WAVE handles resources well enough for our traces before committing.
+- **Driving cargo from CMake.** Corrosion, a custom command, or building the
+  staticlib out of band? Unresolved; the CMake tree is header-only until M3
+  needs it (see `adr/0003-cpp-toolchain.md`).
 - **Validation targets.** Which two maintainers to ask for early review — wasvy (actively wants a permission model) and Helm's plugin team (wrote down the permission need) are the warmest.
 
 ## Verified against source (2026-08-27)

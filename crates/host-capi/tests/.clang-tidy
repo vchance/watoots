@@ -1,0 +1,13 @@
+# GoogleTest fixtures and macros trip several checks that are worth keeping on
+# library code. Relax them here only.
+---
+InheritParentConfig: true
+Checks: >
+  -cert-err58-cpp,
+  -cppcoreguidelines-avoid-non-const-global-variables,
+  -cppcoreguidelines-special-member-functions,
+  -misc-use-anonymous-namespace,
+  -misc-use-internal-linkage,
+  -readability-function-cognitive-complexity,
+  -readability-implicit-bool-conversion,
+  -readability-identifier-naming

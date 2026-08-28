@@ -1,0 +1,93 @@
+# Google C++ conventions, enforced. See docs/adr/0003-cpp-toolchain.md.
+# Run: cmake --preset dev && tools/tidy.sh
+---
+Checks: >
+  -*,
+  bugprone-*,
+  cert-*,
+  clang-analyzer-*,
+  concurrency-*,
+  cppcoreguidelines-*,
+  google-*,
+  misc-*,
+  modernize-*,
+  performance-*,
+  portability-*,
+  readability-*,
+  -bugprone-easily-swappable-parameters,
+  -cppcoreguidelines-avoid-magic-numbers,
+  -cppcoreguidelines-owning-memory,
+  -misc-include-cleaner,
+  -modernize-use-trailing-return-type,
+  -readability-identifier-length,
+  -readability-magic-numbers
+
+# Deliberately left ON: cppcoreguidelines-pro-type-reinterpret-cast and the
+# pointer-arithmetic checks. Wrapping a C API needs those casts, but each site
+# should be marked with an explicit // NOLINT rather than silenced wholesale --
+# that keeps the unsafe surface of the binding countable.
+#
+# Disabled above, with cause:
+#   owning-memory                 requires gsl::owner<>; we will not take a GSL
+#                                 dependency in a public header.
+#   easily-swappable-parameters   fires on every (ptr, len) pair in a C API.
+#   include-cleaner               too noisy against a single-header public API.
+#   use-trailing-return-type      contradicts Google style.
+
+WarningsAsErrors: '*'
+HeaderFilterRegex: '.*/(crates/host-capi/(include|src|tests)|examples/host-cpp)/.*'
+FormatStyle: file
+
+CheckOptions:
+  # Macros are unavoidable in a C header; ours are all prefixed.
+  - key: cppcoreguidelines-macro-usage.AllowedRegexp
+    value: '^(WATOOTS|WT)_'
+
+  # Google naming, machine-checked. The C surface in watoots.h opts out with a
+  # single NOLINTBEGIN block, because ADR-0001 fixes it as wt_ snake_case.
+  - key: readability-identifier-naming.NamespaceCase
+    value: lower_case
+  - key: readability-identifier-naming.ClassCase
+    value: CamelCase
+  - key: readability-identifier-naming.StructCase
+    value: CamelCase
+  - key: readability-identifier-naming.EnumCase
+    value: CamelCase
+  - key: readability-identifier-naming.EnumConstantCase
+    value: CamelCase
+  - key: readability-identifier-naming.EnumConstantPrefix
+    value: k
+  - key: readability-identifier-naming.FunctionCase
+    value: CamelCase
+  - key: readability-identifier-naming.VariableCase
+    value: lower_case
+  - key: readability-identifier-naming.ParameterCase
+    value: lower_case
+  - key: readability-identifier-naming.ClassMemberCase
+    value: lower_case
+  - key: readability-identifier-naming.PrivateMemberCase
+    value: lower_case
+  - key: readability-identifier-naming.PrivateMemberSuffix
+    value: _
+  - key: readability-identifier-naming.ProtectedMemberCase
+    value: lower_case
+  - key: readability-identifier-naming.ProtectedMemberSuffix
+    value: _
+  - key: readability-identifier-naming.ConstexprVariableCase
+    value: CamelCase
+  - key: readability-identifier-naming.ConstexprVariablePrefix
+    value: k
+  - key: readability-identifier-naming.GlobalConstantCase
+    value: CamelCase
+  - key: readability-identifier-naming.GlobalConstantPrefix
+    value: k
+  - key: readability-identifier-naming.StaticConstantCase
+    value: CamelCase
+  - key: readability-identifier-naming.StaticConstantPrefix
+    value: k
+  - key: readability-identifier-naming.TypeAliasCase
+    value: CamelCase
+  - key: readability-identifier-naming.TypedefCase
+    value: CamelCase
+  - key: readability-identifier-naming.MacroDefinitionCase
+    value: UPPER_CASE
