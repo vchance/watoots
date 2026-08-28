@@ -38,12 +38,18 @@ mod host;
 pub mod imports;
 pub mod manifest;
 mod plugin;
+mod registry;
+pub mod trace;
+pub mod wave;
 
 pub use error::{Error, ErrorKind, Result};
-pub use host::{Host, HostBuilder};
+pub use host::{Host, HostBuilder, HostFunc};
 pub use imports::{GrantReport, ImportDecision, Requirement};
 pub use manifest::{Clocks, FsGrants, Limits, Manifest, Permissions};
 pub use plugin::Plugin;
+pub use registry::Registry;
+pub use trace::{Outcome, TraceEvent, TraceHook};
+pub use wave::{from_wave, to_wave};
 
 /// Re-exported so callers can build arguments without depending on wasmtime
 /// directly.

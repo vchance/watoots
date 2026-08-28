@@ -2,18 +2,22 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
-use std::path::Path;
+use std::hash::{Hash, Hasher};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use wasmtime::component::Component;
+use sha2::{Digest, Sha256};
+use wasmtime::component::types::ComponentItem;
+use wasmtime::component::{Component, Val};
 use wasmtime::{Config, Engine};
 
 use crate::imports::{self, GrantReport};
 use crate::manifest::Manifest;
-use crate::plugin::Plugin;
+use crate::plugin::{Plugin, Wiring};
+use crate::trace::TraceHook;
 use crate::{Error, ErrorKind, Result};
 
 /// How often the epoch ticker advances the engine's epoch.
@@ -22,10 +26,17 @@ use crate::{Error, ErrorKind, Result};
 /// `timeout`: a 200ms timeout is 200 ticks.
 const EPOCH_TICK: Duration = Duration::from_millis(1);
 
+/// A function the application serves to plugins.
+///
+/// Dynamically typed for the same reason [`Plugin::call`] is: it is the shape
+/// the C API can express, and the shape a recorder can serialize without
+/// knowing the world ahead of time.
+pub type HostFunc = Arc<dyn Fn(&[Val]) -> Result<Vec<Val>> + Send + Sync>;
+
 /// A configured engine plus the policy every plugin loaded from it runs under.
 ///
-/// Cloning a `Host` shares the engine, the compiled-code cache that comes with
-/// it, and the epoch ticker.
+/// Cloning a `Host` shares the engine, its compiled-code cache, and the epoch
+/// ticker.
 #[derive(Clone)]
 pub struct Host {
     inner: Arc<HostInner>,
@@ -35,7 +46,10 @@ struct HostInner {
     engine: Engine,
     manifest: Manifest,
     host_provided: BTreeSet<String>,
+    host_funcs: BTreeMap<String, BTreeMap<String, HostFunc>>,
     vars: BTreeMap<String, String>,
+    cache_dir: Option<PathBuf>,
+    trace: Option<Arc<dyn TraceHook>>,
     /// Kept alive for as long as the host is; dropping it stops the thread.
     _ticker: Option<EpochTicker>,
 }
@@ -135,22 +149,85 @@ impl Host {
         let mut manifest = self.inner.manifest.clone();
         manifest.substitute(&vars)?;
 
-        Plugin::instantiate(name, &self.inner.engine, &component, &manifest, report)
+        let wiring = Wiring {
+            manifest: &manifest,
+            host_funcs: &self.inner.host_funcs,
+            trace: self.inner.trace.as_ref(),
+        };
+        Plugin::instantiate(name, &self.inner.engine, &component, &wiring, report)
     }
 
+    /// Compile a component, going through the precompile cache when one is set.
     fn compile(&self, wasm: &[u8]) -> Result<Component> {
+        let Some(dir) = &self.inner.cache_dir else {
+            return self.compile_fresh(wasm);
+        };
+
+        let path = dir.join(format!("{}.cwasm", self.cache_key(wasm)));
+
+        if path.is_file() {
+            // SAFETY: the cache key includes the engine's own compatibility
+            // hash, so a file under this name was produced by an engine that
+            // can load it. The cache directory has to be trusted: anyone who
+            // can write here can hand us machine code to run, which is why the
+            // directory is opt-in rather than defaulted somewhere shared.
+            match unsafe { Component::deserialize_file(&self.inner.engine, &path) } {
+                Ok(component) => return Ok(component),
+                // A truncated or half-written file should cost a recompile, not
+                // a hard failure.
+                Err(_) => {
+                    let _ = std::fs::remove_file(&path);
+                }
+            }
+        }
+
+        let component = self.compile_fresh(wasm)?;
+
+        if let Ok(serialized) = self.inner.engine.precompile_component(wasm) {
+            let _ = std::fs::create_dir_all(dir);
+            // Write-then-rename so a concurrent reader never sees a partial
+            // file, and a crash mid-write leaves no poisoned entry.
+            let temp = path.with_extension(format!("cwasm.tmp{}", std::process::id()));
+            if std::fs::write(&temp, &serialized).is_ok() && std::fs::rename(&temp, &path).is_err()
+            {
+                let _ = std::fs::remove_file(&temp);
+            }
+        }
+
+        Ok(component)
+    }
+
+    fn compile_fresh(&self, wasm: &[u8]) -> Result<Component> {
         Component::new(&self.inner.engine, wasm)
             .map_err(|err| Error::new(ErrorKind::Load, format!("{err:?}")))
     }
 
+    /// Cache key: this engine's configuration plus the exact component bytes.
+    ///
+    /// The engine half is what makes reusing a `.cwasm` safe — a cache written
+    /// by a differently configured engine simply does not collide.
+    fn cache_key(&self, wasm: &[u8]) -> String {
+        let mut hasher = Sha256Hasher::default();
+        self.inner
+            .engine
+            .precompile_compatibility_hash()
+            .hash(&mut hasher);
+        hasher.0.update(wasm);
+        hex(&hasher.0.finalize())
+    }
+
     fn report_for(&self, component: &Component) -> GrantReport {
+        let engine = &self.inner.engine;
         let component_type = component.component_type();
-        let names: Vec<&str> = component_type
-            .imports(&self.inner.engine)
-            .map(|(name, _)| name)
+        let declared: Vec<imports::ComponentImport<'_>> = component_type
+            .imports(engine)
+            .map(|(name, extern_)| imports::ComponentImport {
+                name,
+                has_functions: has_callable_functions(&extern_.ty, engine),
+            })
             .collect();
         imports::check(
-            names,
+            declared,
             &self.inner.manifest.permissions,
             &self.inner.host_provided,
         )
@@ -163,17 +240,35 @@ impl fmt::Debug for Host {
         f.debug_struct("Host")
             .field("manifest", &self.inner.manifest)
             .field("host_provided", &self.inner.host_provided)
+            .field(
+                "host_funcs",
+                &self.inner.host_funcs.keys().collect::<Vec<_>>(),
+            )
             .field("vars", &self.inner.vars)
+            .field("cache_dir", &self.inner.cache_dir)
+            .field("tracing", &self.inner.trace.is_some())
             .finish_non_exhaustive()
     }
 }
 
 /// Builder for [`Host`].
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct HostBuilder {
     manifest: Manifest,
     host_provided: BTreeSet<String>,
+    host_funcs: BTreeMap<String, BTreeMap<String, HostFunc>>,
     vars: BTreeMap<String, String>,
+    cache_dir: Option<PathBuf>,
+    trace: Option<Arc<dyn TraceHook>>,
+}
+
+impl fmt::Debug for HostBuilder {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("HostBuilder")
+            .field("manifest", &self.manifest)
+            .field("host_provided", &self.host_provided)
+            .finish_non_exhaustive()
+    }
 }
 
 impl HostBuilder {
@@ -190,16 +285,38 @@ impl HostBuilder {
         Ok(self)
     }
 
-    /// Declare that the application itself serves this interface, by
-    /// unversioned name (`watoots:example/log`).
+    /// Declare that the application serves this interface, without supplying
+    /// its functions yet.
     ///
-    /// Declaring an interface only settles the *permission* question. Actually
-    /// serving its functions to the guest arrives with typed host APIs in M2,
-    /// so a component importing one will pass [`Host::inspect`] and fail to
-    /// instantiate until then.
+    /// [`HostBuilder::host_func`] does this for you. Use this directly only to
+    /// let [`Host::inspect`] answer honestly for a world you have not finished
+    /// implementing — a component importing it will still fail to instantiate.
     #[must_use]
     pub fn provide_interface(mut self, interface: impl Into<String>) -> Self {
-        self.host_provided.insert(interface.into());
+        self.host_provided.insert(unversioned(&interface.into()));
+        self
+    }
+
+    /// Serve one function of one interface to plugins.
+    ///
+    /// `interface` must be spelled the way the component imports it, version
+    /// included — `watoots:example/log@0.1.0`. That is what the linker matches
+    /// on, and wasmtime will resolve a semver-compatible drift from there. The
+    /// grant check compares unversioned names, so a manifest never has to be
+    /// re-stated when a guest is rebuilt against a new patch of the interface.
+    ///
+    /// Registering a function also declares its interface, so the grant check
+    /// and what the linker actually provides cannot drift apart.
+    #[must_use]
+    pub fn host_func<F>(mut self, interface: &str, func: &str, implementation: F) -> Self
+    where
+        F: Fn(&[Val]) -> Result<Vec<Val>> + Send + Sync + 'static,
+    {
+        self.host_provided.insert(unversioned(interface));
+        self.host_funcs
+            .entry(interface.to_string())
+            .or_default()
+            .insert(func.to_string(), Arc::new(implementation));
         self
     }
 
@@ -207,6 +324,24 @@ impl HostBuilder {
     #[must_use]
     pub fn var(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
         self.vars.insert(name.into(), value.into());
+        self
+    }
+
+    /// Cache compiled components as `.cwasm` files under this directory.
+    ///
+    /// The directory must be trusted: entries are machine code that the engine
+    /// loads without re-validating, so write access to it is equivalent to code
+    /// execution in the host process. There is deliberately no default.
+    #[must_use]
+    pub fn cache_dir(mut self, dir: impl Into<PathBuf>) -> Self {
+        self.cache_dir = Some(dir.into());
+        self
+    }
+
+    /// Observe every crossing of the host/plugin boundary.
+    #[must_use]
+    pub fn trace_hook(mut self, hook: Arc<dyn TraceHook>) -> Self {
+        self.trace = Some(hook);
         self
     }
 
@@ -221,7 +356,7 @@ impl HostBuilder {
         if !self.manifest.permissions.net.is_empty() {
             return Err(Error::new(
                 ErrorKind::Manifest,
-                "permissions.net is parsed but not yet enforced (M2); \
+                "permissions.net is parsed but not yet enforced; \
                  remove the grant rather than run with the network open",
             ));
         }
@@ -244,11 +379,64 @@ impl HostBuilder {
                 engine,
                 manifest: self.manifest,
                 host_provided: self.host_provided,
+                host_funcs: self.host_funcs,
                 vars: self.vars,
+                cache_dir: self.cache_dir,
+                trace: self.trace,
                 _ticker: ticker,
             }),
         })
     }
+}
+
+/// Strip an `@version` suffix, which is how grants are matched.
+fn unversioned(interface: &str) -> String {
+    imports::InterfaceRef::parse(interface)
+        .map_or_else(|| interface.to_string(), |iface| iface.unversioned())
+}
+
+/// Whether an imported item exposes anything the guest could actually call.
+///
+/// An instance holding only type definitions is not a capability, however
+/// alarming its name looks in a grant list.
+fn has_callable_functions(item: &ComponentItem, engine: &Engine) -> bool {
+    match item {
+        ComponentItem::ComponentFunc(_) | ComponentItem::CoreFunc(_) => true,
+        ComponentItem::ComponentInstance(instance) => instance
+            .exports(engine)
+            .any(|(_, nested)| has_callable_functions(&nested.ty, engine)),
+        // A module or a nested component import is opaque to us; treat it as
+        // callable so it cannot slip through as "just types".
+        ComponentItem::Module(_) | ComponentItem::Component(_) => true,
+        ComponentItem::Type(_) | ComponentItem::Resource(_) => false,
+    }
+}
+
+/// Feeds `std::hash::Hash` output into SHA-256.
+///
+/// Wasmtime hands out its compatibility fingerprint as an opaque `impl Hash`,
+/// and `DefaultHasher` is explicitly not stable across releases — no use for
+/// something that names files on disk.
+#[derive(Default)]
+struct Sha256Hasher(Sha256);
+
+impl Hasher for Sha256Hasher {
+    fn write(&mut self, bytes: &[u8]) {
+        self.0.update(bytes);
+    }
+
+    fn finish(&self) -> u64 {
+        let digest = self.0.clone().finalize();
+        u64::from_le_bytes(digest[..8].try_into().expect("sha256 is 32 bytes"))
+    }
+}
+
+fn hex(bytes: &[u8]) -> String {
+    use fmt::Write as _;
+    bytes.iter().fold(String::new(), |mut out, byte| {
+        let _ = write!(out, "{byte:02x}");
+        out
+    })
 }
 
 /// Advances the engine epoch on a fixed tick so per-call deadlines can fire.

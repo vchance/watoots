@@ -14,7 +14,11 @@ categories.workspace = true
 bytesize = { version = "2.7.0", features = ["serde"] }
 humantime-serde = "1.1.1"
 serde = { version = "1.0.229", features = ["derive"] }
-thiserror = "2.0.20"
+sha2 = "0.11.0"
 toml = "1.1.4"
-wasmtime = "48"
+wasm-wave = "0.254"
+wasmtime = { version = "48", features = ["wave"] }
 wasmtime-wasi = "48"
+
+[dev-dependencies]
+tempfile = "3.27.0"

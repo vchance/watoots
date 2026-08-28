@@ -209,7 +209,7 @@ Each becomes an ADR in `docs/adr/` when made.
 - ~~**Name.**~~ Decided 2026-08-28: **watoots** — see `adr/0001-name.md`.
 - **C API on day one, or Rust-first?** Recommendation: day one. It doubles the addressable audience, it's the clearest differentiator from every component host today, and it plays to a C++ background as a showcase.
 - ~~**License.**~~ Decided 2026-08-28: Apache-2.0 WITH LLVM-exception — see `adr/0002-license.md`.
-- **Host-side dynamic typing.** WAVE for the C API and CLI keeps us off the bindgen treadmill; confirm WAVE handles resources well enough for our traces before committing.
+- ~~**Host-side dynamic typing.**~~ Decided 2026-08-28: WAVE, via wasmtime's own implementation — see `adr/0004-wave-and-dynamic-typing.md`. It does **not** handle resources (wasmtime maps them to `Unsupported`), so traces carry resource handles as stable IDs beside the WAVE text rather than inside it.
 - **Driving cargo from CMake.** Corrosion, a custom command, or building the
   staticlib out of band? Unresolved; the CMake tree is header-only until M3
   needs it (see `adr/0003-cpp-toolchain.md`).

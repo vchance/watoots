@@ -37,7 +37,12 @@ pub struct Permissions {
     pub net: Vec<String>,
     /// Environment variables handed to the guest, by name and value. The guest
     /// sees exactly this map and nothing inherited from the host process.
-    pub env: BTreeMap<String, String>,
+    ///
+    /// `None` (the key absent) denies `wasi:cli/environment` outright.
+    /// `Some` — including `env = {}` — grants it; an empty map simply means the
+    /// guest may look and will find nothing. The distinction matters because
+    /// "may read an empty environment" and "may not read" are different grants.
+    pub env: Option<BTreeMap<String, String>>,
     /// Which clocks the plugin may read.
     pub clocks: Clocks,
     /// Whether `wasi:random` is available.
@@ -176,8 +181,10 @@ impl Manifest {
         {
             *path = expand(path, vars)?;
         }
-        for value in self.permissions.env.values_mut() {
-            *value = expand(value, vars)?;
+        if let Some(env) = self.permissions.env.as_mut() {
+            for value in env.values_mut() {
+                *value = expand(value, vars)?;
+            }
         }
         Ok(())
     }
@@ -235,7 +242,7 @@ mod tests {
         let manifest = Manifest::parse("").unwrap();
         assert!(manifest.permissions.fs.is_empty());
         assert!(manifest.permissions.net.is_empty());
-        assert!(manifest.permissions.env.is_empty());
+        assert!(manifest.permissions.env.is_none());
         assert_eq!(manifest.permissions.clocks, Clocks::None);
         assert!(!manifest.permissions.random);
     }
@@ -311,7 +318,10 @@ mod tests {
             .unwrap();
 
         assert_eq!(manifest.permissions.fs.read, ["/opt/p", "/w/docs"]);
-        assert_eq!(manifest.permissions.env["HOME"], "/opt/p/home");
+        assert_eq!(
+            manifest.permissions.env.as_ref().unwrap()["HOME"],
+            "/opt/p/home"
+        );
     }
 
     #[test]
@@ -330,6 +340,15 @@ mod tests {
         let mut manifest = Manifest::parse("[permissions]\nfs.read = [\"${oops\"]\n").unwrap();
         let err = manifest.substitute(&vars(&[])).unwrap_err();
         assert!(err.message().contains("unterminated"), "{}", err.message());
+    }
+
+    #[test]
+    fn an_empty_env_table_is_a_grant_not_an_absence() {
+        let denied = Manifest::parse("").unwrap();
+        assert!(denied.permissions.env.is_none());
+
+        let granted = Manifest::parse("[permissions]\nenv = {}\n").unwrap();
+        assert_eq!(granted.permissions.env, Some(BTreeMap::new()));
     }
 
     #[test]

@@ -1,13 +1,17 @@
 //! A loaded, instantiated component and the store it runs in.
 
+use std::collections::BTreeMap;
 use std::fmt;
+use std::sync::Arc;
 
 use wasmtime::component::{Component, Linker, ResourceTable, Val};
 use wasmtime::{Engine, Store, StoreLimits, StoreLimitsBuilder};
 use wasmtime_wasi::{FsPerms, WasiCtx, WasiCtxView, WasiView};
 
+use crate::host::HostFunc;
 use crate::imports::GrantReport;
 use crate::manifest::{Limits, Manifest};
+use crate::trace::{Outcome, TraceEvent, TraceHook};
 use crate::{Error, ErrorKind, Result};
 
 /// Everything the guest can reach, plus the ceilings it runs under.
@@ -26,6 +30,13 @@ impl WasiView for State {
     }
 }
 
+/// What a plugin needs at instantiation time beyond its bytes.
+pub(crate) struct Wiring<'a> {
+    pub manifest: &'a Manifest,
+    pub host_funcs: &'a BTreeMap<String, BTreeMap<String, HostFunc>>,
+    pub trace: Option<&'a Arc<dyn TraceHook>>,
+}
+
 /// One instantiated plugin.
 ///
 /// A plugin owns its store, so limits are per-plugin: one plugin exhausting its
@@ -36,6 +47,7 @@ pub struct Plugin {
     instance: wasmtime::component::Instance,
     limits: Limits,
     report: GrantReport,
+    trace: Option<Arc<dyn TraceHook>>,
 }
 
 impl fmt::Debug for Plugin {
@@ -53,9 +65,10 @@ impl Plugin {
         name: &str,
         engine: &Engine,
         component: &Component,
-        manifest: &Manifest,
+        wiring: &Wiring<'_>,
         report: GrantReport,
     ) -> Result<Self> {
+        let manifest = wiring.manifest;
         let wasi = build_wasi_ctx(manifest)?;
 
         let memory = usize::try_from(manifest.limits.memory).map_err(|_| {
@@ -81,6 +94,8 @@ impl Plugin {
         wasmtime_wasi::p2::add_to_linker_sync(&mut linker)
             .map_err(|err| Error::new(ErrorKind::Internal, format!("wiring WASI: {err:?}")))?;
 
+        install_host_funcs(&mut linker, name, wiring)?;
+
         // A fresh store starts with no fuel and a deadline of zero, so the
         // budgets have to be armed before instantiation runs any guest code,
         // not just before the first call.
@@ -99,6 +114,7 @@ impl Plugin {
             instance,
             limits: manifest.limits.clone(),
             report,
+            trace: wiring.trace.map(Arc::clone),
         })
     }
 
@@ -117,8 +133,8 @@ impl Plugin {
     /// Call an exported function by name.
     ///
     /// Untyped on purpose: this is the path the C API and the CLI take, and the
-    /// one the recorder will sit on in M4. Rust hosts with a static world get
-    /// `bindgen!` instead, in M2.
+    /// one the recorder sits on. Rust hosts with a static world can reach for
+    /// `bindgen!` against the same engine instead.
     ///
     /// Fuel and the deadline are reset before each call, so `fuel` and
     /// `timeout` in the manifest are per-call budgets rather than per-plugin
@@ -139,11 +155,75 @@ impl Plugin {
 
         arm(&mut self.store, &self.limits, &self.name)?;
 
-        // Wasmtime 48 no longer needs an explicit post_return.
-        func.call(&mut self.store, args, &mut results)
-            .map_err(|err| self.classify_call_error(export, &err))?;
+        if let Some(hook) = &self.trace {
+            hook.on_event(&TraceEvent::ExportCall {
+                plugin: &self.name,
+                func: export,
+                args,
+            });
+        }
 
+        let outcome = func
+            .call(&mut self.store, args, &mut results)
+            .map_err(|err| self.classify_call_error(export, &err));
+
+        if let Some(hook) = &self.trace {
+            let reported = match &outcome {
+                Ok(()) => Outcome::Returned(&results),
+                Err(err) => Outcome::Failed(err),
+            };
+            hook.on_event(&TraceEvent::ExportReturn {
+                plugin: &self.name,
+                func: export,
+                outcome: reported,
+            });
+        }
+
+        outcome?;
         Ok(results)
+    }
+
+    /// Call an exported function, taking and returning WAVE text.
+    ///
+    /// This is the path a CLI or a C caller takes: it has strings, not `Val`s,
+    /// and the function's own type is what says how to read them. `"notes.md"`
+    /// parses as a string because the world says the parameter is a string.
+    pub fn call_wave(&mut self, export: &str, args: &[&str]) -> Result<Vec<String>> {
+        let params: Vec<wasmtime::component::Type> = {
+            let func = self
+                .instance
+                .get_func(&mut self.store, export)
+                .ok_or_else(|| {
+                    Error::new(
+                        ErrorKind::NotFound,
+                        format!("{}: no exported function {export:?}", self.name),
+                    )
+                })?;
+            func.ty(&self.store).params().map(|(_, ty)| ty).collect()
+        };
+
+        if args.len() != params.len() {
+            return Err(Error::new(
+                ErrorKind::InvalidArgument,
+                format!(
+                    "{}: {export} takes {} argument(s), got {}",
+                    self.name,
+                    params.len(),
+                    args.len()
+                ),
+            ));
+        }
+
+        let values = args
+            .iter()
+            .zip(&params)
+            .map(|(text, ty)| crate::wave::from_wave(ty, text))
+            .collect::<Result<Vec<_>>>()?;
+
+        self.call(export, &values)?
+            .iter()
+            .map(crate::wave::to_wave)
+            .collect()
     }
 
     /// Separate "the plugin misbehaved" from "the plugin hit a ceiling", since
@@ -167,6 +247,85 @@ impl Plugin {
             format!("{}: {export}: {}\n{err}", self.name, err.root_cause()),
         )
     }
+}
+
+/// Install the application's own interfaces on the linker.
+///
+/// These go in as dynamically typed functions rather than through `bindgen!`,
+/// for the same reason [`Plugin::call`] is untyped: it is the shape the C API
+/// can express, and it is the shape a recorder can serialize without knowing
+/// the world in advance.
+fn install_host_funcs(linker: &mut Linker<State>, plugin: &str, wiring: &Wiring<'_>) -> Result<()> {
+    for (interface, funcs) in wiring.host_funcs {
+        let mut instance = linker.instance(interface).map_err(|err| {
+            Error::new(
+                ErrorKind::Internal,
+                format!("{plugin}: cannot define interface {interface:?}: {err:?}"),
+            )
+        })?;
+
+        for (func_name, host_func) in funcs {
+            // Owned copies for the closure; the originals stay available for
+            // the error message below.
+            let host_func = Arc::clone(host_func);
+            let trace = wiring.trace.map(Arc::clone);
+            let owned_plugin = plugin.to_string();
+            let owned_interface = interface.clone();
+            let owned_func = func_name.clone();
+
+            instance
+                .func_new(func_name, move |_store, _ty, params, results| {
+                    if let Some(hook) = &trace {
+                        hook.on_event(&TraceEvent::ImportCall {
+                            plugin: &owned_plugin,
+                            interface: &owned_interface,
+                            func: &owned_func,
+                            args: params,
+                        });
+                    }
+
+                    let outcome = host_func(params);
+
+                    if let Some(hook) = &trace {
+                        let reported = match &outcome {
+                            Ok(values) => Outcome::Returned(values),
+                            Err(err) => Outcome::Failed(err),
+                        };
+                        hook.on_event(&TraceEvent::ImportReturn {
+                            plugin: &owned_plugin,
+                            interface: &owned_interface,
+                            func: &owned_func,
+                            outcome: reported,
+                        });
+                    }
+
+                    let values = outcome.map_err(|err| {
+                        wasmtime::Error::msg(format!(
+                            "{owned_plugin}: host function {owned_interface}#{owned_func}: {}",
+                            err.message()
+                        ))
+                    })?;
+
+                    if values.len() != results.len() {
+                        return Err(wasmtime::Error::msg(format!(
+                            "{owned_plugin}: host function {owned_interface}#{owned_func} \
+                             returned {} value(s), the world declares {}",
+                            values.len(),
+                            results.len()
+                        )));
+                    }
+                    results.clone_from_slice(&values);
+                    Ok(())
+                })
+                .map_err(|err| {
+                    Error::new(
+                        ErrorKind::Internal,
+                        format!("{plugin}: cannot define {interface}#{func_name}: {err:?}"),
+                    )
+                })?;
+        }
+    }
+    Ok(())
 }
 
 /// Reset the per-call budgets on a store.
@@ -206,12 +365,8 @@ fn build_wasi_ctx(manifest: &Manifest) -> Result<WasiCtx> {
         preopen(&mut builder, path, FsPerms::ReadWrite)?;
     }
 
-    if !permissions.env.is_empty() {
-        let pairs: Vec<(&str, &str)> = permissions
-            .env
-            .iter()
-            .map(|(k, v)| (k.as_str(), v.as_str()))
-            .collect();
+    if let Some(env) = &permissions.env {
+        let pairs: Vec<(&str, &str)> = env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
         builder.envs(&pairs);
     }
 

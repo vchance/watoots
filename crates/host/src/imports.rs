@@ -58,6 +58,20 @@ impl InterfaceRef {
     }
 }
 
+/// One import as the component declares it.
+#[derive(Debug, Clone, Copy)]
+pub struct ComponentImport<'a> {
+    /// The import name, e.g. `wasi:filesystem/types@0.2.12`.
+    pub name: &'a str,
+    /// Whether the imported instance exposes any callable function.
+    ///
+    /// WIT packages routinely import a sibling interface purely for its type
+    /// definitions — `watoots:example/log` using `severity` from
+    /// `watoots:example/types` pulls the whole types interface into the import
+    /// list. There is nothing to call there, so there is nothing to grant.
+    pub has_functions: bool,
+}
+
 /// What a given import needs in order to be allowed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
@@ -65,6 +79,8 @@ pub enum Requirement {
     /// Plumbing every WASI 0.2 component pulls in, which conveys no capability
     /// on its own: streams, poll, error types, exit, stdio handles.
     Ambient,
+    /// An interface with no callable functions, imported only for its types.
+    TypesOnly,
     /// `wasi:filesystem` — needs some `fs.read` or `fs.write` grant.
     Filesystem,
     /// `wasi:sockets` — needs a non-empty `net` allowlist.
@@ -89,6 +105,7 @@ impl Requirement {
     pub fn grant_key(self) -> &'static str {
         match self {
             Self::Ambient => "(none needed)",
+            Self::TypesOnly => "(types only, nothing callable)",
             Self::Filesystem => "permissions.fs.read / permissions.fs.write",
             Self::Network => "permissions.net",
             Self::MonotonicClock => "permissions.clocks = \"monotonic\"",
@@ -101,12 +118,18 @@ impl Requirement {
     }
 }
 
-/// Classify one import name against the WASI interfaces we know about.
+/// Classify one import against the WASI interfaces we know about.
 #[must_use]
-pub fn classify(import: &str, host_provided: &BTreeSet<String>) -> Requirement {
-    let Some(iface) = InterfaceRef::parse(import) else {
+pub fn classify(import: ComponentImport<'_>, host_provided: &BTreeSet<String>) -> Requirement {
+    let Some(iface) = InterfaceRef::parse(import.name) else {
         return Requirement::Unrecognized;
     };
+
+    // Checked before anything else: an instance with no functions cannot be
+    // called, so no grant could be about it either way.
+    if !import.has_functions {
+        return Requirement::TypesOnly;
+    }
 
     if host_provided.contains(&iface.unversioned()) {
         return Requirement::HostProvided;
@@ -189,7 +212,7 @@ impl GrantReport {
 
 /// Intersect a component's imports with what the manifest grants.
 pub fn check<'a>(
-    imports: impl IntoIterator<Item = &'a str>,
+    imports: impl IntoIterator<Item = ComponentImport<'a>>,
     permissions: &Permissions,
     host_provided: &BTreeSet<String>,
 ) -> GrantReport {
@@ -198,7 +221,7 @@ pub fn check<'a>(
         .map(|import| {
             let requirement = classify(import, host_provided);
             ImportDecision {
-                import: import.to_string(),
+                import: import.name.to_string(),
                 requirement,
                 granted: is_granted(requirement, permissions),
             }
@@ -210,7 +233,7 @@ pub fn check<'a>(
 
 fn is_granted(requirement: Requirement, permissions: &Permissions) -> bool {
     match requirement {
-        Requirement::Ambient | Requirement::HostProvided => true,
+        Requirement::Ambient | Requirement::TypesOnly | Requirement::HostProvided => true,
         // `wasi:filesystem` covers reading and writing in one interface, so the
         // manifest cannot separate them here; the read/write split is enforced
         // by what each directory is preopened as.
@@ -219,7 +242,10 @@ fn is_granted(requirement: Requirement, permissions: &Permissions) -> bool {
         Requirement::MonotonicClock => permissions.clocks.allows_monotonic(),
         Requirement::WallClock => permissions.clocks.allows_wall(),
         Requirement::Random => permissions.random,
-        Requirement::Environment => !permissions.env.is_empty(),
+        // `env = {}` is a real grant meaning "an empty environment": the guest
+        // may read it and will find nothing. Absent means it may not read at
+        // all, which is why this is an Option and not an emptiness check.
+        Requirement::Environment => permissions.env.is_some(),
         Requirement::Unrecognized => false,
     }
 }
@@ -231,6 +257,14 @@ mod tests {
 
     fn provided(names: &[&str]) -> BTreeSet<String> {
         names.iter().map(|n| (*n).to_string()).collect()
+    }
+
+    /// An import that has something callable in it.
+    fn callable(name: &str) -> ComponentImport<'_> {
+        ComponentImport {
+            name,
+            has_functions: true,
+        }
     }
 
     #[test]
@@ -278,7 +312,7 @@ mod tests {
             ("wasi:random/random@0.2.6", Requirement::Random),
         ];
         for (import, expected) in cases {
-            assert_eq!(classify(import, &none), expected, "{import}");
+            assert_eq!(classify(callable(import), &none), expected, "{import}");
         }
     }
 
@@ -286,7 +320,7 @@ mod tests {
     fn unknown_wasi_package_is_not_silently_allowed() {
         // A future WASI package we have not classified must deny, not pass.
         assert_eq!(
-            classify("wasi:keyvalue/store@0.2.0", &provided(&[])),
+            classify(callable("wasi:keyvalue/store@0.2.0"), &provided(&[])),
             Requirement::Unrecognized
         );
     }
@@ -295,11 +329,11 @@ mod tests {
     fn host_provided_interfaces_are_recognized_by_unversioned_name() {
         let host = provided(&["watoots:example/log"]);
         assert_eq!(
-            classify("watoots:example/log@0.1.0", &host),
+            classify(callable("watoots:example/log@0.1.0"), &host),
             Requirement::HostProvided
         );
         assert_eq!(
-            classify("watoots:example/other@0.1.0", &host),
+            classify(callable("watoots:example/other@0.1.0"), &host),
             Requirement::Unrecognized
         );
     }
@@ -310,7 +344,7 @@ mod tests {
         // says it serves that interface, it is the app's call, not a grant.
         let host = provided(&["wasi:filesystem/types"]);
         assert_eq!(
-            classify("wasi:filesystem/types@0.2.6", &host),
+            classify(callable("wasi:filesystem/types@0.2.6"), &host),
             Requirement::HostProvided
         );
     }
@@ -326,7 +360,8 @@ mod tests {
                 "wasi:clocks/monotonic-clock@0.2.6",
                 "wasi:random/random@0.2.6",
                 "wasi:cli/environment@0.2.6",
-            ],
+            ]
+            .map(callable),
             &manifest.permissions,
             &provided(&[]),
         );
@@ -355,7 +390,8 @@ mod tests {
                 "wasi:random/random@0.2.6",
                 "wasi:clocks/wall-clock@0.2.6",
                 "wasi:sockets/tcp@0.2.6",
-            ],
+            ]
+            .map(callable),
             &manifest.permissions,
             &provided(&[]),
         );
@@ -376,7 +412,8 @@ mod tests {
             [
                 "wasi:clocks/wall-clock@0.2.6",
                 "wasi:clocks/monotonic-clock@0.2.6",
-            ],
+            ]
+            .map(callable),
             &manifest.permissions,
             &provided(&[]),
         );
@@ -395,7 +432,7 @@ mod tests {
     fn description_names_the_key_an_operator_would_edit() {
         let manifest = Manifest::parse("").unwrap();
         let report = check(
-            ["wasi:sockets/tcp@0.2.6"],
+            ["wasi:sockets/tcp@0.2.6"].map(callable),
             &manifest.permissions,
             &provided(&[]),
         );

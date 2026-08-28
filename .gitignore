@@ -5,3 +5,4 @@ Cargo.lock.orig
 /build
 /.cache
 .DS_Store
+/examples/plugins/*/target

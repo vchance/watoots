@@ -17,27 +17,38 @@ const SELF_CONTAINED: &str = r#"
 )
 "#;
 
+// Each imported instance below declares a function. An instance with no
+// exports at all is a *type-only* import and conveys no capability, so it would
+// be granted — see `a_type_only_import_needs_no_grant`.
+
 /// A component that wants the network.
 const WANTS_NETWORK: &str = r#"
 (component
-  (import "wasi:sockets/tcp@0.2.6" (instance))
+  (import "wasi:sockets/tcp@0.2.6" (instance (export "connect" (func))))
 )
 "#;
 
 /// A component that wants several things at once.
 const WANTS_SEVERAL: &str = r#"
 (component
-  (import "wasi:io/streams@0.2.6" (instance))
-  (import "wasi:filesystem/types@0.2.6" (instance))
-  (import "wasi:clocks/wall-clock@0.2.6" (instance))
-  (import "wasi:random/random@0.2.6" (instance))
+  (import "wasi:io/streams@0.2.6" (instance (export "read" (func))))
+  (import "wasi:filesystem/types@0.2.6" (instance (export "open" (func))))
+  (import "wasi:clocks/wall-clock@0.2.6" (instance (export "now" (func))))
+  (import "wasi:random/random@0.2.6" (instance (export "get" (func))))
 )
 "#;
 
 /// A component that wants the application's own interface.
 const WANTS_HOST_INTERFACE: &str = r#"
 (component
-  (import "watoots:example/log@0.1.0" (instance))
+  (import "watoots:example/log@0.1.0" (instance (export "emit" (func))))
+)
+"#;
+
+/// A component importing an interface that holds only type definitions.
+const WANTS_TYPES_ONLY: &str = r#"
+(component
+  (import "watoots:example/types@0.1.0" (instance))
 )
 "#;
 
@@ -185,4 +196,17 @@ fn a_net_grant_is_refused_until_it_is_enforced() {
         "{}",
         err.message()
     );
+}
+
+#[test]
+fn a_type_only_import_needs_no_grant() {
+    // WIT packages routinely pull in a sibling interface just for its types --
+    // `log` using `severity` from `types` puts the whole types interface in the
+    // import list. There is nothing callable there, so denying it would refuse
+    // every real plugin for a capability it cannot exercise.
+    let host = host_with("");
+    let report = host.inspect(WANTS_TYPES_ONLY.as_bytes()).unwrap();
+
+    assert!(report.is_satisfied(), "{}", report.describe());
+    assert_eq!(report.decisions[0].requirement, Requirement::TypesOnly);
 }
