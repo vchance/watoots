@@ -1,4 +1,4 @@
-# Component Sandbox Toolkit — scoping spec
+# watoots — scoping spec
 
 *Verified 2026-08-27 against source; engine baseline Wasmtime 48 LTS; target WASI 0.2.x, designed for 0.3.*
 
@@ -116,7 +116,7 @@ REPLAY   (no application)   Mock host (answers imports from trace) ⇄ same comp
 
 Recording is a linker shim in the host library; replay swaps the application for a mock host that serves the same trace. The application never has to be present to reproduce a plugin bug.
 
-Why this is different from Wasmtime's own `rr`: theirs records at the canonical-ABI lowering level for bit-exact engine determinism, in a binary format, and cannot be read or edited. Ours records at the WIT level, is readable and diffable, and a trace is a test fixture: `toolkit replay trace.wave --assert` is a regression test with no host code. If Wasmtime's replay ever lands, the two compose — theirs for "reproduce exactly", ours for "explain and keep". As of today theirs has recording knobs and no replay, so for components this would be the first working replay of any kind.
+Why this is different from Wasmtime's own `rr`: theirs records at the canonical-ABI lowering level for bit-exact engine determinism, in a binary format, and cannot be read or edited. Ours records at the WIT level, is readable and diffable, and a trace is a test fixture: `watoots replay trace.wave --assert` is a regression test with no host code. If Wasmtime's replay ever lands, the two compose — theirs for "reproduce exactly", ours for "explain and keep". As of today theirs has recording knobs and no replay, so for components this would be the first working replay of any kind.
 
 ## MVP scope
 
@@ -146,11 +146,11 @@ Why this is different from Wasmtime's own `rr`: theirs records at the canonical-
 
 **In**
 - Trace format: header (component hash, world, engine config), then ordered WIT-typed events for every import/export crossing, with resource handles mapped to stable IDs
-- WAVE text encoding + a length-prefixed binary encoding; `toolkit trace fmt` converts
+- WAVE text encoding + a length-prefixed binary encoding; `watoots trace fmt` converts
 - Recorder: shim installed by the host library when `record = true`
 - Replay runner: mock host from trace, drives exports, compares each import call (args) to the trace; first divergence → structured diff
 - Determinism knobs applied on record and replay: NaN canonicalization, deterministic relaxed-SIMD, manifest-pinned clock/random
-- `toolkit replay --assert` exit code for CI; `--emit-test` writes a Rust test fixture
+- `watoots replay --assert` exit code for CI; `--emit-test` writes a Rust test fixture
 
 **Out (v0.1)**
 - Recording guest memory or engine state (that's Wasmtime `rr`'s job)
@@ -160,7 +160,7 @@ Why this is different from Wasmtime's own `rr`: theirs records at the canonical-
 
 ### v0.2 candidates
 
-- `toolkit inspect plugin.wasm`: human-readable permission manifest from imports ("reads files under X, no network, uses monotonic clock"), plus `semver-check` and `targets` wrapped.
+- `watoots inspect plugin.wasm`: human-readable permission manifest from imports ("reads files under X, no network, uses monotonic clock"), plus `semver-check` and `targets` wrapped.
 - Reload: drop/reinstantiate with optional `export-state`/`import-state` WIT hooks; experiment with same-binary checkpoint by copying linear memory, globals, and tables through the public API.
 - WIT-driven fuzzer reusing Wasmtime's `component_api` oracle pattern (or `mutatis`), emitting a replay trace per crash.
 - Profiler view: wrap `GuestProfiler` and attribute time to guest vs. host-call vs. boundary marshalling per WIT function.
@@ -206,7 +206,7 @@ Nothing technically stops incumbents from building this; what stops them is ince
 
 Each becomes an ADR in `docs/adr/` when made.
 
-- **Name.** Needs a crates.io name, a CLI verb, and a C prefix. Pick before M1 ends to avoid a rename. (Repo directory `component-sandbox-toolkit` is a placeholder.)
+- ~~**Name.**~~ Decided 2026-08-28: **watoots** — see `adr/0001-name.md`.
 - **C API on day one, or Rust-first?** Recommendation: day one. It doubles the addressable audience, it's the clearest differentiator from every component host today, and it plays to a C++ background as a showcase.
 - **License.** Apache-2.0 with LLVM exception matches the Bytecode Alliance ecosystem and removes friction for Zed-style adopters.
 - **Host-side dynamic typing.** WAVE for the C API and CLI keeps us off the bindgen treadmill; confirm WAVE handles resources well enough for our traces before committing.

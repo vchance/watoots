@@ -1,4 +1,4 @@
-# Component Sandbox Toolkit — project context
+# watoots — project context
 
 ## What this is
 A Rust crate + C API that turns "I have a Wasmtime dependency" into "I have a
@@ -28,17 +28,22 @@ same content as the published scoping page (read-only reference).
 - `crates/host/`        core library (`Host`, `Plugin`, manifest, limits, registry, cache)
 - `crates/host-capi/`   cbindgen C API + `include/` C++ RAII header + CMake package
 - `crates/trace/`       trace format (WAVE text + binary), recorder shim, replay runner
-- `crates/cli/`         `toolkit` binary: `inspect`, `run`, `record`, `replay`, `trace fmt`
+- `crates/cli/`         `watoots` binary: `inspect`, `run`, `record`, `replay`, `trace fmt`
 - `examples/wit/`       the sample plugin world used by all examples and tests
 - `examples/plugins/`   Rust, JS (ComponentizeJS), Python (componentize-py) sample plugins
 - `examples/host-cpp/`  minimal C++ host app proving the C API
 - `docs/adr/`           architecture decision records (one file per decision)
 
+## Naming (ADR-0001)
+- Project/crate/CLI: `watoots`. Crates: `watoots` (host), `watoots-capi`, `watoots-trace`, `watoots-cli`.
+- C prefix: `wt_` (types `wt_host_t`, functions `wt_host_new`). Header `watoots.h`, C++ `watoots.hpp`.
+- Env vars: `WATOOTS_*`.
+
 ## Conventions
 - Rust 2024 edition, MSRV = whatever Wasmtime 48 requires.
 - `cargo clippy --all-targets -- -D warnings` and `cargo fmt --check` must pass.
 - Any decision listed under "Open decisions" in the spec gets an ADR in
-  `docs/adr/NNNN-title.md` when made. Don't silently pick.
+  `docs/adr/NNNN-title.md` when made. Don't silently pick. ADR-0001 (name) is done.
 - Prefer `wasmtime::component::Val` + WAVE for dynamic calls; `bindgen!` only
   where the Rust host has a static world.
 - Tests live next to code; integration tests under `crates/*/tests/` use the
