@@ -9,3 +9,12 @@ license.workspace = true
 authors.workspace = true
 keywords.workspace = true
 categories.workspace = true
+
+[dependencies]
+bytesize = { version = "2.7.0", features = ["serde"] }
+humantime-serde = "1.1.1"
+serde = { version = "1.0.229", features = ["derive"] }
+thiserror = "2.0.20"
+toml = "1.1.4"
+wasmtime = "48"
+wasmtime-wasi = "48"

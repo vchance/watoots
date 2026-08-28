@@ -1,0 +1,40 @@
+package watoots:example@0.1.0;
+
+/// What a lint plugin reports back to the host.
+interface types {
+  enum severity {
+    error,
+    warning,
+    hint,
+  }
+
+  record diagnostic {
+    line: u32,
+    column: u32,
+    severity: severity,
+    message: string,
+  }
+}
+
+/// The one host capability this world offers plugins. Everything else a plugin
+/// can reach comes from WASI and must be granted by the manifest.
+interface log {
+  use types.{severity};
+
+  emit: func(level: severity, message: string);
+}
+
+/// The world a watoots lint plugin implements. Deliberately small: it exists so
+/// the host has one concrete world to validate against, and so the examples and
+/// tests all speak the same interface.
+world lint-plugin {
+  use types.{diagnostic};
+
+  import log;
+
+  /// Human-readable plugin name, for the host's plugin list.
+  export name: func() -> string;
+
+  /// Lint one source file.
+  export lint: func(path: string, source: string) -> list<diagnostic>;
+}

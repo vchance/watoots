@@ -54,12 +54,16 @@ same content as the published scoping page (read-only reference).
   sample plugins in `examples/`.
 
 ## Environment notes (as of 2026-08-28)
-- Rust 1.97.1, cargo 1.97.1, CMake 4.4.3 present.
-- `wasm32-wasip2` target is **not installed**: `rustup target add wasm32-wasip2`.
-- `wasm-tools`, `wac`, `wit-bindgen-cli` are not confirmed installed; check with
-  `which` before relying on them (`cargo install wasm-tools wac-cli wit-bindgen-cli`).
+- Rust 1.97.1, cargo 1.97.1, CMake 4.4.3 present. MSRV is 1.95 (Wasmtime 48).
+- `wasm32-wasip2` target **is installed**.
+- `wasm-tools`, `wac`, `wit-bindgen-cli`, `cargo-component` are **not** installed
+  (`cargo install wasm-tools wac-cli wit-bindgen-cli`). Nothing needs them yet:
+  host tests build their components from WAT inline, which keeps them hermetic.
+- clang-tidy is not on PATH; `tools/tidy.sh` finds Homebrew's keg-only copy.
 
 ## Milestones (from the spec)
 M1 spike → M2 host core → M3 C API + polyglot proof (first publishable) →
 M4 record/replay → M5 ship v0.1 → M6 v0.2 from feedback.
-Current: **M1**.
+Current: **M2**. M1 is done: engine, manifest, import-intersection check, and
+per-call fuel/epoch/memory limits, in `crates/host`, with `examples/wit/lint.wit`
+as the sample world.
