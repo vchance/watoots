@@ -157,3 +157,24 @@ fn limits_are_per_plugin_not_per_host() {
     );
     assert_eq!(cheap.call("answer", &[]).unwrap(), vec![Val::S32(42)]);
 }
+
+#[test]
+fn a_limit_error_leads_with_the_cause_not_the_backtrace() {
+    // The C API gets one string. If it opens with "error while executing at
+    // wasm backtrace:" then the useful half is off the end of the log line.
+    let host = host_with("[limits]\nfuel = 100_000\n");
+    let mut plugin = host.load_binary("spinner", SPINNER.as_bytes()).unwrap();
+
+    let err = plugin.call("spin", &[]).unwrap_err();
+    let first_line = err.message().lines().next().unwrap();
+    assert!(
+        first_line.contains("all fuel consumed"),
+        "first line should name the cause, got: {first_line}"
+    );
+    // The backtrace is still there, just below.
+    assert!(
+        err.message().contains("wasm backtrace"),
+        "{}",
+        err.message()
+    );
+}

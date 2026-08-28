@@ -148,16 +148,24 @@ impl Plugin {
 
     /// Separate "the plugin misbehaved" from "the plugin hit a ceiling", since
     /// the two mean different things to whoever installed it.
+    ///
+    /// The message leads with the root cause and puts the guest backtrace
+    /// underneath. Wasmtime's own `Debug` rendering does the opposite, which
+    /// buries "all fuel consumed" below a stack trace — no use to a C caller
+    /// that gets one string, and not much better in a log line.
+    ///
+    /// A store limiter refusing growth makes `memory.grow` return -1 rather
+    /// than raise an error, so a memory ceiling is only ever reported here via
+    /// a trap; there is nothing extra to match on.
     fn classify_call_error(&self, export: &str, err: &wasmtime::Error) -> Error {
         let kind = match err.downcast_ref::<wasmtime::Trap>() {
             Some(wasmtime::Trap::OutOfFuel | wasmtime::Trap::Interrupt) => ErrorKind::LimitExceeded,
-            Some(_) => ErrorKind::Trap,
-            // Memory growth past StoreLimits surfaces as a plain error rather
-            // than a trap, so match on what it says.
-            None if format!("{err:?}").contains("exceeds the limit") => ErrorKind::LimitExceeded,
-            None => ErrorKind::Trap,
+            _ => ErrorKind::Trap,
         };
-        Error::new(kind, format!("{}: {export}: {err:?}", self.name))
+        Error::new(
+            kind,
+            format!("{}: {export}: {}\n{err}", self.name, err.root_cause()),
+        )
     }
 }
 
