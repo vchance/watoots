@@ -89,3 +89,14 @@ add_library(watoots_abi_cxx20 OBJECT abi_cxx20_compile.cc)
 target_link_libraries(watoots_abi_cxx20 PRIVATE watoots::capi)
 target_compile_features(watoots_abi_cxx20 PRIVATE cxx_std_20)
 target_compile_options(watoots_abi_cxx20 PRIVATE ${WATOOTS_STRICT_FLAGS})
+
+# The API test links the Rust staticlib, so it is built once at the C++20 floor
+# rather than once per Result backend: it is testing the boundary, not the shim.
+if(WATOOTS_BUILD_CAPI)
+  add_executable(watoots_capi_api_test api_test.cc)
+  target_link_libraries(watoots_capi_api_test PRIVATE watoots::capi
+                                                      GTest::gtest_main)
+  target_compile_features(watoots_capi_api_test PRIVATE cxx_std_20)
+  target_compile_options(watoots_capi_api_test PRIVATE ${WATOOTS_STRICT_FLAGS})
+  gtest_discover_tests(watoots_capi_api_test TEST_PREFIX capi.)
+endif()

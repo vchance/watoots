@@ -274,7 +274,7 @@ fn install_host_funcs(linker: &mut Linker<State>, plugin: &str, wiring: &Wiring<
             let owned_func = func_name.clone();
 
             instance
-                .func_new(func_name, move |_store, _ty, params, results| {
+                .func_new(func_name, move |_store, ty, params, results| {
                     if let Some(hook) = &trace {
                         hook.on_event(&TraceEvent::ImportCall {
                             plugin: &owned_plugin,
@@ -284,7 +284,14 @@ fn install_host_funcs(linker: &mut Linker<State>, plugin: &str, wiring: &Wiring<
                         });
                     }
 
-                    let outcome = host_func(params);
+                    // The world's own declaration of what this function
+                    // returns, so a text-based host can answer in the right
+                    // type rather than guessing from the literal.
+                    let result_types: Vec<wasmtime::component::Type> = ty.results().collect();
+                    let outcome = host_func(&crate::host::HostCall {
+                        args: params,
+                        result_types: &result_types,
+                    });
 
                     if let Some(hook) = &trace {
                         let reported = match &outcome {

@@ -56,11 +56,31 @@ pub struct Error {
 }
 
 impl Error {
-    pub(crate) fn new(kind: ErrorKind, message: impl Into<String>) -> Self {
+    /// Build an error.
+    ///
+    /// Public because host functions need it: an application serving an
+    /// interface to a plugin has to be able to fail, and the failure has to
+    /// carry the same shape as ours so the C API can return it unchanged.
+    pub fn new(kind: ErrorKind, message: impl Into<String>) -> Self {
         Self {
             kind,
             message: message.into(),
         }
+    }
+
+    /// An error for a caller that passed something unusable.
+    pub fn invalid_argument(message: impl Into<String>) -> Self {
+        Self::new(ErrorKind::InvalidArgument, message)
+    }
+
+    /// An error for something that does not exist.
+    pub fn not_found(message: impl Into<String>) -> Self {
+        Self::new(ErrorKind::NotFound, message)
+    }
+
+    /// An error for a bug on our side.
+    pub fn internal(message: impl Into<String>) -> Self {
+        Self::new(ErrorKind::Internal, message)
     }
 
     /// The category of failure.

@@ -98,7 +98,8 @@ fuel = 200_000_000
 fn host_serving_log(logged: Arc<Mutex<Vec<String>>>, hook: Option<Arc<dyn TraceHook>>) -> Host {
     let mut builder = Host::builder()
         .manifest(Manifest::parse(SAMPLE_POLICY).unwrap())
-        .host_func("watoots:example/log@0.1.0", "emit", move |args| {
+        .host_func("watoots:example/log@0.1.0", "emit", move |call| {
+            let args = call.args();
             let level = match &args[0] {
                 Val::Enum(name) => name.clone(),
                 other => panic!("expected an enum for severity, got {other:?}"),

@@ -21,7 +21,25 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # which breaks clang-tidy on a freshly configured tree.
 set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
 
+# Match the deployment target rustc uses, or every link of the Rust staticlib
+# warns once per object file that it was built for a newer macOS than we are
+# linking for. rustc will tell us, so we do not have to guess or hardcode.
+if(APPLE AND NOT CMAKE_OSX_DEPLOYMENT_TARGET)
+  execute_process(
+    COMMAND rustc --print deployment-target
+    OUTPUT_VARIABLE watoots_rustc_deployment
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET)
+  if(watoots_rustc_deployment MATCHES "=([0-9]+\\.[0-9]+)")
+    set(CMAKE_OSX_DEPLOYMENT_TARGET
+        ${CMAKE_MATCH_1}
+        CACHE STRING "macOS deployment target, matched to rustc" FORCE)
+    message(STATUS "watoots: macOS deployment target ${CMAKE_MATCH_1} (from rustc)")
+  endif()
+endif()
+
 option(WATOOTS_BUILD_TESTS "Build the C/C++ test suite" ${PROJECT_IS_TOP_LEVEL})
+option(WATOOTS_BUILD_CAPI "Build the Rust C API library with cargo" ON)
 option(WATOOTS_ENABLE_SANITIZERS "Build with AddressSanitizer and UBSan" OFF)
 
 if(MSVC)
@@ -41,6 +59,10 @@ if(WATOOTS_ENABLE_SANITIZERS)
 endif()
 
 add_subdirectory(crates/host-capi)
+
+if(WATOOTS_BUILD_CAPI)
+  add_subdirectory(examples/host-cpp)
+endif()
 
 if(WATOOTS_BUILD_TESTS)
   enable_testing()

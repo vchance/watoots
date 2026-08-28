@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use sha2::{Digest, Sha256};
 use wasmtime::component::types::ComponentItem;
-use wasmtime::component::{Component, Val};
+use wasmtime::component::{Component, Type, Val};
 use wasmtime::{Config, Engine};
 
 use crate::imports::{self, GrantReport};
@@ -31,7 +31,41 @@ const EPOCH_TICK: Duration = Duration::from_millis(1);
 /// Dynamically typed for the same reason [`Plugin::call`] is: it is the shape
 /// the C API can express, and the shape a recorder can serialize without
 /// knowing the world ahead of time.
-pub type HostFunc = Arc<dyn Fn(&[Val]) -> Result<Vec<Val>> + Send + Sync>;
+pub type HostFunc = Arc<dyn Fn(&HostCall<'_>) -> Result<Vec<Val>> + Send + Sync>;
+
+/// One in-flight call from a plugin into the application.
+///
+/// Carries the call's own result types as well as its arguments. A statically
+/// typed host does not need them, but a dynamic one does: a caller working in
+/// text — the C API, the CLI — has to know whether `42` should come back as a
+/// `u8` or an `s64` before it can answer.
+pub struct HostCall<'a> {
+    pub(crate) args: &'a [Val],
+    pub(crate) result_types: &'a [Type],
+}
+
+impl<'a> HostCall<'a> {
+    /// The arguments the guest passed.
+    #[must_use]
+    pub fn args(&self) -> &'a [Val] {
+        self.args
+    }
+
+    /// The types this function must return, from the world it was declared in.
+    #[must_use]
+    pub fn result_types(&self) -> &'a [Type] {
+        self.result_types
+    }
+}
+
+impl fmt::Debug for HostCall<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("HostCall")
+            .field("args", &self.args)
+            .field("results", &self.result_types.len())
+            .finish()
+    }
+}
 
 /// A configured engine plus the policy every plugin loaded from it runs under.
 ///
@@ -310,7 +344,7 @@ impl HostBuilder {
     #[must_use]
     pub fn host_func<F>(mut self, interface: &str, func: &str, implementation: F) -> Self
     where
-        F: Fn(&[Val]) -> Result<Vec<Val>> + Send + Sync + 'static,
+        F: Fn(&HostCall<'_>) -> Result<Vec<Val>> + Send + Sync + 'static,
     {
         self.host_provided.insert(unversioned(interface));
         self.host_funcs
