@@ -6,3 +6,14 @@ Cargo.lock.orig
 /.cache
 .DS_Store
 /examples/plugins/*/target
+/examples/plugins/*/node_modules
+/examples/plugins/*/.venv
+/examples/plugins/*/*.wasm
+# componentize-py bindings, regenerated with `componentize-py bindings .`
+/examples/plugins/py-lint/wit_world
+/examples/plugins/py-lint/componentize_py_types.py
+/examples/plugins/py-lint/componentize_py_async_support
+/examples/plugins/py-lint/poll_loop.py
+__pycache__/
+*.pyc
+/examples/plugins/py-lint/componentize_py_runtime.pyi

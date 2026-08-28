@@ -1,0 +1,13 @@
+{
+  "name": "watoots-js-lint",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Sample watoots plugin in JavaScript, built with ComponentizeJS.",
+  "scripts": {
+    "build": "componentize-js --wit ../../wit --world-name lint-plugin --disable http --disable random --disable fetch-event --out js_lint.wasm lint.js"
+  },
+  "devDependencies": {
+    "@bytecodealliance/componentize-js": "^0.22.0"
+  }
+}

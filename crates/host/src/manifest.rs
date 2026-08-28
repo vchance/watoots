@@ -33,8 +33,20 @@ pub struct Manifest {
 pub struct Permissions {
     /// Filesystem grants.
     pub fs: FsGrants,
-    /// Host patterns the plugin may connect to. Empty denies all networking.
-    pub net: Vec<String>,
+    /// Whether the plugin may see the socket interfaces, and which hosts it
+    /// may reach.
+    ///
+    /// Three states, because importing an interface and being able to use it
+    /// are different questions:
+    ///
+    /// - absent — `wasi:sockets` and `wasi:http` are denied outright, and a
+    ///   component importing them fails to load.
+    /// - `net = []` — the interfaces are available and *every* connection is
+    ///   refused. This is what a CPython or JS guest needs: their runtimes link
+    ///   the socket interfaces whether or not the plugin opens one.
+    /// - `net = ["example.com"]` — an allowlist, which nothing enforces yet, so
+    ///   building a host with one is refused rather than silently over-granted.
+    pub net: Option<Vec<String>>,
     /// Environment variables handed to the guest, by name and value. The guest
     /// sees exactly this map and nothing inherited from the host process.
     ///
@@ -177,7 +189,7 @@ impl Manifest {
             .read
             .iter_mut()
             .chain(self.permissions.fs.write.iter_mut())
-            .chain(self.permissions.net.iter_mut())
+            .chain(self.permissions.net.iter_mut().flatten())
         {
             *path = expand(path, vars)?;
         }
@@ -241,7 +253,7 @@ mod tests {
     fn empty_manifest_denies_everything() {
         let manifest = Manifest::parse("").unwrap();
         assert!(manifest.permissions.fs.is_empty());
-        assert!(manifest.permissions.net.is_empty());
+        assert!(manifest.permissions.net.is_none());
         assert!(manifest.permissions.env.is_none());
         assert_eq!(manifest.permissions.clocks, Clocks::None);
         assert!(!manifest.permissions.random);
@@ -340,6 +352,15 @@ mod tests {
         let mut manifest = Manifest::parse("[permissions]\nfs.read = [\"${oops\"]\n").unwrap();
         let err = manifest.substitute(&vars(&[])).unwrap_err();
         assert!(err.message().contains("unterminated"), "{}", err.message());
+    }
+
+    #[test]
+    fn an_empty_net_list_grants_the_interface_but_no_hosts() {
+        let denied = Manifest::parse("").unwrap();
+        assert!(denied.permissions.net.is_none());
+
+        let interface_only = Manifest::parse("[permissions]\nnet = []\n").unwrap();
+        assert_eq!(interface_only.permissions.net, Some(Vec::new()));
     }
 
     #[test]

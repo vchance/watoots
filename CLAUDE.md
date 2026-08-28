@@ -47,7 +47,8 @@ same content as the published scoping page (read-only reference).
 - `cargo clippy --all-targets -- -D warnings` and `cargo fmt --check` must pass.
 - Any decision listed under "Open decisions" in the spec gets an ADR in
   `docs/adr/NNNN-title.md` when made. Don't silently pick. ADR-0001 (name), ADR-0002 (license: Apache-2.0 WITH LLVM-exception), and
-  ADR-0003 (C++ toolchain), and ADR-0004 (WAVE) are done.
+  ADR-0003 (C++ toolchain), ADR-0004 (WAVE), and ADR-0005 (cargo from
+  CMake) are done.
 - Prefer `wasmtime::component::Val` + WAVE for dynamic calls; `bindgen!` only
   where the Rust host has a static world.
 - Tests live next to code; integration tests under `crates/*/tests/` use the
@@ -64,13 +65,18 @@ same content as the published scoping page (read-only reference).
 ## Milestones (from the spec)
 M1 spike → M2 host core → M3 C API + polyglot proof (first publishable) →
 M4 record/replay → M5 ship v0.1 → M6 v0.2 from feedback.
-Current: **M3**. M1 and M2 are done in `crates/host`: engine, manifest,
+Current: **M4**. M1–M3 are done. `crates/host` has the engine, manifest,
 import-intersection check, per-call limits, registry, precompile cache, dynamic
-`Val`/WAVE calls, trace hook, and the Rust sample plugin in
-`examples/plugins/rust-lint` running end to end against `examples/wit/lint.wit`.
+`Val`/WAVE calls and the trace hook; `crates/host-capi` has the cbindgen C API,
+the C++ RAII header and an installable CMake package; `examples/` has one WIT
+world implemented in Rust, JavaScript and Python, three policies, and a C++ host
+app that runs all three. M3 was the first publishable state.
 
-Two things a real guest taught us, worth remembering before debugging a denial:
+Three things the real guests taught us, worth knowing before debugging a denial:
 a `wasm32-wasip2` Rust guest imports `wasi:clocks/monotonic-clock` and
-`wasi:cli/environment` via `std` whether or not the author uses them, so a
-manifest must grant both; and a WIT interface imported only for its types has no
-callable functions and is not a capability (`Requirement::TypesOnly`).
+`wasi:cli/environment` via `std` whether or not the author uses them; a WIT
+interface imported only for its types has no callable functions and is not a
+capability (`Requirement::TypesOnly`); and CPython links `wasi:sockets`
+unconditionally, which is why `net` is tri-state — absent denies the import,
+`net = []` grants the interface with nothing reachable, and a non-empty
+allowlist is refused because nothing enforces it yet.

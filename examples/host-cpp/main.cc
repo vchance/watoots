@@ -84,7 +84,7 @@ std::string WaveString(std::string_view text) {
 int main(int argc, char** argv) {
   const std::vector<std::string> args(argv, argv + argc);
   if (args.size() < 2) {
-    std::cerr << "usage: " << args[0] << " <plugin.wasm> [file-to-lint]\n";
+    std::cerr << "usage: " << args[0] << " <plugin.wasm> [policy.toml]\n";
     return EXIT_FAILURE;
   }
   const std::string& plugin_path = args[1];
@@ -92,9 +92,20 @@ int main(int argc, char** argv) {
   std::cout << "watoots " << wt_version_string() << '\n';
 
   wt::HostBuilder builder;
-  if (auto applied = builder.ManifestFromString(kPolicy); !applied) {
+  // A policy file if one was given, otherwise the built-in default. Different
+  // guest toolchains need different policies -- compare
+  // examples/policies/rust-lint.toml with js-lint.toml.
+  const bool have_policy_file = args.size() > 2;
+  auto applied = have_policy_file ? builder.ManifestFromFile(args[2])
+                                  : builder.ManifestFromString(kPolicy);
+  if (!applied) {
     return Fail(applied.error());
   }
+  std::cout << "policy: " << (have_policy_file ? args[2] : "(built-in)")
+            << '\n';
+
+  // ${plugin_dir} in a policy resolves per plugin, so a grant can name the
+  // directory a plugin was loaded from without knowing it in advance.
 
   // The one capability this application offers plugins. The lambda captures,
   // which is why host functions are std::function rather than raw pointers.
@@ -146,14 +157,9 @@ int main(int argc, char** argv) {
   std::cout << "name() -> " << name->value_or("(nothing)") << '\n';
 
   const std::string source =
-      args.size() > 2 ? std::string(reinterpret_cast<const char*>(  // NOLINT
-                                        ReadFile(args[2]).data()),
-                                    ReadFile(args[2]).size())
-                      : "fine line\nTODO: write a real host\ntrailing   \n";
-
-  const std::vector<std::string> lint_args = {
-      WaveString(args.size() > 2 ? args[2] : "example.txt"),
-      WaveString(source)};
+      "fine line\nTODO: write a real host\ntrailing   \n";
+  const std::vector<std::string> lint_args = {WaveString("example.txt"),
+                                              WaveString(source)};
 
   std::cout << "\nlint():\n";
   auto diagnostics = plugin->Call("lint", lint_args);

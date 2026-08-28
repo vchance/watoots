@@ -383,15 +383,22 @@ impl HostBuilder {
     pub fn build(self) -> Result<Host> {
         let limits = &self.manifest.limits;
 
-        // Network grants parse and take part in the import check, but nothing
-        // enforces the allowlist itself yet. Refusing here keeps default-deny
-        // honest: the alternative is handing a plugin the whole network because
-        // the manifest named one host.
-        if !self.manifest.permissions.net.is_empty() {
+        // An empty `net` list is fine: it grants the socket interfaces while
+        // wasmtime-wasi's own default refuses every connection. A non-empty
+        // allowlist is not, because nothing enforces it yet, and the failure
+        // mode of pretending otherwise is handing a plugin the whole network
+        // because the manifest named one host.
+        if self
+            .manifest
+            .permissions
+            .net
+            .as_ref()
+            .is_some_and(|hosts| !hosts.is_empty())
+        {
             return Err(Error::new(
                 ErrorKind::Manifest,
-                "permissions.net is parsed but not yet enforced; \
-                 remove the grant rather than run with the network open",
+                "a non-empty permissions.net allowlist is not enforced yet; \
+                 use `net = []` to grant the interfaces with no reachable hosts",
             ));
         }
 

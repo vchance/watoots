@@ -183,7 +183,7 @@ fn a_missing_file_reports_not_found() {
 }
 
 #[test]
-fn a_net_grant_is_refused_until_it_is_enforced() {
+fn a_net_allowlist_is_refused_until_it_is_enforced() {
     // Better to fail closed and say so than to hand over the whole network
     // because the manifest named one host.
     let err = Host::builder()
@@ -192,10 +192,25 @@ fn a_net_grant_is_refused_until_it_is_enforced() {
         .unwrap_err();
     assert_eq!(err.kind(), ErrorKind::Manifest);
     assert!(
-        err.message().contains("not yet enforced"),
+        err.message().contains("not enforced yet"),
         "{}",
         err.message()
     );
+    assert!(err.message().contains("net = []"), "{}", err.message());
+}
+
+#[test]
+fn an_empty_net_list_admits_the_interface_with_nothing_reachable() {
+    // A CPython or JavaScript runtime links the socket interfaces whether or
+    // not the plugin opens one. Denying the import would refuse those guests
+    // outright; granting the import while wasmtime-wasi refuses every
+    // connection is what actually matches the situation.
+    let denied = host_with("");
+    assert!(denied.load_binary("net", WANTS_NETWORK.as_bytes()).is_err());
+
+    let granted = host_with("[permissions]\nnet = []\n");
+    let report = granted.inspect(WANTS_NETWORK.as_bytes()).unwrap();
+    assert!(report.is_satisfied(), "{}", report.describe());
 }
 
 #[test]

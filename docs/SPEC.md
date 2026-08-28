@@ -207,7 +207,7 @@ Nothing technically stops incumbents from building this; what stops them is ince
 Each becomes an ADR in `docs/adr/` when made.
 
 - ~~**Name.**~~ Decided 2026-08-28: **watoots** — see `adr/0001-name.md`.
-- **C API on day one, or Rust-first?** Recommendation: day one. It doubles the addressable audience, it's the clearest differentiator from every component host today, and it plays to a C++ background as a showcase.
+- ~~**C API on day one, or Rust-first?**~~ Decided: day one, shipped in M3. `crates/host-capi` (cbindgen), `watoots.hpp`, an installable CMake package, and a C++ host app running Rust, JavaScript and Python plugins over one WIT world. Driving cargo from CMake is `adr/0005-cargo-from-cmake.md`.
 - ~~**License.**~~ Decided 2026-08-28: Apache-2.0 WITH LLVM-exception — see `adr/0002-license.md`.
 - ~~**Host-side dynamic typing.**~~ Decided 2026-08-28: WAVE, via wasmtime's own implementation — see `adr/0004-wave-and-dynamic-typing.md`. It does **not** handle resources (wasmtime maps them to `Unsupported`), so traces carry resource handles as stable IDs beside the WAVE text rather than inside it.
 - **Driving cargo from CMake.** Corrosion, a custom command, or building the

@@ -1,0 +1,14 @@
+# Policy for examples/plugins/rust-lint.
+#
+# A Rust guest built for wasm32-wasip2 needs the monotonic clock and the
+# environment because std imports them, and nothing else. That is the whole
+# capability cost of a Rust plugin.
+
+[permissions]
+clocks = "monotonic"
+env    = {}
+
+[limits]
+memory  = "64MiB"
+fuel    = 200_000_000
+timeout = "5s"

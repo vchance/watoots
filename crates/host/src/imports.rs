@@ -153,6 +153,9 @@ pub fn classify(import: ComponentImport<'_>, host_provided: &BTreeSet<String>) -
         }
         ("filesystem", _) => Requirement::Filesystem,
         ("sockets", _) => Requirement::Network,
+        // Outbound HTTP is network access by another name. A JS or Python guest
+        // links it in by default, so this is not a hypothetical.
+        ("http", _) => Requirement::Network,
         ("clocks", "wall-clock") => Requirement::WallClock,
         ("clocks", _) => Requirement::MonotonicClock,
         ("random", _) => Requirement::Random,
@@ -238,7 +241,10 @@ fn is_granted(requirement: Requirement, permissions: &Permissions) -> bool {
         // manifest cannot separate them here; the read/write split is enforced
         // by what each directory is preopened as.
         Requirement::Filesystem => !permissions.fs.is_empty(),
-        Requirement::Network => !permissions.net.is_empty(),
+        // Granted by the key being present at all. An empty list means the
+        // guest may link the socket interfaces and reach nothing through them,
+        // which is what a scripting-language runtime needs.
+        Requirement::Network => permissions.net.is_some(),
         Requirement::MonotonicClock => permissions.clocks.allows_monotonic(),
         Requirement::WallClock => permissions.clocks.allows_wall(),
         Requirement::Random => permissions.random,
@@ -314,6 +320,17 @@ mod tests {
         for (import, expected) in cases {
             assert_eq!(classify(callable(import), &none), expected, "{import}");
         }
+    }
+
+    #[test]
+    fn http_counts_as_network() {
+        assert_eq!(
+            classify(
+                callable("wasi:http/outgoing-handler@0.2.10"),
+                &provided(&[])
+            ),
+            Requirement::Network
+        );
     }
 
     #[test]

@@ -357,10 +357,16 @@ fn arm(store: &mut Store<State>, limits: &Limits, name: &str) -> Result<()> {
 
 /// Turn manifest grants into a WASI context.
 ///
-/// Only the filesystem and environment need building here. Clocks, randomness,
-/// and sockets are denied by *not being importable*: the intersection check
+/// Only the filesystem and environment need building here. Clocks and
+/// randomness are denied by *not being importable*: the intersection check
 /// refuses to load a component that imports an interface the manifest does not
-/// grant, so there is nothing to switch off in the context afterwards.
+/// grant, so there is nothing to switch off afterwards.
+///
+/// Sockets are the exception, and the reason the two mechanisms both exist. A
+/// CPython or JavaScript guest links the socket interfaces whether or not the
+/// plugin opens one, so `net = []` grants the *import* while wasmtime-wasi 48's
+/// own defaults refuse every connection. We never call `allow_tcp` or
+/// `allow_udp`, so that stays true.
 fn build_wasi_ctx(manifest: &Manifest) -> Result<WasiCtx> {
     let permissions = &manifest.permissions;
     let mut builder = WasiCtx::builder();

@@ -1,0 +1,20 @@
+# Policy for examples/plugins/py-lint.
+#
+# CPython is the most expensive of the three guests, and the bill is itemised
+# below. Note `net = []`: CPython links the socket interfaces unconditionally,
+# so the import has to be granted -- but the empty list means no host is
+# reachable and wasmtime-wasi refuses every connection. Granting the interface
+# and granting reachability are different things, and this is where that
+# distinction earns its keep.
+
+[permissions]
+clocks  = "wall"
+env     = {}
+random  = true          # CPython seeds its hash randomisation at startup
+fs.read = ["${plugin_dir}"]
+net     = []            # interfaces linked by CPython; nothing reachable
+
+[limits]
+memory  = "256MiB"      # a CPython image needs considerably more room
+fuel    = 5_000_000_000
+timeout = "30s"

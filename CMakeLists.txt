@@ -58,6 +58,12 @@ if(WATOOTS_ENABLE_SANITIZERS)
   add_link_options(-fsanitize=address,undefined)
 endif()
 
+# Before any add_subdirectory that calls add_test: tests registered before
+# enable_testing() are silently dropped.
+if(WATOOTS_BUILD_TESTS)
+  enable_testing()
+endif()
+
 add_subdirectory(crates/host-capi)
 
 if(WATOOTS_BUILD_CAPI)
@@ -65,6 +71,5 @@ if(WATOOTS_BUILD_CAPI)
 endif()
 
 if(WATOOTS_BUILD_TESTS)
-  enable_testing()
   add_subdirectory(crates/host-capi/tests)
 endif()

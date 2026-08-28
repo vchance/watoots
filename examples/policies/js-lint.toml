@@ -1,0 +1,20 @@
+# Policy for examples/plugins/js-lint.
+#
+# The same linter in JavaScript costs more, and the difference is visible before
+# a line of it runs. StarlingMonkey -- the JS engine inside the component --
+# needs the wall clock (Date), and the filesystem for module resolution, on top
+# of everything the Rust guest needed.
+#
+# ComponentizeJS's `--disable http --disable random --disable fetch-event`
+# removes three more that were there by default. What is left is what the engine
+# genuinely requires, and this file is where a reviewer sees the bill.
+
+[permissions]
+clocks  = "wall"
+env     = {}
+fs.read = ["${plugin_dir}"]
+
+[limits]
+memory  = "128MiB"   # a JS engine needs more room than a Rust binary
+fuel    = 2_000_000_000
+timeout = "10s"
