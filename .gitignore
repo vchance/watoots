@@ -1,0 +1,7 @@
+/target
+**/*.rs.bk
+Cargo.lock.orig
+*.cwasm
+/build
+/.cache
+.DS_Store

@@ -1,0 +1,517 @@
+<title>Component Sandbox Toolkit</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=Source+Sans+3:ital,wght@0,400;0,600;1,400&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+  :root {
+    --ground: #F6F6FA;
+    --surface: #FFFFFF;
+    --ink: #1A1A2B;
+    --muted: #5E5E74;
+    --hair: #DCDBE6;
+    --accent: #5B48D9;
+    --accent-soft: #ECE9FB;
+    --warn: #A66A12;
+    --warn-soft: #FBF1E2;
+    --good: #2A7A5A;
+    --good-soft: #E4F3EC;
+    --code-bg: #EEEDF5;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground: #12121C;
+      --surface: #1A1A27;
+      --ink: #E8E7F1;
+      --muted: #A3A2B8;
+      --hair: #2C2C3C;
+      --accent: #A092FF;
+      --accent-soft: #262244;
+      --warn: #E0A65A;
+      --warn-soft: #2E2517;
+      --good: #6CC39D;
+      --good-soft: #17302A;
+      --code-bg: #22222F;
+    }
+  }
+  :root[data-theme="dark"] {
+    --ground: #12121C;
+    --surface: #1A1A27;
+    --ink: #E8E7F1;
+    --muted: #A3A2B8;
+    --hair: #2C2C3C;
+    --accent: #A092FF;
+    --accent-soft: #262244;
+    --warn: #E0A65A;
+    --warn-soft: #2E2517;
+    --good: #6CC39D;
+    --good-soft: #17302A;
+    --code-bg: #22222F;
+  }
+
+  body {
+    background: var(--ground);
+    color: var(--ink);
+    font-family: "Source Sans 3", "Segoe UI", system-ui, sans-serif;
+    font-size: 17px;
+    line-height: 1.55;
+    margin: 0;
+  }
+  .page {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 0 48px;
+    max-width: 1120px;
+    margin: 0 auto;
+    padding: 40px 24px 96px;
+  }
+  @media (min-width: 1000px) {
+    .page { grid-template-columns: 220px minmax(0, 1fr); }
+    nav.toc { position: sticky; top: 24px; align-self: start; }
+  }
+  nav.toc {
+    font-size: 14px;
+    border-left: 2px solid var(--hair);
+    padding-left: 16px;
+    margin-bottom: 40px;
+  }
+  nav.toc .label {
+    font-family: "Bricolage Grotesque", "Source Sans 3", sans-serif;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    font-size: 12px;
+    color: var(--muted);
+    margin-bottom: 10px;
+  }
+  nav.toc a { display: block; color: var(--muted); text-decoration: none; padding: 3px 0; }
+  nav.toc a:hover, nav.toc a:focus-visible { color: var(--accent); outline: none; }
+  main { max-width: 72ch; min-width: 0; }
+
+  h1, h2, h3 {
+    font-family: "Bricolage Grotesque", "Source Sans 3", sans-serif;
+    text-wrap: balance;
+    line-height: 1.15;
+    margin: 0;
+  }
+  h1 { font-size: 42px; font-weight: 700; letter-spacing: -0.01em; }
+  h2 { font-size: 26px; font-weight: 700; margin-top: 56px; padding-top: 20px; border-top: 1px solid var(--hair); }
+  h3 { font-size: 19px; font-weight: 700; margin-top: 28px; }
+  h2 + p, h3 + p { margin-top: 12px; }
+  p { margin: 14px 0; }
+  a { color: var(--accent); }
+  code, pre {
+    font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 0.86em;
+  }
+  code { background: var(--code-bg); padding: 1px 5px; border-radius: 3px; }
+  pre { background: var(--code-bg); padding: 14px 16px; overflow-x: auto; border-radius: 4px; line-height: 1.5; }
+  pre code { background: none; padding: 0; }
+
+  header.masthead { margin-bottom: 36px; }
+  .eyebrow {
+    font-family: "Bricolage Grotesque", sans-serif;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    font-size: 12px;
+    color: var(--accent);
+    margin-bottom: 12px;
+  }
+  .masthead p.lede { font-size: 20px; color: var(--muted); margin-top: 14px; max-width: 60ch; }
+  .meta { font-size: 14px; color: var(--muted); margin-top: 18px; display: flex; flex-wrap: wrap; gap: 6px 22px; }
+  .meta b { color: var(--ink); font-weight: 600; }
+
+  .verdict {
+    background: var(--accent-soft);
+    border-left: 3px solid var(--accent);
+    padding: 18px 22px;
+    margin: 28px 0;
+  }
+  .verdict h3 { margin-top: 0; font-size: 16px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--accent); }
+  .verdict ul { margin: 10px 0 0; padding-left: 20px; }
+  .verdict li + li { margin-top: 8px; }
+
+  ul, ol { padding-left: 22px; }
+  li + li { margin-top: 6px; }
+
+  .table-wrap { overflow-x: auto; margin: 18px 0; border: 1px solid var(--hair); border-radius: 4px; }
+  table { border-collapse: collapse; width: 100%; font-size: 14.5px; min-width: 720px; background: var(--surface); }
+  th, td { text-align: left; vertical-align: top; padding: 9px 12px; border-bottom: 1px solid var(--hair); }
+  th {
+    font-family: "Bricolage Grotesque", sans-serif;
+    font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted);
+    background: var(--ground);
+  }
+  tr:last-child td { border-bottom: none; }
+  td.name { font-weight: 600; white-space: nowrap; }
+  .pill {
+    display: inline-block; font-size: 12px; font-weight: 600; padding: 1px 8px; border-radius: 999px;
+    font-family: "Bricolage Grotesque", sans-serif; letter-spacing: 0.02em; white-space: nowrap;
+  }
+  .pill.yes { background: var(--good-soft); color: var(--good); }
+  .pill.no { background: var(--warn-soft); color: var(--warn); }
+  .pill.mid { background: var(--accent-soft); color: var(--accent); }
+
+  .split { display: grid; grid-template-columns: 1fr; gap: 16px; margin: 18px 0; }
+  @media (min-width: 720px) { .split { grid-template-columns: 1fr 1fr; } }
+  .card { background: var(--surface); border: 1px solid var(--hair); border-radius: 4px; padding: 16px 18px; }
+  .card h4 {
+    font-family: "Bricolage Grotesque", sans-serif; font-size: 13px; text-transform: uppercase;
+    letter-spacing: 0.06em; margin: 0 0 10px; color: var(--muted);
+  }
+  .card.in h4 { color: var(--good); }
+  .card.out h4 { color: var(--warn); }
+  .card ul { margin: 0; padding-left: 18px; font-size: 15.5px; }
+  .card li + li { margin-top: 5px; }
+
+  figure { margin: 24px 0; }
+  figure svg { max-width: 100%; height: auto; display: block; color: var(--ink); }
+  figcaption { font-size: 14px; color: var(--muted); margin-top: 10px; }
+
+  .timeline { list-style: none; padding: 0; margin: 18px 0; border-left: 2px solid var(--hair); }
+  .timeline li { position: relative; padding: 0 0 22px 22px; margin: 0; }
+  .timeline li::before {
+    content: ""; position: absolute; left: -7px; top: 6px; width: 12px; height: 12px; border-radius: 50%;
+    background: var(--accent); border: 2px solid var(--ground);
+  }
+  .timeline .when {
+    font-family: "Bricolage Grotesque", sans-serif; font-size: 12px; text-transform: uppercase;
+    letter-spacing: 0.08em; color: var(--muted); font-variant-numeric: tabular-nums;
+  }
+  .timeline .what { font-weight: 600; }
+  .timeline p { margin: 4px 0 0; font-size: 15.5px; }
+
+  .risk { display: grid; grid-template-columns: 1fr; gap: 12px; margin: 18px 0; }
+  .risk .item { background: var(--surface); border: 1px solid var(--hair); border-radius: 4px; padding: 14px 16px; font-size: 15.5px; }
+  .risk .item b { display: block; font-weight: 600; margin-bottom: 4px; }
+  .risk .item span.tag { color: var(--warn); font-weight: 600; }
+
+  .sources { font-size: 14px; color: var(--muted); }
+  .sources li + li { margin-top: 3px; }
+  .footnote { font-size: 14px; color: var(--muted); }
+</style>
+
+<div class="page">
+  <nav class="toc" aria-label="Contents">
+    <div class="label">Contents</div>
+    <a href="#verdict">Verdict</a>
+    <a href="#landscape">Landscape</a>
+    <a href="#engine">Engine readiness</a>
+    <a href="#gaps">Gaps → features</a>
+    <a href="#product">The two pieces</a>
+    <a href="#mvp">MVP scope</a>
+    <a href="#sequence">Sequencing</a>
+    <a href="#risks">Risks</a>
+    <a href="#decisions">Open decisions</a>
+    <a href="#verified">Verified</a>
+    <a href="#sources">Sources</a>
+  </nav>
+
+  <main>
+    <header class="masthead">
+      <div class="eyebrow">Project scoping</div>
+      <h1>Component Sandbox Toolkit</h1>
+      <p class="lede">A batteries-included plugin host for native applications on the WebAssembly component model, plus a WIT-level record/replay tool. Landscape, gaps, and an MVP cut.</p>
+      <div class="meta">
+        <span><b>Verified</b> 2026-08-27, load-bearing claims checked against source</span>
+        <span><b>Engine baseline</b> Wasmtime 48 LTS</span>
+        <span><b>Target</b> WASI 0.2.x, designed for 0.3</span>
+      </div>
+    </header>
+
+    <section id="verdict" class="verdict">
+      <h3>Verdict</h3>
+      <ul>
+        <li><b>The gap is real and unoccupied.</b> Extism (5.7k stars, 15 host SDKs) is the only general "plugins for your app" library, and it still has no component-model support after three years. Every component-model plugin system (Zed, Veloren, wasvy, Spin, wasmCloud) hand-rolled its own host layer in Rust.</li>
+        <li><b>Build "Extism for components":</b> manifest-driven permissions, resource limits, precompile cache, typed host APIs, lifecycle — with a C API on day one so C++ hosts are first-class. That last part is what nobody on the component side offers.</li>
+        <li><b>Record/replay is more open than it first looked.</b> Wasmtime started an engine-level, binary RR (two PRs merged Feb 2026), but the third PR has been idle since April and the <code>wasmtime replay</code> command its flags reference does not exist in the tree. Ours sits above it anyway — WIT-typed, human-readable, host-free replay that turns a bug report into a regression test — and may be the only usable component replay story for a while.</li>
+        <li><b>Drop the WIT compatibility checker</b> — <code>wasm-tools component semver-check</code> already exists. Keep the capability auditor and the WIT-driven fuzzer as follow-ons; neither has a standalone tool.</li>
+      </ul>
+    </section>
+
+    <h2 id="landscape">Landscape</h2>
+    <p>Who ships WASM plugin systems today, and what they built on. The pattern: bytes-ABI systems are polyglot but untyped; component-model systems are typed but Rust-only in practice, and each one rebuilt the host layer from scratch.</p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>System</th><th>Engine</th><th>Components / WIT</th><th>Permissions model</th><th>Hot reload</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="name">Extism 1.30</td><td>Wasmtime 43 (Rust); wazero (Go)</td><td><span class="pill no">No</span> bytes in/out, WASI p1</td><td>Manifest: <code>allowed_hosts</code>, <code>allowed_paths</code>, memory, fuel, timeout</td><td>Reinstantiate</td></tr>
+          <tr><td class="name">Zed</td><td>Wasmtime 48</td><td><span class="pill yes">Yes</span> versioned WIT, wasip2</td><td>Hardcoded: RW preopen of per-extension dir, epoch interruption; no user prompts</td><td>Uninstall/reinstall</td></tr>
+          <tr><td class="name">Lapce 0.4.6</td><td>Wasmtime 14 (pinned)</td><td><span class="pill no">No</span> WASI p1 core modules</td><td>WASI preopens</td><td>unknown</td></tr>
+          <tr><td class="name">Spin 4.1</td><td>Wasmtime 44</td><td><span class="pill yes">Yes</span> wasip2, p3 HTTP middleware</td><td>WASI + <code>allowed_outbound_hosts</code></td><td><code>spin watch</code> rebuild</td></tr>
+          <tr><td class="name">wasmCloud 2.5</td><td>Wasmtime 46</td><td><span class="pill yes">Yes</span> WASI p3 default</td><td>Capability providers via links; <code>implements</code> multiplexing</td><td>Restart only (proposed)</td></tr>
+          <tr><td class="name">Wassette (Microsoft)</td><td>Wasmtime</td><td><span class="pill yes">Yes</span> components as MCP tools</td><td>Deny-by-default permission prompts</td><td>unknown</td></tr>
+          <tr><td class="name">Veloren</td><td>Wasmtime 45</td><td><span class="pill yes">Yes</span> WASI 0.2 WIT</td><td>Sandboxed, shipped to clients</td><td>unknown</td></tr>
+          <tr><td class="name">wasvy (Bevy) 0.0.9</td><td>Wasmtime</td><td><span class="pill yes">Yes</span> WIT for ECS</td><td>"Mod permissions" deferred to phase 2</td><td>Rebuild via <code>wasvy dev</code></td></tr>
+          <tr><td class="name">Shopify Functions</td><td>Fuel-metered, undocumented</td><td><span class="pill no">No</span> core modules</td><td>Hard limits: 11M instr, 10 MB, 5 ms</td><td>n/a</td></tr>
+          <tr><td class="name">Envoy proxy-wasm</td><td>V8 / WAMR / Wasmtime</td><td><span class="pill no">No</span> proxy-wasm ABI 0.2.1</td><td>ABI host calls only</td><td>xDS config swap</td></tr>
+          <tr><td class="name">SpacetimeDB 2.8</td><td>Wasmtime + V8</td><td><span class="pill no">No</span> custom C ABI</td><td>Energy budget → tx rollback</td><td>Republish</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>Adoption signals worth noting: Helm 4 chose Extism explicitly because wazero lacks components and listed "extra permissions" as an open need (HIP-0026); wazero closed component support as <em>not planned</em> in May 2026, which locks Go hosts out of the component ecosystem entirely; the runtime-agnostic <code>wasm_component_layer</code> was abandoned and its fork <code>waclay</code> is at 0.2.</p>
+
+    <h2 id="engine">Engine readiness</h2>
+    <p>What Wasmtime 48 already gives us, so we build on it rather than around it.</p>
+    <ul>
+      <li><b>Component model is Tier 1</b> on x86_64/aarch64 for both Cranelift and Winch. <code>bindgen!</code> supports async, tracing, trappable errors, resource mapping, and (48.0) emits <code>COMPONENT_TYPE</code> for reflection. 48.x is the next LTS line: 24 months of patches.</li>
+      <li><b>Limits are mature:</b> fuel with per-opcode costs (48.0), epoch interruption (~10% overhead, async-yield capable), <code>StoreLimits</code>/<code>ResourceLimiter</code>, pooling allocator with memory/instance caps.</li>
+      <li><b>Precompilation:</b> <code>Engine::precompile_component</code> → <code>.cwasm</code>, plus a built-in compile cache. Wizer now lives in-tree for init-time snapshots.</li>
+      <li><b>No snapshot/restore, and nobody is working on it:</b> issue #4002 has been open since April 2022 with no activity since. The v0.2 checkpoint experiment isn't racing anyone.</li>
+      <li><b>Debug/profile hooks exist:</b> gdbstub guest debugger (<code>wasmtime -g</code>, since 44), core dumps on trap, <code>GuestProfiler</code> emitting Firefox-profiler JSON. DWARF source debugging is officially "best-effort, no maintainer" — we don't touch it.</li>
+      <li><b>WASI:</b> 0.2.12 is the stable, universally-supported target. 0.3.0 was ratified 2026-06-11 (async, <code>stream&lt;T&gt;</code>/<code>future&lt;T&gt;</code>, <code>wasi:io</code> deleted), but <code>wasmtime-wasi::p3</code> is documented as not production-ready and <code>wasm32-wasip3</code> is Rust Tier 3. Ship on 0.2, keep the permission model 0.3-shaped.</li>
+      <li><b>48.0 defaults changed in our favor:</b> <code>wasmtime-wasi</code> now denies TCP/UDP by default and simplified filesystem perms to ro/rw — the same shape a manifest wants.</li>
+      <li><b>Guest languages via wit-bindgen 0.61:</b> Rust, C, C++, C#, Go, MoonBit, D in-tree; JS via ComponentizeJS 0.22; Python via componentize-py 0.25. Enough to demo polyglot plugins honestly.</li>
+    </ul>
+
+    <h2 id="gaps">Gaps → features</h2>
+    <p>Each complaint below is sourced from issues, community meetings, or posts (links in Sources). The right column is what we build in response.</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Ecosystem gap</th><th>Evidence</th><th>Our answer</th></tr></thead>
+        <tbody>
+          <tr><td>No batteries-included component host; every app rebuilds it</td><td>Zed, Veloren, wasvy, Spin each own a bespoke <code>wasm_host.rs</code></td><td>Host library: engine config presets, manifest, WASI wiring, lifecycle, plugin registry</td></tr>
+          <tr><td>Permissions UX is absent or hardcoded</td><td>Zed hardcodes a work dir; wasvy defers; Helm HIP-0026 lists it as open; only Extism and Wassette have grants</td><td>Manifest permissions + <code>inspect</code> that explains a component's imports as a human-readable grant list</td></tr>
+          <tr><td>C/C++ hosts have no component-model option</td><td>Extism is the only polyglot host and it's bytes-ABI; component embedders are Rust-only</td><td>C API (cbindgen) + C++ header from v0.1</td></tr>
+          <tr><td>Host API boilerplate</td><td>wasmtime #9294, #11287, #8857, #9600; "first-class functions in WIT are the gap for SDK generation"</td><td>Dynamic typed calls (<code>Val</code> + WAVE) alongside <code>bindgen!</code>; reentrancy patterns documented, not hidden</td></tr>
+          <tr><td>Debugging plugins is painful</td><td>Wasmtime stability tiers; LLDB step bug #12995; "still painful" (Apr 2026)</td><td>Record/replay at the WIT level: reproduce a plugin bug without the host</td></tr>
+          <tr><td>Hot reload loses state</td><td>wasmtime #4002 open since 2022, no activity since; every app reinstantiates</td><td>v0.2: reload with optional <code>export-state</code>/<code>import-state</code> hook; same-binary checkpoint via memory/global/table copy (feasible, unproven)</td></tr>
+          <tr><td>No typed fuzzing of components</td><td>Only Wasmtime's internal <code>component_api</code> fuzz oracle; no standalone tool</td><td>Follow-on: WIT-driven fuzzer that emits replay files for each crash</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>What we deliberately don't build</h3>
+    <ul>
+      <li><b>WIT compatibility checker</b> — <code>wasm-tools component semver-check</code> covers it. Wrap it in <code>inspect</code>, don't reimplement.</li>
+      <li><b>Engine-level deterministic replay</b> — Wasmtime's <code>rr</code> feature is the right home for that (binary trace, ~4–5% overhead, human-readable explicitly a non-goal). It is currently stalled: <code>RRConfig::{Recording, Replaying}</code> and the <code>rr</code> cargo feature exist, but replay is unimplemented and the last PR has sat since April. We complement it; if it ships, it becomes an optional bit-exact backend.</li>
+      <li><b>Source-level debugging</b> — DWARF in Wasmtime is unmaintained; the new gdbstub debugger is the path, and it's theirs.</li>
+      <li><b>Cross-version state migration</b> (Erlang-style hot code loading) — too big for the first year. Same-binary reload with state hooks is the honest v0.2.</li>
+    </ul>
+
+    <h2 id="product">The two pieces</h2>
+
+    <h3>1. The host library</h3>
+    <p>A Rust crate plus a C API that turns "I have a Wasmtime dependency" into "I have a plugin system." An application declares a WIT world for its plugin interface, then:</p>
+<pre><code>// Rust host
+let host = Host::builder()
+    .manifest_from_file("plugins/policy.toml")?   // permissions + limits
+    .cache_dir(cache)?                              // .cwasm precompile cache
+    .build()?;
+
+let plugin = host.load("plugins/lint.wasm")?;       // validated against the world
+let out: LintResult = plugin.call("lint", &amp;input)?; // typed via bindgen or WAVE</code></pre>
+<pre><code># policy.toml — what the plugin may touch
+[permissions]
+fs.read  = ["${plugin_dir}", "${workspace}/**/*.md"]
+fs.write = ["${plugin_dir}/cache"]
+net      = []                 # denied (also Wasmtime 48's default)
+clocks   = "monotonic"        # no wall clock
+random   = true
+
+[limits]
+memory   = "64MiB"
+fuel     = 50_000_000         # per call
+timeout  = "200ms"            # epoch deadline</code></pre>
+    <p>The manifest is the product. It's what Extism users already understand, what Zed hardcoded, what Helm asked for, and what the component model makes <em>verifiable</em>: at load time we intersect the component's declared imports against the grants and refuse anything not covered — no runtime surprise.</p>
+
+    <h3>2. Record/replay</h3>
+    <p>Every import and export crossing goes through the host library's linker anyway. Recording is a shim that serializes each crossing as a WIT-typed event (WAVE text for readability, a compact binary for size). Replay instantiates the component under a <em>mock host</em> that answers imports from the trace and flags the first divergence.</p>
+
+    <figure>
+      <svg viewBox="0 0 760 330" role="img" aria-label="Record mode: the application's host calls pass through the host library's recording shim into the Wasmtime component, and the shim writes every crossing to a trace file. Replay mode: a mock host reads the trace, drives the same component without the application, and reports the first divergence.">
+        <defs>
+          <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="currentColor"/>
+          </marker>
+        </defs>
+        <!-- Row labels -->
+        <text x="12" y="30" font-size="12" font-weight="600" fill="currentColor" letter-spacing="1">RECORD</text>
+        <text x="12" y="212" font-size="12" font-weight="600" fill="currentColor" letter-spacing="1">REPLAY</text>
+        <!-- Record row -->
+        <rect x="20" y="50" width="140" height="56" rx="4" fill="none" stroke="currentColor" stroke-width="1.5"/>
+        <text x="90" y="74" font-size="13" text-anchor="middle" fill="currentColor">Application</text>
+        <text x="90" y="92" font-size="11" text-anchor="middle" fill="currentColor" opacity="0.7">real host impls</text>
+
+        <rect x="250" y="50" width="200" height="56" rx="4" fill="none" stroke="#5B48D9" stroke-width="2"/>
+        <text x="350" y="74" font-size="13" text-anchor="middle" fill="currentColor">Host library</text>
+        <text x="350" y="92" font-size="11" text-anchor="middle" fill="#5B48D9">recording shim in linker</text>
+
+        <rect x="560" y="50" width="180" height="56" rx="4" fill="none" stroke="currentColor" stroke-width="1.5"/>
+        <text x="650" y="74" font-size="13" text-anchor="middle" fill="currentColor">Wasmtime component</text>
+        <text x="650" y="92" font-size="11" text-anchor="middle" fill="currentColor" opacity="0.7">plugin.wasm</text>
+
+        <line x1="160" y1="70" x2="250" y2="70" stroke="currentColor" stroke-width="1.5" marker-end="url(#arr)"/>
+        <text x="205" y="63" font-size="11" text-anchor="middle" fill="currentColor">exports</text>
+        <line x1="250" y1="90" x2="160" y2="90" stroke="currentColor" stroke-width="1.5" marker-end="url(#arr)"/>
+        <text x="205" y="104" font-size="11" text-anchor="middle" fill="currentColor">imports</text>
+
+        <line x1="450" y1="70" x2="560" y2="70" stroke="currentColor" stroke-width="1.5" marker-end="url(#arr)"/>
+        <text x="505" y="63" font-size="11" text-anchor="middle" fill="currentColor">call</text>
+        <line x1="560" y1="90" x2="450" y2="90" stroke="currentColor" stroke-width="1.5" marker-end="url(#arr)"/>
+        <text x="505" y="104" font-size="11" text-anchor="middle" fill="currentColor">host call</text>
+
+        <!-- Trace file -->
+        <rect x="280" y="140" width="140" height="44" rx="4" fill="none" stroke="#5B48D9" stroke-width="2" stroke-dasharray="5 3"/>
+        <text x="350" y="158" font-size="13" text-anchor="middle" fill="currentColor">trace.wave</text>
+        <text x="350" y="174" font-size="11" text-anchor="middle" fill="currentColor" opacity="0.7">WIT-typed events</text>
+        <line x1="350" y1="106" x2="350" y2="140" stroke="#5B48D9" stroke-width="1.5" marker-end="url(#arr)"/>
+        <text x="362" y="128" font-size="11" fill="#5B48D9">writes every crossing</text>
+
+        <!-- Replay row -->
+        <line x1="350" y1="184" x2="350" y2="232" stroke="#5B48D9" stroke-width="1.5" marker-end="url(#arr)"/>
+        <text x="362" y="212" font-size="11" fill="#5B48D9">reads</text>
+
+        <rect x="250" y="232" width="200" height="56" rx="4" fill="none" stroke="#5B48D9" stroke-width="2"/>
+        <text x="350" y="256" font-size="13" text-anchor="middle" fill="currentColor">Mock host</text>
+        <text x="350" y="274" font-size="11" text-anchor="middle" fill="#5B48D9">answers imports from trace</text>
+
+        <rect x="560" y="232" width="180" height="56" rx="4" fill="none" stroke="currentColor" stroke-width="1.5"/>
+        <text x="650" y="256" font-size="13" text-anchor="middle" fill="currentColor">Wasmtime component</text>
+        <text x="650" y="274" font-size="11" text-anchor="middle" fill="currentColor" opacity="0.7">same plugin.wasm</text>
+
+        <line x1="450" y1="252" x2="560" y2="252" stroke="currentColor" stroke-width="1.5" marker-end="url(#arr)"/>
+        <text x="505" y="245" font-size="11" text-anchor="middle" fill="currentColor">replays exports</text>
+        <line x1="560" y1="272" x2="450" y2="272" stroke="currentColor" stroke-width="1.5" marker-end="url(#arr)"/>
+        <text x="505" y="286" font-size="11" text-anchor="middle" fill="currentColor">compares imports</text>
+
+        <rect x="20" y="232" width="140" height="56" rx="4" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.45"/>
+        <text x="90" y="256" font-size="13" text-anchor="middle" fill="currentColor" opacity="0.45">Application</text>
+        <text x="90" y="274" font-size="11" text-anchor="middle" fill="currentColor" opacity="0.45">not needed</text>
+
+        <line x1="350" y1="288" x2="350" y2="316" stroke="currentColor" stroke-width="1.5" marker-end="url(#arr)"/>
+        <text x="362" y="310" font-size="11" fill="currentColor">first divergence → report, or pass → regression test</text>
+      </svg>
+      <figcaption>Recording is a linker shim in the host library; replay swaps the application for a mock host that serves the same trace. The application never has to be present to reproduce a plugin bug.</figcaption>
+    </figure>
+
+    <p>Why this is different from Wasmtime's own <code>rr</code>: theirs records at the canonical-ABI lowering level for bit-exact engine determinism, in a binary format, and cannot be read or edited. Ours records at the WIT level, is readable and diffable, and a trace is a test fixture: <code>toolkit replay trace.wave --assert</code> is a regression test with no host code. If Wasmtime's replay ever lands, the two compose — theirs for "reproduce exactly", ours for "explain and keep". As of today theirs has recording knobs and no replay, so for components this would be the first working replay of any kind.</p>
+
+    <h2 id="mvp">MVP scope</h2>
+
+    <h3>Host library v0.1</h3>
+    <div class="split">
+      <div class="card in">
+        <h4>In</h4>
+        <ul>
+          <li>Load component from bytes/file; validate against the host's WIT world (<code>wasm-tools component targets</code> logic)</li>
+          <li>Manifest (TOML): fs ro/rw globs, net allowlist, env, clocks, random; memory/fuel/epoch limits</li>
+          <li>Import-intersection check at load: undeclared imports are a load error, not a runtime trap</li>
+          <li>WASI 0.2 wiring driven by the manifest</li>
+          <li>Typed calls two ways: re-exported <code>bindgen!</code> for Rust hosts; dynamic <code>Val</code> + WAVE for C and CLI</li>
+          <li>Precompile cache keyed on engine config hash + component hash</li>
+          <li>Plugin registry: many plugins, one engine, per-plugin store and limits</li>
+          <li>C API via cbindgen + C++ RAII header; CMake package</li>
+          <li>Host-call trace hook (the seam record/replay plugs into)</li>
+          <li>Three sample plugins: Rust, JS (ComponentizeJS), Python (componentize-py) against one WIT world</li>
+        </ul>
+      </div>
+      <div class="card out">
+        <h4>Out (v0.1)</h4>
+        <ul>
+          <li>WASI 0.3 / async component calls</li>
+          <li>Hot reload with state</li>
+          <li>Permission prompts UI (we emit the grant list; the app renders it)</li>
+          <li>Host SDKs beyond Rust and C/C++</li>
+          <li>Cross-component composition (<code>wac</code> is fine for that)</li>
+          <li>Wasmer / WAMR backends</li>
+        </ul>
+      </div>
+    </div>
+
+    <h3>Record/replay v0.1</h3>
+    <div class="split">
+      <div class="card in">
+        <h4>In</h4>
+        <ul>
+          <li>Trace format: header (component hash, world, engine config), then ordered WIT-typed events for every import/export crossing, with resource handles mapped to stable IDs</li>
+          <li>WAVE text encoding + a length-prefixed binary encoding; <code>toolkit trace fmt</code> converts</li>
+          <li>Recorder: shim installed by the host library when <code>record = true</code></li>
+          <li>Replay runner: mock host from trace, drives exports, compares each import call (args) to the trace; first divergence → structured diff</li>
+          <li>Determinism knobs applied on record and replay: NaN canonicalization, deterministic relaxed-SIMD, manifest-pinned clock/random</li>
+          <li><code>toolkit replay --assert</code> exit code for CI; <code>--emit-test</code> writes a Rust test fixture</li>
+        </ul>
+      </div>
+      <div class="card out">
+        <h4>Out (v0.1)</h4>
+        <ul>
+          <li>Recording guest memory or engine state (that's Wasmtime <code>rr</code>'s job)</li>
+          <li>Async/stream imports (WASI 0.3)</li>
+          <li>Trace minimization / shrinking</li>
+          <li>Multi-plugin cross-talk traces</li>
+        </ul>
+      </div>
+    </div>
+
+    <h3>v0.2 candidates</h3>
+    <ul>
+      <li><code>toolkit inspect plugin.wasm</code>: human-readable permission manifest from imports ("reads files under X, no network, uses monotonic clock"), plus <code>semver-check</code> and <code>targets</code> wrapped.</li>
+      <li>Reload: drop/reinstantiate with optional <code>export-state</code>/<code>import-state</code> WIT hooks; experiment with same-binary checkpoint by copying linear memory, globals, and tables through the public API.</li>
+      <li>WIT-driven fuzzer reusing Wasmtime's <code>component_api</code> oracle pattern (or <code>mutatis</code>), emitting a replay trace per crash.</li>
+      <li>Profiler view: wrap <code>GuestProfiler</code> and attribute time to guest vs. host-call vs. boundary marshalling per WIT function.</li>
+    </ul>
+
+    <h2 id="sequence">Sequencing</h2>
+    <p>Assumes evenings-and-weekends pace with one focused person. Milestones are ordered by dependency: the trace hook in M2 is what M4 builds on, and the C API in M3 is what makes M5's demo credible to C++ audiences.</p>
+    <ol class="timeline">
+      <li><div class="when">Weeks 1–2</div><div class="what">M1 — Spike and shape</div><p>Wasmtime 48 embedding with one WIT world, manifest parser, import-intersection check, fuel/epoch/memory limits. Decide the crate layout and the name.</p></li>
+      <li><div class="when">Weeks 3–4</div><div class="what">M2 — Host library core</div><p>Registry, precompile cache, WASI 0.2 wiring from manifest, dynamic <code>Val</code>/WAVE calls, trace hook. Rust sample plugin end to end.</p></li>
+      <li><div class="when">Weeks 5–6</div><div class="what">M3 — C API and polyglot proof</div><p>cbindgen surface, C++ header, CMake package, a tiny C++ host app. JS and Python sample plugins. This is the first publishable state.</p></li>
+      <li><div class="when">Weeks 7–9</div><div class="what">M4 — Record/replay</div><p>Trace format, recorder shim, mock host, divergence diff, <code>--assert</code> and <code>--emit-test</code>. Dogfood by recording the sample plugins.</p></li>
+      <li><div class="when">Weeks 10–11</div><div class="what">M5 — Ship v0.1</div><p>Docs with the manifest as the front page, a 90-second demo (load a plugin, deny a permission, record a bug, replay it in CI), announce on Bytecode Alliance Zulip and r/rust. Ask Zed/wasvy/Veloren maintainers for a review.</p></li>
+      <li><div class="when">Week 12+</div><div class="what">M6 — v0.2 from feedback</div><p>Pick between <code>inspect</code>, reload, and fuzzer based on what the first users actually ask for.</p></li>
+    </ol>
+
+    <h2 id="risks">Risks</h2>
+    <div class="risk">
+      <div class="item"><b><span class="tag">Overlap · low</span> Wasmtime ships engine-level replay</b>Downgraded after checking the tree: replay is unimplemented and the effort has been idle since April 2026. Even if it revives, their RR is deliberately binary and non-readable, so the WIT-level, test-fixture positioning survives. Mitigation: design our trace so an engine RR blob can be attached as an optional exact-reproduction payload.</div>
+      <div class="item"><b><span class="tag">Overlap</span> Extism adds component support</b>They've declined for three years and their Go SDK's engine has closed the door. If they do, a Wasmtime-only, component-native toolkit still wins on typed APIs and C++ ergonomics. Mitigation: ship before year end; be the reference people cite.</div>
+      <div class="item"><b><span class="tag">Churn</span> Wasmtime releases monthly; WASI 0.3 is landing</b>Pin to the 48 LTS line (24 months of patches). Keep the manifest schema 0.3-shaped (per-interface grants, no <code>wasi:io</code> assumptions) so the upgrade is additive.</div>
+      <div class="item"><b><span class="tag">Adoption</span> Existing component hosts won't migrate</b>Zed and Veloren have sunk cost. The audience is the <em>next</em> app — and every C++ app, which has no option today. Mitigation: the C++ host demo is not optional.</div>
+      <div class="item"><b><span class="tag">Security</span> The sandbox is the promise, and Wasmtime still patches escapes</b>A filesystem escape and a p3 heap DoS were fixed 2026-08-20. Mitigation: track advisories, default-deny everything, ship a "what this does and doesn't protect against" page from day one.</div>
+      <div class="item"><b><span class="tag">Scope</span> Record/replay resources and reentrancy are subtle</b>Resource handles and callbacks (wasmtime #9600) complicate a linear trace. Mitigation: v0.1 supports the WIT subset without host-to-guest reentrancy; document the limit rather than half-support it.</div>
+    </div>
+
+    <h2 id="decisions">Open decisions</h2>
+    <ul>
+      <li><b>Name.</b> Needs a crates.io name, a CLI verb, and a C prefix. Worth picking before M1 to avoid a rename.</li>
+      <li><b>C API on day one, or Rust-first?</b> Recommendation: day one. It doubles the addressable audience, it's the clearest differentiator from every component host today, and it plays to your C++ background as a showcase.</li>
+      <li><b>License.</b> Apache-2.0 with LLVM exception matches the Bytecode Alliance ecosystem and removes friction for Zed-style adopters.</li>
+      <li><b>Host-side dynamic typing.</b> WAVE for the C API and CLI keeps us off the bindgen treadmill; confirm WAVE handles resources well enough for our traces before committing.</li>
+      <li><b>Validation targets.</b> Which two maintainers to ask for early review — wasvy (actively wants a permission model) and Helm's plugin team (wrote down the permission need) are the warmest.</li>
+    </ul>
+
+    <h2 id="verified">Verified against source</h2>
+    <p>The claims the plan turns on were checked directly against GitHub on 2026-08-27, separately from the web-research pass. Everything else in the landscape table came from release notes and community pages and is not load-bearing.</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Claim</th><th>Checked</th><th>Result</th></tr></thead>
+        <tbody>
+          <tr><td>Wasmtime latest is 48.0.1</td><td>Releases API</td><td><span class="pill yes">Confirmed</span> v48.0.1, 2026-08-24</td></tr>
+          <tr><td>Zed builds on Wasmtime 48</td><td><code>zed/Cargo.toml</code> on main</td><td><span class="pill yes">Confirmed</span> <code>wasmtime = "48"</code></td></tr>
+          <tr><td>Snapshot/restore unsolved</td><td>wasmtime #4002</td><td><span class="pill yes">Confirmed</span> open; last activity April 2022</td></tr>
+          <tr><td>Wasmtime RR: recording landed, replay not shipped</td><td>PRs #12375, #12576, #12981; <code>config.rs</code>; <code>src/commands/</code></td><td><span class="pill yes">Confirmed</span> two PRs merged Feb 2026; #12981 open, idle since 2026-04-16; <code>RRConfig</code> exists; no <code>replay</code> command in the tree despite CLI flags referencing it</td></tr>
+          <tr><td>Extism has no component-model support</td><td>Releases; issue search</td><td><span class="pill yes">Confirmed</span> v1.30.0 (2026-06-04); only related open issue is #666 "WASI p2 <em>without</em> components", idle since Sep 2025</td></tr>
+          <tr><td>wazero: components not planned</td><td>wazero #2200</td><td><span class="pill yes">Confirmed</span> closed <code>not_planned</code>, 2026-05-08</td></tr>
+          <tr><td>WASI 0.3.x is current</td><td>Releases API</td><td><span class="pill yes">Confirmed</span> v0.3.1, 2026-08-11</td></tr>
+          <tr><td>wasmCloud / Spin / Veloren / wasvy versions; meeting quotes</td><td>—</td><td><span class="pill mid">Web read only</span> not decision-critical</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h2 id="sources">Sources</h2>
+    <ul class="sources">
+      <li><a href="https://github.com/bytecodealliance/wasmtime/releases">Wasmtime releases</a> · <a href="https://bytecodealliance.org/articles/wasmtime-lts">LTS policy</a> · <a href="https://docs.wasmtime.dev/stability-tiers.html">Stability tiers</a> · <a href="https://docs.rs/wasmtime/latest/wasmtime/component/macro.bindgen.html">bindgen! docs</a></li>
+      <li><a href="https://github.com/bytecodealliance/rfcs/blob/main/accepted/wasmtime-debugging.md">Wasmtime debugging RFC</a> · <a href="https://docs.wasmtime.dev/examples-debugging.html">Debugging docs</a> · <a href="https://docs.wasmtime.dev/examples-profiling.html">Profiling docs</a></li>
+      <li>Wasmtime RR: <a href="https://github.com/bytecodealliance/wasmtime/pull/12375">#12375</a>, <a href="https://github.com/bytecodealliance/wasmtime/pull/12576">#12576</a>, <a href="https://github.com/bytecodealliance/wasmtime/pull/12981">#12981</a>, <a href="https://github.com/bytecodealliance/wasmtime-rr-prototyping">prototype repo</a></li>
+      <li>Wasmtime issues: <a href="https://github.com/bytecodealliance/wasmtime/issues/4002">#4002 snapshot/restore</a>, <a href="https://github.com/bytecodealliance/wasmtime/issues/9294">#9294</a>, <a href="https://github.com/bytecodealliance/wasmtime/issues/11287">#11287</a>, <a href="https://github.com/bytecodealliance/wasmtime/issues/8857">#8857</a>, <a href="https://github.com/bytecodealliance/wasmtime/issues/9600">#9600</a>, <a href="https://github.com/bytecodealliance/wasmtime/issues/12995">#12995</a></li>
+      <li><a href="https://wasi.dev/releases/wasi-p3">WASI 0.3</a> · <a href="https://wasi.dev/roadmap">WASI roadmap</a> · <a href="https://doc.rust-lang.org/rustc/platform-support/wasm32-wasip3.html">wasm32-wasip3 platform support</a> · <a href="https://rust-lang.github.io/goals/2026/wasm-components.html">Rust 2026 goal</a></li>
+      <li><a href="https://github.com/bytecodealliance/wit-bindgen">wit-bindgen</a> · <a href="https://github.com/bytecodealliance/wasm-tools">wasm-tools</a> · <a href="https://github.com/bytecodealliance/WASI-Virt">WASI-Virt</a></li>
+      <li><a href="https://github.com/extism/extism">Extism</a> · <a href="https://github.com/extism/extism/discussions/334">Component model stance</a> · <a href="https://github.com/extism/extism/issues/666">WASI p2 issue</a> · <a href="https://extism.org/docs/concepts/manifest/">Manifest</a> · <a href="https://github.com/wazero/wazero/issues/2200">wazero: components not planned</a> · <a href="https://helm.sh/community/hips/hip-0026/">Helm HIP-0026</a></li>
+      <li><a href="https://github.com/zed-industries/zed/blob/main/crates/extension_host/src/wasm_host.rs">Zed wasm_host.rs</a> · <a href="https://zed.dev/docs/extensions/developing-extensions">Zed extension docs</a> · <a href="https://github.com/wasvy-org/wasvy">wasvy</a> · <a href="https://github.com/spinframework/spin/releases">Spin releases</a> · <a href="https://wasmcloud.com/community/2026-07-01-community-meeting/">wasmCloud 2.5</a> · <a href="https://opensource.microsoft.com/blog/2025/08/06/introducing-wassette-webassembly-based-tools-for-ai-agents/">Wassette</a></li>
+      <li><a href="https://wasmcloud.com/community/2025-09-10-community-meeting/">wasmCloud on SDK gaps and shared memory</a> · <a href="https://www.javacodegeeks.com/2026/04/webassembly-in-2026-three-years-of-almost-ready.html">"Three years of almost ready" (Apr 2026)</a> · <a href="https://00f.net/2026/06/23/webassembly-runtimes-2026/">Runtime comparison 2026</a></li>
+      <li><a href="https://github.com/sola-st/wasm-r3">wasm-r3</a> · <a href="https://github.com/danleh/wasabi">Wasabi</a></li>
+    </ul>
+    <p class="footnote">Compiled from two web-research passes plus a direct source check on 2026-08-27. Version numbers and issue states are as of that date.</p>
+  </main>
+</div>
