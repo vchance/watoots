@@ -1,4 +1,4 @@
-<title>Component Sandbox Toolkit</title>
+<title>watoots</title>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=Source+Sans+3:ital,wght@0,400;0,600;1,400&family=JetBrains+Mono:wght@400;600&display=swap">
 <style>
   :root {
@@ -206,8 +206,8 @@
   <main>
     <header class="masthead">
       <div class="eyebrow">Project scoping</div>
-      <h1>Component Sandbox Toolkit</h1>
-      <p class="lede">A batteries-included plugin host for native applications on the WebAssembly component model, plus a WIT-level record/replay tool. Landscape, gaps, and an MVP cut.</p>
+      <h1>watoots</h1>
+      <p class="lede">Formerly "Component Sandbox Toolkit." A batteries-included plugin host for native applications on the WebAssembly component model, plus a WIT-level record/replay tool. Landscape, gaps, and an MVP cut.</p>
       <div class="meta">
         <span><b>Verified</b> 2026-08-27, load-bearing claims checked against source</span>
         <span><b>Engine baseline</b> Wasmtime 48 LTS</span>
@@ -385,7 +385,7 @@ timeout  = "200ms"            # epoch deadline</code></pre>
       <figcaption>Recording is a linker shim in the host library; replay swaps the application for a mock host that serves the same trace. The application never has to be present to reproduce a plugin bug.</figcaption>
     </figure>
 
-    <p>Why this is different from Wasmtime's own <code>rr</code>: theirs records at the canonical-ABI lowering level for bit-exact engine determinism, in a binary format, and cannot be read or edited. Ours records at the WIT level, is readable and diffable, and a trace is a test fixture: <code>toolkit replay trace.wave --assert</code> is a regression test with no host code. If Wasmtime's replay ever lands, the two compose — theirs for "reproduce exactly", ours for "explain and keep". As of today theirs has recording knobs and no replay, so for components this would be the first working replay of any kind.</p>
+    <p>Why this is different from Wasmtime's own <code>rr</code>: theirs records at the canonical-ABI lowering level for bit-exact engine determinism, in a binary format, and cannot be read or edited. Ours records at the WIT level, is readable and diffable, and a trace is a test fixture: <code>watoots replay trace.wave --assert</code> is a regression test with no host code. If Wasmtime's replay ever lands, the two compose — theirs for "reproduce exactly", ours for "explain and keep". As of today theirs has recording knobs and no replay, so for components this would be the first working replay of any kind.</p>
 
     <h2 id="mvp">MVP scope</h2>
 
@@ -425,11 +425,11 @@ timeout  = "200ms"            # epoch deadline</code></pre>
         <h4>In</h4>
         <ul>
           <li>Trace format: header (component hash, world, engine config), then ordered WIT-typed events for every import/export crossing, with resource handles mapped to stable IDs</li>
-          <li>WAVE text encoding + a length-prefixed binary encoding; <code>toolkit trace fmt</code> converts</li>
+          <li>WAVE text encoding + a length-prefixed binary encoding; <code>watoots trace fmt</code> converts</li>
           <li>Recorder: shim installed by the host library when <code>record = true</code></li>
           <li>Replay runner: mock host from trace, drives exports, compares each import call (args) to the trace; first divergence → structured diff</li>
           <li>Determinism knobs applied on record and replay: NaN canonicalization, deterministic relaxed-SIMD, manifest-pinned clock/random</li>
-          <li><code>toolkit replay --assert</code> exit code for CI; <code>--emit-test</code> writes a Rust test fixture</li>
+          <li><code>watoots replay --assert</code> exit code for CI; <code>--emit-test</code> writes a Rust test fixture</li>
         </ul>
       </div>
       <div class="card out">
@@ -445,7 +445,7 @@ timeout  = "200ms"            # epoch deadline</code></pre>
 
     <h3>v0.2 candidates</h3>
     <ul>
-      <li><code>toolkit inspect plugin.wasm</code>: human-readable permission manifest from imports ("reads files under X, no network, uses monotonic clock"), plus <code>semver-check</code> and <code>targets</code> wrapped.</li>
+      <li><code>watoots inspect plugin.wasm</code>: human-readable permission manifest from imports ("reads files under X, no network, uses monotonic clock"), plus <code>semver-check</code> and <code>targets</code> wrapped.</li>
       <li>Reload: drop/reinstantiate with optional <code>export-state</code>/<code>import-state</code> WIT hooks; experiment with same-binary checkpoint by copying linear memory, globals, and tables through the public API.</li>
       <li>WIT-driven fuzzer reusing Wasmtime's <code>component_api</code> oracle pattern (or <code>mutatis</code>), emitting a replay trace per crash.</li>
       <li>Profiler view: wrap <code>GuestProfiler</code> and attribute time to guest vs. host-call vs. boundary marshalling per WIT function.</li>
@@ -474,7 +474,7 @@ timeout  = "200ms"            # epoch deadline</code></pre>
 
     <h2 id="decisions">Open decisions</h2>
     <ul>
-      <li><b>Name.</b> Needs a crates.io name, a CLI verb, and a C prefix. Worth picking before M1 to avoid a rename.</li>
+      <li><b>Name — decided 2026-08-28: <code>watoots</code>.</b> Free on crates.io, npm, PyPI, GitHub, and Homebrew; no <code>wazero</code> adjacency. C prefix <code>wt_</code>, CLI <code>watoots</code>. Recorded as ADR-0001 in the repo.</li>
       <li><b>C API on day one, or Rust-first?</b> Recommendation: day one. It doubles the addressable audience, it's the clearest differentiator from every component host today, and it plays to your C++ background as a showcase.</li>
       <li><b>License.</b> Apache-2.0 with LLVM exception matches the Bytecode Alliance ecosystem and removes friction for Zed-style adopters.</li>
       <li><b>Host-side dynamic typing.</b> WAVE for the C API and CLI keeps us off the bindgen treadmill; confirm WAVE handles resources well enough for our traces before committing.</li>
