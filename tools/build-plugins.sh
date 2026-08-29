@@ -11,7 +11,7 @@ cd "$(dirname "$0")/.."
 root=$PWD
 
 want() {
-  [ "$#" -eq 0 ] && return 0
+  [ "${#targets[@]}" -eq 0 ] && return 0
   for requested in "${targets[@]}"; do
     [ "$requested" = "$1" ] && return 0
   done

@@ -65,14 +65,20 @@ same content as the published scoping page (read-only reference).
 ## Milestones (from the spec)
 M1 spike → M2 host core → M3 C API + polyglot proof (first publishable) →
 M4 record/replay → M5 ship v0.1 → M6 v0.2 from feedback.
-Current: **M5** (ship v0.1). M1-M4 are done. `crates/host` has the engine,
-manifest, import-intersection check, per-call limits, registry, precompile
-cache, dynamic `Val`/WAVE calls, determinism knobs and the trace hook;
-`crates/host-capi` has the cbindgen C API, the C++ RAII header and an
+Current: **M5** (ship v0.1), in progress. M1-M4 are done. `crates/host` has the
+engine, manifest, import-intersection check, per-call limits, registry,
+precompile cache, dynamic `Val`/WAVE calls, determinism knobs and the trace
+hook; `crates/host-capi` has the cbindgen C API, the C++ RAII header and an
 installable CMake package; `crates/trace` has the trace format (text + binary),
 recorder and replay runner; `crates/cli` has `watoots inspect|run|record|replay|
 trace fmt`. `examples/` has one WIT world in Rust, JavaScript and Python, three
 policies, and a C++ host app that runs all three.
+
+M5 so far: version 0.1.0, `docs/MANIFEST.md`, `docs/SECURITY.md`, a rewritten
+README leading with the manifest, `tools/demo.sh`, `CHANGELOG.md`, and CI.
+**Not done, and deliberately: announcing anywhere, and asking maintainers for
+review.** Two things block publishing: no `repository` URL in the crate
+metadata, and no security contact in `docs/SECURITY.md`.
 
 Four things the real guests taught us, worth knowing before debugging a denial:
 a `wasm32-wasip2` Rust guest imports `wasi:clocks/monotonic-clock` and

@@ -154,7 +154,7 @@ fn into_c_string(text: &str) -> Result<*mut c_char, Error> {
 /// Library version, e.g. `"0.0.0"`. Never NULL; static storage.
 #[unsafe(no_mangle)]
 pub extern "C" fn wt_version_string() -> *const c_char {
-    c"0.0.0".as_ptr()
+    c"0.1.0".as_ptr()
 }
 
 /// Stable spelling of a status code, e.g. `"WT_ERR_MANIFEST"`. Never NULL.

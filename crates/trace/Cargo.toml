@@ -2,6 +2,9 @@
 name = "watoots-trace"
 description = "WIT-level record/replay of host-component crossings for watoots plugins."
 readme = "README.md"
+documentation = "https://docs.rs/watoots-trace"
+# TODO before publishing: set `repository` (and `homepage`) once this
+# project has a public URL. cargo warns without them.
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -12,7 +15,7 @@ categories.workspace = true
 
 [dependencies]
 sha2 = "0.11.0"
-watoots = { version = "0.0.0", path = "../host" }
+watoots = { version = "0.1.0", path = "../host" }
 
 [dev-dependencies]
 tempfile = "3.27.0"

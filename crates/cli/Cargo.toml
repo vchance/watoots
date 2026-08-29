@@ -2,6 +2,9 @@
 name = "watoots-cli"
 description = "Command-line interface for watoots: inspect, run, record, and replay WebAssembly component plugins."
 readme = "README.md"
+documentation = "https://docs.rs/watoots-cli"
+# TODO before publishing: set `repository` (and `homepage`) once this
+# project has a public URL. cargo warns without them.
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -17,8 +20,8 @@ path = "src/main.rs"
 
 [dependencies]
 clap = { version = "4.6.6", features = ["derive"] }
-watoots = { version = "0.0.0", path = "../host" }
-watoots-trace = { version = "0.0.0", path = "../trace" }
+watoots = { version = "0.1.0", path = "../host" }
+watoots-trace = { version = "0.1.0", path = "../trace" }
 
 [dev-dependencies]
 tempfile = "3.27.0"

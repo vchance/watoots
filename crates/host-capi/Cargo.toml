@@ -2,6 +2,9 @@
 name = "watoots-capi"
 description = "C API for watoots, the sandboxed plugin host for native applications on the WebAssembly component model."
 readme = "README.md"
+documentation = "https://docs.rs/watoots-capi"
+# TODO before publishing: set `repository` (and `homepage`) once this
+# project has a public URL. cargo warns without them.
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -16,7 +19,7 @@ categories.workspace = true
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [dependencies]
-watoots = { version = "0.0.0", path = "../host" }
+watoots = { version = "0.1.0", path = "../host" }
 
 [build-dependencies]
 cbindgen = "0.29.4"
