@@ -43,7 +43,7 @@ pub mod trace;
 pub mod wave;
 
 pub use error::{Error, ErrorKind, Result};
-pub use host::{Host, HostBuilder, HostCall, HostFunc};
+pub use host::{Host, HostBuilder, HostCall, HostFunc, ImportedFunction};
 pub use imports::{GrantReport, ImportDecision, Requirement};
 pub use manifest::{Clocks, FsGrants, Limits, Manifest, Permissions};
 pub use plugin::Plugin;

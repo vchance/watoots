@@ -371,6 +371,27 @@ fn build_wasi_ctx(manifest: &Manifest) -> Result<WasiCtx> {
     let permissions = &manifest.permissions;
     let mut builder = WasiCtx::builder();
 
+    // Pinned clocks and a seeded generator. A plugin that reads the time or
+    // asks for randomness still gets an answer; it gets the *same* answer on
+    // every run, which is what makes a recording replayable somewhere else.
+    let determinism = &manifest.determinism;
+    if determinism.enabled {
+        builder.wall_clock(PinnedWallClock {
+            at: std::time::Duration::from_secs(determinism.epoch_seconds),
+        });
+        builder.monotonic_clock(SteppingClock {
+            step: determinism.monotonic_step_nanos.max(1),
+            now: std::sync::atomic::AtomicU64::new(0),
+        });
+        builder.secure_random(wasmtime_wasi::Deterministic::new(
+            determinism.seed.as_bytes().to_vec(),
+        ));
+        builder.insecure_random(wasmtime_wasi::Deterministic::new(
+            determinism.seed.as_bytes().to_vec(),
+        ));
+        builder.insecure_random_seed(u128::from(determinism.epoch_seconds));
+    }
+
     for path in &permissions.fs.read {
         preopen(&mut builder, path, FsPerms::ReadOnly)?;
     }
@@ -384,6 +405,41 @@ fn build_wasi_ctx(manifest: &Manifest) -> Result<WasiCtx> {
     }
 
     Ok(builder.build())
+}
+
+/// A wall clock that always reads the same instant.
+struct PinnedWallClock {
+    at: std::time::Duration,
+}
+
+impl wasmtime_wasi::HostWallClock for PinnedWallClock {
+    fn resolution(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(1)
+    }
+
+    fn now(&self) -> std::time::Duration {
+        self.at
+    }
+}
+
+/// A monotonic clock that advances a fixed amount per read.
+///
+/// It has to move: a guest polling for a deadline against a frozen clock spins
+/// forever. It has to move predictably, or the recording does not reproduce.
+struct SteppingClock {
+    step: u64,
+    now: std::sync::atomic::AtomicU64,
+}
+
+impl wasmtime_wasi::HostMonotonicClock for SteppingClock {
+    fn resolution(&self) -> u64 {
+        self.step
+    }
+
+    fn now(&self) -> u64 {
+        self.now
+            .fetch_add(self.step, std::sync::atomic::Ordering::Relaxed)
+    }
 }
 
 fn preopen(builder: &mut wasmtime_wasi::WasiCtxBuilder, path: &str, perms: FsPerms) -> Result<()> {

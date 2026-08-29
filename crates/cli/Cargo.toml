@@ -9,3 +9,16 @@ license.workspace = true
 authors.workspace = true
 keywords.workspace = true
 categories.workspace = true
+
+# The CLI is `watoots`, not `watoots-cli` (ADR-0001).
+[[bin]]
+name = "watoots"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4.6.6", features = ["derive"] }
+watoots = { version = "0.0.0", path = "../host" }
+watoots-trace = { version = "0.0.0", path = "../trace" }
+
+[dev-dependencies]
+tempfile = "3.27.0"

@@ -108,3 +108,25 @@ fn without_a_cache_dir_nothing_is_written() {
         .unwrap();
     assert!(cwasm_files(dir.path()).is_empty());
 }
+
+#[test]
+fn determinism_settings_are_part_of_the_engine_identity() {
+    // NaN canonicalisation changes generated code, so a .cwasm compiled with it
+    // must never be handed to an engine without it. Different keys is what makes
+    // that safe -- and it proves the setting actually reaches the engine.
+    let dir = tempfile::tempdir().unwrap();
+
+    host_with(dir.path(), "[determinism]\nenabled = true\n")
+        .load_binary("deterministic", COMPONENT.as_bytes())
+        .unwrap();
+    assert_eq!(cwasm_files(dir.path()).len(), 1);
+
+    host_with(dir.path(), "[determinism]\nenabled = false\n")
+        .load_binary("fast", COMPONENT.as_bytes())
+        .unwrap();
+    assert_eq!(
+        cwasm_files(dir.path()).len(),
+        2,
+        "determinism must change the engine identity"
+    );
+}

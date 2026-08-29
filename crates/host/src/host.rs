@@ -117,6 +117,34 @@ impl Host {
         Ok(self.report_for(&component))
     }
 
+    /// Every function a component imports, by interface and name.
+    ///
+    /// Compiles but does not instantiate, and does not consult the manifest:
+    /// this answers "what does this plugin expect a host to provide", which is
+    /// what you need before you can decide whether you can provide it. Replay
+    /// uses it to serve every declared import, including ones a recording never
+    /// happened to exercise.
+    pub fn import_functions(&self, wasm: &[u8]) -> Result<Vec<ImportedFunction>> {
+        let component = self.compile(wasm)?;
+        let engine = &self.inner.engine;
+        let mut found = Vec::new();
+
+        for (interface, item) in component.component_type().imports(engine) {
+            let ComponentItem::ComponentInstance(instance) = &item.ty else {
+                continue;
+            };
+            for (func, nested) in instance.exports(engine) {
+                if matches!(nested.ty, ComponentItem::ComponentFunc(_)) {
+                    found.push(ImportedFunction {
+                        interface: interface.to_string(),
+                        func: func.to_string(),
+                    });
+                }
+            }
+        }
+        Ok(found)
+    }
+
     /// Load a component from disk.
     ///
     /// `${plugin_dir}` expands to the directory the component was loaded from,
@@ -285,6 +313,15 @@ impl fmt::Debug for Host {
     }
 }
 
+/// One function a component expects a host to provide.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ImportedFunction {
+    /// Interface name, version included.
+    pub interface: String,
+    /// Function name within the interface.
+    pub func: String,
+}
+
 /// Builder for [`Host`].
 #[derive(Default)]
 pub struct HostBuilder {
@@ -406,6 +443,13 @@ impl HostBuilder {
         config.wasm_component_model(true);
         config.consume_fuel(limits.fuel.is_some());
         config.epoch_interruption(limits.timeout.is_some());
+
+        // Two runs of the same guest must agree on float bit patterns, or a
+        // recorded trace stops reproducing on a different machine.
+        if self.manifest.determinism.enabled {
+            config.cranelift_nan_canonicalization(true);
+            config.relaxed_simd_deterministic(true);
+        }
 
         let engine = Engine::new(&config)
             .map_err(|err| Error::new(ErrorKind::Internal, format!("engine config: {err:?}")))?;

@@ -28,6 +28,25 @@ pub enum ErrorKind {
 }
 
 impl ErrorKind {
+    /// The kind a [`ErrorKind::name`] spelling refers to.
+    ///
+    /// Replay needs this: a trace records a failure by its stable name, and
+    /// reproducing that failure means turning the name back into a kind.
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "WT_ERR_INVALID_ARGUMENT" => Self::InvalidArgument,
+            "WT_ERR_NOT_FOUND" => Self::NotFound,
+            "WT_ERR_MANIFEST" => Self::Manifest,
+            "WT_ERR_PERMISSION_DENIED" => Self::PermissionDenied,
+            "WT_ERR_LOAD" => Self::Load,
+            "WT_ERR_TRAP" => Self::Trap,
+            "WT_ERR_LIMIT_EXCEEDED" => Self::LimitExceeded,
+            "WT_ERR_INTERNAL" => Self::Internal,
+            _ => return None,
+        })
+    }
+
     /// Stable spelling, matching the C enumerator name.
     #[must_use]
     pub fn name(self) -> &'static str {
@@ -123,6 +142,23 @@ mod tests {
         assert_eq!(ErrorKind::Trap as i32, 6);
         assert_eq!(ErrorKind::LimitExceeded as i32, 7);
         assert_eq!(ErrorKind::Internal as i32, 8);
+    }
+
+    #[test]
+    fn every_kind_round_trips_through_its_name() {
+        for kind in [
+            ErrorKind::InvalidArgument,
+            ErrorKind::NotFound,
+            ErrorKind::Manifest,
+            ErrorKind::PermissionDenied,
+            ErrorKind::Load,
+            ErrorKind::Trap,
+            ErrorKind::LimitExceeded,
+            ErrorKind::Internal,
+        ] {
+            assert_eq!(ErrorKind::from_name(kind.name()), Some(kind));
+        }
+        assert_eq!(ErrorKind::from_name("WT_ERR_NONSENSE"), None);
     }
 
     #[test]

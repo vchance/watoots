@@ -25,6 +25,46 @@ pub struct Manifest {
     pub permissions: Permissions,
     /// How much it may consume.
     pub limits: Limits,
+    /// How reproducible its execution has to be.
+    pub determinism: Determinism,
+}
+
+/// Knobs that make two runs of the same plugin agree.
+///
+/// These live in the manifest rather than on the builder because the manifest
+/// travels inside a recorded trace. Replay rebuilds its host from that header,
+/// so record and replay cannot end up configured differently — which would make
+/// a divergence report a statement about the engine rather than the plugin.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct Determinism {
+    /// Canonicalise NaNs, make relaxed-SIMD deterministic, and pin the clocks
+    /// and random generators to fixed values.
+    ///
+    /// On by default. A plugin host's characteristic failure is "it behaved
+    /// differently on a user's machine and I cannot reproduce it", and this is
+    /// what prevents it. NaN canonicalisation costs something on float-heavy
+    /// guests; turn it off there and accept that their traces are less portable.
+    pub enabled: bool,
+    /// What the wall clock reads, in seconds since the Unix epoch.
+    pub epoch_seconds: u64,
+    /// How far the monotonic clock advances per read, in nanoseconds. It must
+    /// move or a guest that polls will spin, and it must move predictably or
+    /// the recording is not reproducible.
+    pub monotonic_step_nanos: u64,
+    /// Seed for the random generators.
+    pub seed: String,
+}
+
+impl Default for Determinism {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            epoch_seconds: 0,
+            monotonic_step_nanos: 1_000_000,
+            seed: "watoots".to_string(),
+        }
+    }
 }
 
 /// Capability grants. Everything defaults to denied.
@@ -257,6 +297,13 @@ mod tests {
         assert!(manifest.permissions.env.is_none());
         assert_eq!(manifest.permissions.clocks, Clocks::None);
         assert!(!manifest.permissions.random);
+    }
+
+    #[test]
+    fn determinism_is_on_unless_switched_off() {
+        assert!(Manifest::parse("").unwrap().determinism.enabled);
+        let off = Manifest::parse("[determinism]\nenabled = false\n").unwrap();
+        assert!(!off.determinism.enabled);
     }
 
     #[test]
