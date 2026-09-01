@@ -60,7 +60,11 @@ same content as the published scoping page (read-only reference).
 - `wasm-tools`, `wac`, `wit-bindgen-cli`, `cargo-component` are **not** installed
   (`cargo install wasm-tools wac-cli wit-bindgen-cli`). Nothing needs them yet:
   host tests build their components from WAT inline, which keeps them hermetic.
-- clang-tidy is not on PATH; `tools/tidy.sh` finds Homebrew's keg-only copy.
+- **LLVM 22 is the pinned major for clang-format and clang-tidy** (ADR-0003).
+  `brew install llvm@22`; `tools/format.sh` and `tools/tidy.sh` find it without
+  configuration, and `format.sh` warns if it falls back to another version.
+  Ubuntu's archive ships 18, whose Google style disagrees — that is why CI
+  installs from `apt.llvm.org` rather than `apt-get install clang-format`.
 
 ## Milestones (from the spec)
 M1 spike → M2 host core → M3 C API + polyglot proof (first publishable) →

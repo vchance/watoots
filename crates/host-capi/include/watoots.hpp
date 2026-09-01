@@ -239,7 +239,7 @@ struct BuilderDeleter {
 // call reported a failure without a message.
 inline Error TakeError(wt_status status, wt_error_t* raw) {
   if (raw == nullptr) {
-    return Error(status, "watoots reported a failure with no message");
+    return {status, "watoots reported a failure with no message"};
   }
   Error error(wt_error_code(raw), wt_error_message(raw));
   wt_error_delete(raw);

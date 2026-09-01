@@ -33,16 +33,36 @@ jobs:
 
   cpp:
     runs-on: ubuntu-latest
+    env:
+      # Both scripts honour these; pointing them at the versioned prefix also
+      # gives tools/tidy.sh a matching clang++ and run-clang-tidy next door,
+      # which is what it looks for.
+      CLANG_FORMAT: /usr/lib/llvm-22/bin/clang-format
+      CLANG_TIDY: /usr/lib/llvm-22/bin/clang-tidy
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-wasip2
       - uses: Swatinem/rust-cache@v2
+
+      # LLVM 22, pinned. Ubuntu's archive ships clang-format 18, and
+      # `BasedOnStyle: Google` is not frozen across LLVM releases -- 18
+      # reformats code that 22 and 23 both accept. `.clang-tidy` sets
+      # `WarningsAsErrors: '*'`, so the check set has to be pinned for the
+      # same reason. See docs/adr/0003-cpp-toolchain.md.
       - name: Install toolchain
         run: |
+          set -eux
+          codename=$(. /etc/os-release && echo "$VERSION_CODENAME")
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
+            | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc >/dev/null
+          echo "deb http://apt.llvm.org/$codename/ llvm-toolchain-$codename-22 main" \
+            | sudo tee /etc/apt/sources.list.d/llvm-22.list
           sudo apt-get update
-          sudo apt-get install -y ninja-build clang-format clang-tidy
+          sudo apt-get install -y ninja-build clang-22 clang-format-22 clang-tidy-22
+          "$CLANG_FORMAT" --version
+          "$CLANG_TIDY" --version
 
       - run: tools/format.sh --check
       - run: tools/build-plugins.sh rust

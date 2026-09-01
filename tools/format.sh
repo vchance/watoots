@@ -22,11 +22,35 @@ if [ "${#files[@]}" -eq 0 ]; then
   exit 0
 fi
 
-fmt=${CLANG_FORMAT:-clang-format}
-if ! command -v "$fmt" >/dev/null 2>&1; then
-  echo "clang-format not found (brew install clang-format)" >&2
+# LLVM 22 is the pinned major (ADR-0003): `BasedOnStyle: Google` is not frozen
+# across releases, so an unpinned clang-format is a source of spurious red. Any
+# 22 will do -- versioned package, Homebrew keg, or an explicit CLANG_FORMAT.
+fmt=${CLANG_FORMAT:-}
+if [ -z "$fmt" ]; then
+  for candidate in \
+    /opt/homebrew/opt/llvm@22/bin/clang-format \
+    /usr/local/opt/llvm@22/bin/clang-format \
+    /usr/lib/llvm-22/bin/clang-format \
+    "$(command -v clang-format-22 2>/dev/null || true)" \
+    "$(command -v clang-format 2>/dev/null || true)"; do
+    if [ -n "$candidate" ] && [ -x "$candidate" ]; then
+      fmt=$candidate
+      break
+    fi
+  done
+fi
+if [ -z "$fmt" ] || ! command -v "$fmt" >/dev/null 2>&1; then
+  echo "clang-format not found (brew install llvm@22)" >&2
   exit 1
 fi
+
+case "$("$fmt" --version)" in
+  *"clang-format version 22."*) ;;
+  *)
+    echo "warning: $fmt is $("$fmt" --version)," >&2
+    echo "         but CI pins LLVM 22; formatting may disagree." >&2
+    ;;
+esac
 
 if [ "${1:-}" = "--check" ]; then
   "$fmt" --dry-run --Werror "${files[@]}"

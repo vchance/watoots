@@ -18,7 +18,14 @@ cd "$(dirname "$0")/.."
 
 tidy=${CLANG_TIDY:-}
 if [ -z "$tidy" ]; then
+  # LLVM 22 is the pinned major (ADR-0003). `.clang-tidy` sets
+  # `WarningsAsErrors: '*'`, so the check set has to be pinned or CI and a
+  # developer's machine disagree about what is an error.
   for candidate in \
+    /opt/homebrew/opt/llvm@22/bin/clang-tidy \
+    /usr/local/opt/llvm@22/bin/clang-tidy \
+    /usr/lib/llvm-22/bin/clang-tidy \
+    "$(command -v clang-tidy-22 2>/dev/null || true)" \
     "$(command -v clang-tidy 2>/dev/null || true)" \
     /opt/homebrew/opt/llvm/bin/clang-tidy \
     /usr/local/opt/llvm/bin/clang-tidy; do

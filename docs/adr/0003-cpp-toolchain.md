@@ -87,6 +87,19 @@ and the pointer-arithmetic checks stay *on*: wrapping a C API needs those casts,
 but each site should carry an explicit `NOLINT`, which keeps the unsafe surface
 of the binding countable.
 
+**LLVM 22 is the pinned major for both linters.** Neither `BasedOnStyle:
+Google` nor the check set behind `WarningsAsErrors: '*'` is frozen across LLVM
+releases, so an unpinned linter turns an upstream release into a red build on
+code nobody touched. This is not hypothetical: CI's first run on GitHub failed
+because Ubuntu noble's archive ships clang-format 18, which reformats a bare
+scope block that 22 and 23 both accept. CI installs `clang-format-22` and
+`clang-tidy-22` from `apt.llvm.org` and points `CLANG_FORMAT` / `CLANG_TIDY` at
+`/usr/lib/llvm-22/bin`; `tools/format.sh` and `tools/tidy.sh` prefer a 22 on
+developer machines too (`brew install llvm@22`), fall back to whatever is on
+`PATH`, and `format.sh` warns when the fallback is not a 22. Bumping the pin is
+a deliberate act: change CI and the scripts together, and reformat in its own
+commit.
+
 `tools/format.sh` and `tools/tidy.sh` wrap both. `tidy.sh` exists because
 clang-tidy is unusable on macOS otherwise: Homebrew's llvm formula is keg-only
 so the binary is not on `PATH`, and it parses with its own clang, which is a
@@ -110,6 +123,9 @@ M4 lands. None of that is wired up yet; the crates are still empty.
 - Configuring the tests needs network access the first time, for GoogleTest.
 - Public API review has a mechanical part: naming, const-correctness, and
   member init are enforced, so review can be about the boundary design.
+- Contributors need LLVM 22 specifically, not just "a clang-tidy". The scripts
+  find it without configuration when it is installed, and say so when it is
+  not.
 
 ## Still open
 
