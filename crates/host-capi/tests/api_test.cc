@@ -5,6 +5,7 @@
 // rather than merely compiles.
 
 #include <cstring>
+#include <optional>
 #include <span>
 #include <string>
 #include <vector>
@@ -18,6 +19,9 @@ namespace {
 // Components are WAT text: wasmtime accepts it, so the tests stay readable and
 // need no guest toolchain.
 std::span<const std::byte> AsBytes(const std::string& text) {
+  // Viewing bytes as bytes. ADR-0003 keeps this check on so each such cast has
+  // to be justified in place rather than disappearing into a blanket exemption.
+  // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
   return {reinterpret_cast<const std::byte*>(text.data()), text.size()};
 }
 
@@ -52,7 +56,7 @@ TEST(CApi, ReportsItsVersion) {
 }
 
 TEST(CApi, LoadsAndCallsAComponent) {
-  wt::Host host = BuildHost();
+  const wt::Host host = BuildHost();
   const std::string wasm = kSelfContained;
 
   auto plugin = host.LoadBinary("answer", AsBytes(wasm));
@@ -61,12 +65,17 @@ TEST(CApi, LoadsAndCallsAComponent) {
 
   auto result = plugin->Call("answer");
   ASSERT_TRUE(result.has_value()) << result.error().Message();
-  ASSERT_TRUE(result->has_value());
-  EXPECT_EQ(**result, "42");
+  // value_or rather than value: bugprone-unchecked-optional-access cannot see
+  // through gtest's fatal-assert macro, so the ASSERT above does not count as
+  // proof of engagement. The assertion still carries the test; the fallback is
+  // unreachable. main.cc reads the same way.
+  const std::optional<std::string>& returned = *result;
+  ASSERT_TRUE(returned.has_value());
+  EXPECT_EQ(returned.value_or(""), "42");
 }
 
 TEST(CApi, AnUngrantedImportFailsTheLoad) {
-  wt::Host host = BuildHost();
+  const wt::Host host = BuildHost();
   const std::string wasm = kWantsNetwork;
 
   auto plugin = host.LoadBinary("net", AsBytes(wasm));
@@ -78,7 +87,7 @@ TEST(CApi, AnUngrantedImportFailsTheLoad) {
 }
 
 TEST(CApi, InspectDescribesWithoutInstantiating) {
-  wt::Host host = BuildHost();
+  const wt::Host host = BuildHost();
   const std::string wasm = kWantsNetwork;
 
   auto report = host.Inspect(AsBytes(wasm));
@@ -96,7 +105,7 @@ TEST(CApi, AMalformedManifestReportsAMessage) {
 }
 
 TEST(CApi, CallingAMissingExportIsNotFound) {
-  wt::Host host = BuildHost();
+  const wt::Host host = BuildHost();
   const std::string wasm = kSelfContained;
   auto plugin = host.LoadBinary("answer", AsBytes(wasm));
   ASSERT_TRUE(plugin.has_value());
@@ -107,7 +116,7 @@ TEST(CApi, CallingAMissingExportIsNotFound) {
 }
 
 TEST(CApi, FuelStopsARunawayGuest) {
-  wt::Host host = BuildHost("[limits]\nfuel = 100_000\n");
+  const wt::Host host = BuildHost("[limits]\nfuel = 100_000\n");
   const std::string wasm = R"(
 (component
   (core module $m (func (export "spin") (loop $l br $l)))
@@ -181,7 +190,7 @@ TEST(CApi, AHostFunctionCanCaptureApplicationState) {
 }
 
 TEST(CApi, MovingAPluginDoesNotDoubleFree) {
-  wt::Host host = BuildHost();
+  const wt::Host host = BuildHost();
   const std::string wasm = kSelfContained;
 
   auto loaded = host.LoadBinary("answer", AsBytes(wasm));

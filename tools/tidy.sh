@@ -12,7 +12,11 @@
 #     standard library and reports "'string' file not found" plus a cascade of
 #     nonsense. So we configure a build tree with the compilers that ship
 #     alongside the clang-tidy we found, purely to get a matching compile
-#     database. Set WATOOTS_BUILD_DIR to use an existing one instead.
+#     database. Set WATOOTS_BUILD_DIR to put that tree somewhere else.
+#
+# The tree is reconfigured every run. CMake is incremental so it costs little,
+# and a stale compile database silently drops translation units -- which is how
+# this script once passed locally while CI failed at the same commit.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -36,24 +40,22 @@ if [ -z "$tidy" ]; then
   done
 fi
 if [ -z "$tidy" ]; then
-  echo "clang-tidy not found (brew install llvm)" >&2
+  echo "clang-tidy not found (brew install llvm@22)" >&2
   exit 1
 fi
 
 bin_dir=$(dirname "$tidy")
 build_dir=${WATOOTS_BUILD_DIR:-build/tidy}
 
-if [ ! -f "$build_dir/compile_commands.json" ]; then
-  configure=(cmake -S . -B "$build_dir" -G Ninja
-    -DCMAKE_BUILD_TYPE=Debug
-    -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
-    -DWATOOTS_BUILD_TESTS=ON)
-  if [ -x "$bin_dir/clang++" ]; then
-    configure+=(-DCMAKE_C_COMPILER="$bin_dir/clang"
-      -DCMAKE_CXX_COMPILER="$bin_dir/clang++")
-  fi
-  "${configure[@]}" >/dev/null
+configure=(cmake -S . -B "$build_dir" -G Ninja
+  -DCMAKE_BUILD_TYPE=Debug
+  -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+  -DWATOOTS_BUILD_TESTS=ON)
+if [ -x "$bin_dir/clang++" ]; then
+  configure+=(-DCMAKE_C_COMPILER="$bin_dir/clang"
+    -DCMAKE_CXX_COMPILER="$bin_dir/clang++")
 fi
+"${configure[@]}" >/dev/null
 
 runner="$bin_dir/run-clang-tidy"
 sources='(crates/host-capi/(include|src|tests)|examples/host-cpp)/.*\.(c|cc|h|hpp)$'

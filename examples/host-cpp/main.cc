@@ -7,7 +7,9 @@
 // serves it a host function, calls typed exports, and never links Rust
 // directly -- only watoots.hpp over the C API.
 
+#include <algorithm>
 #include <cstdlib>
+#include <exception>
 #include <fstream>
 #include <iostream>
 #include <iterator>
@@ -47,9 +49,9 @@ std::vector<std::byte> ReadFile(const std::string& path) {
   const std::vector<char> raw((std::istreambuf_iterator<char>(input)),
                               std::istreambuf_iterator<char>());
   std::vector<std::byte> bytes(raw.size());
-  for (size_t index = 0; index < raw.size(); ++index) {
-    bytes[index] = static_cast<std::byte>(raw[index]);
-  }
+  std::ranges::transform(raw, bytes.begin(), [](char byte) {
+    return static_cast<std::byte>(byte);
+  });
   return bytes;
 }
 
@@ -79,15 +81,12 @@ std::string WaveString(std::string_view text) {
   return out;
 }
 
-}  // namespace
-
-int main(int argc, char** argv) {
-  const std::vector<std::string> args(argv, argv + argc);
+int Run(const std::vector<std::string>& args) {
   if (args.size() < 2) {
-    std::cerr << "usage: " << args[0] << " <plugin.wasm> [policy.toml]\n";
+    std::cerr << "usage: " << args.at(0) << " <plugin.wasm> [policy.toml]\n";
     return EXIT_FAILURE;
   }
-  const std::string& plugin_path = args[1];
+  const std::string& plugin_path = args.at(1);
 
   std::cout << "watoots " << wt_version_string() << '\n';
 
@@ -96,12 +95,12 @@ int main(int argc, char** argv) {
   // guest toolchains need different policies -- compare
   // examples/policies/rust-lint.toml with js-lint.toml.
   const bool have_policy_file = args.size() > 2;
-  auto applied = have_policy_file ? builder.ManifestFromFile(args[2])
+  auto applied = have_policy_file ? builder.ManifestFromFile(args.at(2))
                                   : builder.ManifestFromString(kPolicy);
   if (!applied) {
     return Fail(applied.error());
   }
-  std::cout << "policy: " << (have_policy_file ? args[2] : "(built-in)")
+  std::cout << "policy: " << (have_policy_file ? args.at(2) : "(built-in)")
             << '\n';
 
   // ${plugin_dir} in a policy resolves per plugin, so a grant can name the
@@ -170,4 +169,21 @@ int main(int argc, char** argv) {
   std::cout << "\nhost saw " << log_lines << " log line(s) from the plugin\n";
 
   return EXIT_SUCCESS;
+}
+
+}  // namespace
+
+int main(int argc, char** argv) {
+  try {
+    // argv is a counted array; this is the one place its count and its pointer
+    // have to meet. Every other index in this file is bounds-checked.
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
+    const std::vector<std::string> args(argv, argv + argc);
+    return Run(args);
+  } catch (const std::exception& error) {
+    // A host that lets an exception escape main gets std::terminate and no
+    // diagnostic, which is a poor advertisement for a sandbox.
+    std::cerr << "watoots: " << error.what() << '\n';
+    return EXIT_FAILURE;
+  }
 }

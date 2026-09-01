@@ -89,5 +89,15 @@ CheckOptions:
     value: CamelCase
   - key: readability-identifier-naming.TypedefCase
     value: CamelCase
+  # std::span has no .at() before C++26, so demanding a checked accessor on a
+  # view is a requirement nothing can satisfy at our C++20 floor. Containers
+  # that do have one stay covered.
+  - key: cppcoreguidelines-pro-bounds-avoid-unchecked-container-access.ExcludeClasses
+    value: '::std::span'
   - key: readability-identifier-naming.MacroDefinitionCase
     value: UPPER_CASE
+    # Google's own include-guard convention is PATH_FILE_H_ -- upper case with
+    # a trailing underscore -- which MacroDefinitionCase rejects. Exempt the
+    # guards rather than break the style this file exists to enforce.
+  - key: readability-identifier-naming.MacroDefinitionIgnoredRegexp
+    value: '[A-Z0-9_]+_(H|HPP)_'

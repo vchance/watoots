@@ -468,7 +468,13 @@ class HostBuilder {
     if (status != WT_OK) {
       return unexpected(internal::TakeError(status, error));
     }
-    return Host(host, std::move(functions_));
+    auto functions = std::move(functions_);
+    // Spent, and definitively so. The C layer already refuses a second build,
+    // but that invariant lives across the FFI boundary where neither the
+    // compiler nor the static analyser can see it -- so leave the vector empty
+    // rather than merely moved-from.
+    functions_.clear();
+    return Host(host, std::move(functions));
   }
 
  private:
