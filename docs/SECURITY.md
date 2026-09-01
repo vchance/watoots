@@ -71,9 +71,22 @@ toolchain.
 
 ## Reporting a vulnerability
 
-> **Not yet set up.** This project has no published security contact. Before
-> v0.1 is announced anywhere, add one here — a private disclosure channel, and
-> a statement of how quickly you intend to respond.
+Email **von.chance@venuxsystems.com**. Do not open a public issue for a
+suspected sandbox escape, a permission that is granted when the manifest did
+not grant it, or a way to read host memory from a guest.
 
-Please do not open a public issue for a suspected sandbox escape in Wasmtime
-itself; report those to the Bytecode Alliance directly.
+What you can expect, stated at the pace one person can actually hold to:
+
+- Acknowledgement within **5 business days**.
+- An assessment — whether it reproduces, and what the fix looks like — within
+  **30 days**.
+- A fix released, or a public statement of why there will not be one, within
+  **90 days** of the report. If a report needs longer, you will hear why before
+  the 90 days are up rather than after.
+
+Credit in the changelog and the advisory unless you would rather not be named.
+
+Please do not report a sandbox escape in Wasmtime itself here; those go to the
+[Bytecode Alliance](https://bytecodealliance.org/security) directly, and they
+have a real embargo process. If you are unsure which layer a bug is in, mail
+here and it will get routed.
