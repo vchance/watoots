@@ -8,6 +8,8 @@ edition = "2024"
 # MSRV is whatever Wasmtime 48 requires (ADR-0002 line in CLAUDE.md).
 rust-version = "1.95"
 license = "Apache-2.0 WITH LLVM-exception"
+repository = "https://github.com/vchance/watoots"
+homepage = "https://github.com/vchance/watoots"
 authors = ["Von Chance"]
 keywords = ["wasm", "wasmtime", "component-model", "plugin", "sandbox"]
 categories = ["wasm"]

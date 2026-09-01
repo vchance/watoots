@@ -3,12 +3,12 @@ name = "watoots"
 description = "Sandboxed plugin host for native applications on the WebAssembly component model, built on Wasmtime."
 readme = "README.md"
 documentation = "https://docs.rs/watoots"
-# TODO before publishing: set `repository` (and `homepage`) once this
-# project has a public URL. cargo warns without them.
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 authors.workspace = true
 keywords.workspace = true
 categories.workspace = true
