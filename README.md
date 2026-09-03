@@ -1,5 +1,12 @@
 # watoots
 
+> **Work in progress — v0.1 is not released.** Nothing is published to
+> crates.io, there is no tag, and the API can change without ceremony until
+> there is one. What is here works and is tested in CI: the host, the C API,
+> record/replay, and three sample plugins in three languages over one WIT
+> world. What is missing is a release and anyone else's opinion. Read it,
+> build it, tell me where it is wrong — but do not pin a dependency on it yet.
+
 A batteries-included plugin host for native applications on the WebAssembly
 component model, plus WIT-level record/replay. Built on Wasmtime 48 (LTS).
 
