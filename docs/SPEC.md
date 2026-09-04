@@ -62,6 +62,7 @@ What Wasmtime 48 already gives us, so we build on it rather than around it.
 - **Engine-level deterministic replay** — Wasmtime's `rr` feature is the right home for that (binary trace, ~4–5% overhead, human-readable explicitly a non-goal). It is currently stalled: `RRConfig::{Recording, Replaying}` and the `rr` cargo feature exist, but replay is unimplemented and the last PR has sat since April. We complement it; if it ships, it becomes an optional bit-exact backend.
 - **Source-level debugging** — DWARF in Wasmtime is unmaintained; the new gdbstub debugger is the path, and it's theirs.
 - **Cross-version state migration** (Erlang-style hot code loading) — too big for the first year. Same-binary reload with state hooks is the honest v0.2.
+- **Guest-emitted metrics** — counters, gauges and histograms reported *by the plugin*. Label cardinality from untrusted code is unbounded, and unbounded cardinality is a denial of service on the metrics backend; fuel limits computation, not what crosses the boundary. Host-observed metrics need no guest API — `TraceHook` already sees every crossing. See [ADR-0006](adr/0006-logging-and-metrics.md), which also adopts `wasi:logging` as a granted capability.
 
 ## The two pieces
 
