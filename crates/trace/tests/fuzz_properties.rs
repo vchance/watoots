@@ -277,10 +277,18 @@ proptest! {
 ///
 /// Empty and whitespace-padded values are excluded, and that exclusion is a
 /// *finding* rather than a convenience: see
-/// `the_text_encoding_cannot_carry_an_empty_or_space_padded_value`. Nothing
-/// `to_wave` produces is empty or padded — the smallest renderings are `""`,
-/// `[]` and `{}` — so a recorded trace never contains one, and this strategy
-/// generates the values a recording can actually hold.
+/// Empty and whitespace-padded values are included on purpose: they were a
+/// defect once, and the filter that used to exclude them here is exactly how a
+/// generator stops finding the bug it found.
+///
+/// A raw line break is excluded, and the distinction matters. Empty and padded
+/// values were *representable* and mishandled — a bug. A value containing
+/// `\n` or `\r` is not representable at all: the text encoding is line
+/// oriented and values are written unquoted, because they are already WAVE and
+/// quoting them would double-escape. `to_wave` escapes control characters, so
+/// no recording can hold one. That is a contract, pinned by
+/// `a_value_cannot_contain_a_raw_line_break`, not an exclusion that hides
+/// anything.
 fn awkward() -> impl Strategy<Value = String> {
     prop_oneof![
         Just("arg \"x\"".to_string()),
@@ -293,14 +301,9 @@ fn awkward() -> impl Strategy<Value = String> {
         Just("[{line: 1, message: \"unresolved TODO\"}]".to_string()),
         ".{0,24}",
     ]
-    .prop_filter(
-        "the text encoding cannot carry an empty or whitespace-padded value",
-        |value| {
-            !value.is_empty()
-                && !value.starts_with(char::is_whitespace)
-                && !value.ends_with(char::is_whitespace)
-        },
-    )
+    .prop_filter("values cannot contain a raw line break", |value| {
+        !value.contains(['\n', '\r'])
+    })
 }
 
 /// An error message. Unrestricted on purpose: messages are quoted and escaped
@@ -461,20 +464,17 @@ proptest! {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn the_text_encoding_cannot_carry_an_empty_or_space_padded_value() {
-    // `to_text` writes `  arg {value}`; `from_text` reads the line back with
-    // `trim().strip_prefix("arg ")`. For an empty value that leaves the bare
-    // word `arg`, which the outer loop then rejects as an unknown keyword — so
-    // the encoder produces a file its own parser refuses. A value padded with
-    // whitespace loses the padding to the same `trim`, and to the `trim_start`
-    // that `split_once` does on the rest of a `value` line.
+fn the_text_encoding_carries_an_empty_or_space_padded_value() {
+    // Was a defect the properties found: `to_text` wrote `  arg {value}` and
+    // `from_text` read it back with `trim().strip_prefix("arg ")`. An empty
+    // value left the bare word `arg`, which the outer loop rejected as an
+    // unknown keyword -- the encoder produced a file its own parser refused --
+    // and a padded value lost its padding to the same `trim`.
     //
-    // Unreachable from a recording: `to_wave` has no empty rendering (the
-    // shortest are `""`, `[]` and `{}`) and never emits trailing whitespace, so
-    // every argument in a real trace is safe. It is reachable by hand-editing a
-    // trace, which the text encoding exists to invite — and there it fails
-    // loudly with a line number rather than silently, which is the right
-    // failure to have if you have to have one.
+    // Unreachable from a recording, since `to_wave` has no empty rendering and
+    // never emits edge whitespace. Reachable by hand-editing a trace, which is
+    // a thing the text encoding exists to invite, so it is fixed rather than
+    // documented: indentation is trimmed, the value is not.
     let empty = Trace {
         header: Header::default(),
         events: vec![Event::ExportCall {
@@ -482,12 +482,7 @@ fn the_text_encoding_cannot_carry_an_empty_or_space_padded_value() {
             args: vec![String::new()],
         }],
     };
-    let err = text::from_text(&text::to_text(&empty)).unwrap_err();
-    assert!(
-        err.message().contains("unknown keyword"),
-        "{}",
-        err.message()
-    );
+    assert_eq!(text::from_text(&text::to_text(&empty)).unwrap(), empty);
 
     let padded = Trace {
         header: Header::default(),
@@ -496,16 +491,15 @@ fn the_text_encoding_cannot_carry_an_empty_or_space_padded_value() {
             outcome: Outcome::Value(Some("  1 ".to_string())),
         }],
     };
-    let back = text::from_text(&text::to_text(&padded)).unwrap();
-    assert_eq!(
-        back.events[0],
-        Event::ExportReturn {
-            func: "run".to_string(),
-            outcome: Outcome::Value(Some("1".to_string())),
-        }
-    );
+    assert_eq!(text::from_text(&text::to_text(&padded)).unwrap(), padded);
 
-    // The binary framing has neither problem: it is length-prefixed.
+    // Trailing whitespace is significant, so a bare `arg` -- what an editor
+    // that strips it leaves behind -- still reads as the empty string rather
+    // than failing.
+    let stripped = text::to_text(&empty).replace("arg \n", "arg\n");
+    assert_eq!(text::from_text(&stripped).unwrap(), empty);
+
+    // The binary framing never had either problem: it is length-prefixed.
     assert_eq!(
         binary::from_bytes(&binary::to_bytes(&empty)).unwrap(),
         empty
@@ -517,59 +511,43 @@ fn the_text_encoding_cannot_carry_an_empty_or_space_padded_value() {
 }
 
 #[test]
-fn the_text_encoding_normalises_a_manifest_it_re_indents() {
-    // The manifest is written out two-space indented and read back a line at a
-    // time with a `\n` appended to each, so a manifest that did not end in a
-    // newline gains one, and a manifest that is nothing but whitespace
-    // disappears (`to_text` skips a blank block). This one *is* reachable:
-    // `watoots record -m policy.toml` puts the file's bytes in the header
-    // verbatim, and a TOML file with no final newline is ordinary.
-    //
-    // Left alone because it is lossless where it counts. The header exists so
-    // replay can rebuild the host, and it does that through `Manifest::parse`,
-    // which cannot tell the two spellings apart.
-    let unterminated = Trace {
-        header: Header {
-            manifest_toml: "[limits]\nfuel = 1".to_string(),
-            ..Header::default()
-        },
-        events: Vec::new(),
-    };
-    let back = text::from_text(&text::to_text(&unterminated)).unwrap();
-    assert_eq!(back.header.manifest_toml, "[limits]\nfuel = 1\n");
-    assert_eq!(
-        Manifest::parse(&back.header.manifest_toml)
-            .unwrap()
-            .limits
-            .fuel,
-        Manifest::parse(&unterminated.header.manifest_toml)
-            .unwrap()
-            .limits
-            .fuel,
-        "the two spellings have to mean the same policy, or replay is not \
-         reproducing the run it claims to"
-    );
+fn the_text_encoding_keeps_a_manifest_byte_for_byte() {
+    // Was a defect the properties found, and the only one of the four
+    // reachable in practice: `watoots record -m policy.toml` puts the file's
+    // bytes in the header verbatim, TOML without a final newline is ordinary,
+    // and the encoder used `lines()` -- which cannot tell "a\nb" from "a\nb\n"
+    // -- so the manifest gained a newline it did not have. Now split('\n')
+    // writes the empty tail element and join("\n") puts it back.
+    for manifest in [
+        "[limits]\nfuel = 1",
+        "[limits]\nfuel = 1\n",
+        "[limits]\n\nfuel = 1\n",
+        "   ",
+        "",
+    ] {
+        let trace = Trace {
+            header: Header {
+                manifest_toml: manifest.to_string(),
+                ..Header::default()
+            },
+            events: vec![Event::ExportCall {
+                func: "run".to_string(),
+                args: vec!["1".to_string()],
+            }],
+        };
+        let back = text::from_text(&text::to_text(&trace)).unwrap();
+        assert_eq!(back, trace, "manifest {manifest:?} did not survive");
+        assert_eq!(
+            binary::from_bytes(&binary::to_bytes(&trace)).unwrap(),
+            trace
+        );
+    }
 
-    let blank = Trace {
-        header: Header {
-            manifest_toml: "   ".to_string(),
-            ..Header::default()
-        },
-        events: Vec::new(),
-    };
-    assert_eq!(
-        text::from_text(&text::to_text(&blank))
-            .unwrap()
-            .header
-            .manifest_toml,
-        ""
-    );
-
-    // Again, the binary framing keeps the bytes it was given.
-    assert_eq!(
-        binary::from_bytes(&binary::to_bytes(&unterminated)).unwrap(),
-        unterminated
-    );
+    // And the policy still parses the same either way, which is what replay
+    // actually depends on.
+    let unterminated = Manifest::parse("[limits]\nfuel = 1").unwrap();
+    let terminated = Manifest::parse("[limits]\nfuel = 1\n").unwrap();
+    assert_eq!(unterminated.limits.fuel, terminated.limits.fuel);
 }
 
 #[test]
@@ -611,4 +589,31 @@ fn a_trapping_call_replays_as_a_failure() {
 
     let report = replay(&trace, wasm).unwrap();
     assert!(report.is_faithful(), "{}", report.describe());
+}
+
+#[test]
+fn a_value_cannot_contain_a_raw_line_break() {
+    // The contract behind `awkward`'s one remaining filter, written down so it
+    // is a decision rather than a convenience. The text encoding writes values
+    // unquoted -- they are WAVE already, and quoting would double-escape -- so
+    // a raw `\n` or `\r` inside one cannot survive a line-oriented format.
+    //
+    // Nothing can put one there: WAVE escapes control characters, so `to_wave`
+    // renders a carriage return as the two characters `\` and `r`.
+    let rendered = watoots::to_wave(&watoots::Val::String("\r\n".into())).unwrap();
+    assert!(!rendered.contains(['\n', '\r']), "{rendered:?}");
+    assert_eq!(rendered, r#""\r\n""#);
+
+    // The binary encoding has no such contract, and keeps the bytes.
+    let trace = Trace {
+        header: Header::default(),
+        events: vec![Event::ExportReturn {
+            func: "run".to_string(),
+            outcome: Outcome::Value(Some("\r".to_string())),
+        }],
+    };
+    assert_eq!(
+        binary::from_bytes(&binary::to_bytes(&trace)).unwrap(),
+        trace
+    );
 }

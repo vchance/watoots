@@ -21,9 +21,14 @@ pub fn to_text(trace: &Trace) -> String {
         trace.header.component_sha256
     ));
     out.push_str(&format!("plugin {}\n", trace.header.plugin));
-    if !trace.header.manifest_toml.trim().is_empty() {
+    if !trace.header.manifest_toml.is_empty() {
         out.push_str("manifest\n");
-        for line in trace.header.manifest_toml.lines() {
+        // split('\n'), not lines(): "a\nb\n" splits to ["a", "b", ""] and the
+        // empty tail is what records the trailing newline. lines() drops it, so
+        // a manifest without one used to gain one on the way back in -- and
+        // `record -m policy.toml` stores the file's bytes verbatim, so TOML
+        // without a final newline reached this path in practice.
+        for line in trace.header.manifest_toml.split('\n') {
             out.push_str("  ");
             out.push_str(line);
             out.push('\n');
@@ -165,16 +170,25 @@ pub fn from_text(text: &str) -> Result<Trace> {
             }
             "plugin" => header.plugin = rest.to_string(),
             "manifest" => {
-                let mut manifest = String::new();
+                let mut block: Vec<&str> = Vec::new();
                 while let Some((_, next)) = lines.peek() {
-                    if !next.starts_with("  ") {
+                    // Indentation only. A bare empty line ends the block: it is
+                    // the structural blank between the header and the events,
+                    // and treating it as manifest content swallows the
+                    // separator. The cost is that an editor which strips
+                    // trailing whitespace turns the final `  ` line into `` and
+                    // so drops the manifest's trailing newline -- lossless as
+                    // far as `Manifest::parse` is concerned, which is the only
+                    // thing that reads it back.
+                    let Some(rest) = next.strip_prefix("  ") else {
                         break;
-                    }
-                    manifest.push_str(&next[2..]);
-                    manifest.push('\n');
+                    };
+                    block.push(rest);
                     lines.next();
                 }
-                header.manifest_toml = manifest;
+                // Rejoining with \n undoes the split above exactly: the empty
+                // tail element becomes the trailing newline again.
+                header.manifest_toml = block.join("\n");
             }
             "export-call" => {
                 let args = collect_args(&mut lines);
@@ -234,7 +248,7 @@ fn split_pair(rest: &str, at: usize) -> Result<(String, String)> {
 fn collect_args(lines: &mut Lines<'_>) -> Vec<String> {
     let mut args = Vec::new();
     while let Some((_, next)) = lines.peek() {
-        let Some(value) = next.trim().strip_prefix("arg ") else {
+        let Some(value) = arg_value(next) else {
             break;
         };
         args.push(value.to_string());
@@ -243,15 +257,51 @@ fn collect_args(lines: &mut Lines<'_>) -> Vec<String> {
     args
 }
 
+/// The value on an `arg` line, or `None` if this is not one.
+///
+/// Indentation is free-form, so the front is trimmed. The value is not: it is
+/// taken verbatim from the first character after `arg `, so a value that ends
+/// in a space survives, and a line that is bare `arg` carries the empty string
+/// rather than failing to parse. Trimming the tail used to lose both, and the
+/// empty case produced a line -- `  arg ` -- that this parser then rejected as
+/// an unknown keyword, so `to_text` could emit a file `from_text` refused.
+///
+/// Trailing whitespace is therefore significant. An editor that strips it will
+/// change a value that ends in a space; no value `to_wave` produces does.
+fn arg_value(line: &str) -> Option<&str> {
+    let rest = line.trim_start().strip_prefix("arg")?;
+    match rest.strip_prefix(' ') {
+        Some(value) => Some(value),
+        // A bare `arg`, which is what an editor leaves of `arg ` when it strips
+        // the trailing space.
+        None if rest.is_empty() => Some(""),
+        None => None,
+    }
+}
+
+/// Everything after `<keyword> ` on a front-trimmed line, verbatim.
+///
+/// `split_once` trims the front of the tail, which is right for names and
+/// wrong for values. This is the value-shaped reader.
+fn keyword_value<'a>(trimmed: &'a str, keyword: &str) -> &'a str {
+    trimmed
+        .strip_prefix(keyword)
+        .and_then(|rest| rest.strip_prefix(' '))
+        .unwrap_or("")
+}
+
 fn collect_outcome(lines: &mut Lines<'_>, at: usize) -> Result<Outcome> {
     let Some((_, next)) = lines.peek().copied() else {
         return Err(Error::new(format!("line {at}: missing outcome")));
     };
-    let trimmed = next.trim();
+    // Front-trimmed only, for the same reason as `arg_value`: a `value` line
+    // carries WAVE text, and trimming its tail silently rewrote any value that
+    // ended in a space.
+    let trimmed = next.trim_start();
     let (keyword, rest) = split_once(trimmed);
     let outcome = match keyword {
         "unit" => Outcome::Value(None),
-        "value" => Outcome::Value(Some(rest.to_string())),
+        "value" => Outcome::Value(Some(keyword_value(trimmed, "value").to_string())),
         "error" => {
             let (status, message) = rest
                 .split_once(char::is_whitespace)

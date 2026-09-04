@@ -158,3 +158,44 @@ property 3. That bug only appears when one export is called more than once in a
 session, which no fixed test does. That single result is the argument for
 having written this.
 
+## Addendum — 2026-09-04, on fixing what it found
+
+Three of the four defects are fixed; the fourth is upstream.
+
+**The manifest header keeps its bytes.** `to_text` used `lines()`, which cannot
+tell `"a\nb"` from `"a\nb\n"`. `split('\n')` can: it yields an empty tail
+element for a trailing newline, and `join("\n")` puts it back. One consequence
+is worth knowing — a manifest ending in a newline now emits a final line of two
+spaces, so an editor that strips trailing whitespace drops the newline again.
+That is lossless as far as `Manifest::parse` is concerned, which is the only
+thing that reads the header back.
+
+**An `arg` or `value` line carries its value verbatim.** Indentation is
+trimmed, the value is not, and a bare `arg` is the empty string rather than a
+parse error. The encoder can no longer emit a file its own parser refuses.
+
+**The filter that dodged the bug is gone**, which is the part that matters. A
+generator that excludes the values a defect lives in stops finding it, so
+`awkward()` now produces empty and padded values.
+
+Removing it immediately found a fifth thing, and it is a different kind. A
+value containing `\r` cannot survive a line-oriented encoding — values are
+written unquoted because they are already WAVE, and quoting would
+double-escape. Nothing can put one there: `to_wave` escapes control characters.
+So this is a contract rather than a bug, and the distinction is the reason
+`a_value_cannot_contain_a_raw_line_break` exists as an explicit test. One
+filter remains in `awkward()`; it is that contract, and it says so.
+
+**No `.proptest-regressions` file is committed.** The campaign produced one, for
+the `\r` case, and it was deleted rather than checked in: the generator now
+filters that value, so replaying the seed yields a rejected case and never a
+failure. A saved seed that cannot reproduce is worse than no file, and the case
+is pinned by a named test instead. The consequence recorded above — that a
+regression file is a fixture to read in review — stands for seeds that still
+reproduce.
+
+**WAVE's flag reordering is upstream and stays.** `wasm-wave 0.254` collects
+flag labels into a `BTreeMap`; fixing it means a patch to the Bytecode
+Alliance, not to this repository. Record/replay is unaffected, since traces
+compare rendered text and lowering maps labels to bits.
+
