@@ -2296,6 +2296,9 @@ dependencies = [
  "wasm-wave",
  "wasmtime",
  "wasmtime-wasi",
+ "wat",
+ "wit-component",
+ "wit-parser",
 ]
 
 [[package]]
@@ -2314,6 +2317,8 @@ dependencies = [
  "tempfile",
  "watoots",
  "watoots-trace",
+ "wit-component",
+ "wit-parser",
 ]
 
 [[package]]
@@ -2596,6 +2601,7 @@ dependencies = [
  "wasm-encoder 0.254.0",
  "wasm-metadata",
  "wasmparser 0.254.0",
+ "wat",
  "wit-parser",
 ]
 

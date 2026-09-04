@@ -21,7 +21,17 @@ sha2 = "0.11.0"
 toml = "1.1.4"
 wasm-wave = "0.254"
 wasmtime = { version = "48", features = ["wave"] }
+# Pinned to the copy Wasmtime 48 already pulls in: a semver-incompatible
+# version compiles a second wasmparser, and its Resolve and WorldId are then
+# different types from the ones in Wasmtime's copy. See ADR-0007, and
+# ADR-0004 for the identical constraint on wasm-wave.
+wit-component = "0.254"
+wit-parser = "0.254"
 wasmtime-wasi = "48"
 
 [dev-dependencies]
+# Only the tests need WAT as *binary*: most pass the text straight to
+# load_binary, which wasmtime assembles itself, but wit_component::targets
+# embeds the component bytes and validates them.
+wat = "1.258"
 tempfile = "3.27.0"

@@ -163,6 +163,79 @@ impl Host {
         Ok(self.report_for(&component))
     }
 
+    /// Check that a component implements a world.
+    ///
+    /// [`Host::inspect`] answers "does this plugin ask for anything it should
+    /// not?" by intersecting its *imports* with the manifest. This answers the
+    /// other half — "does it provide what I am about to call?" — by checking
+    /// its *exports* against a world. A component can pass one and fail the
+    /// other, and until now only the first was possible to ask.
+    ///
+    /// `wit` is a WIT file, a directory containing one (with an optional
+    /// `deps/`), or a wasm-encoded WIT package. `world` names the world to
+    /// check against, and may be omitted when the package declares exactly
+    /// one. Both are paths the *application* chose, read by the host process:
+    /// this is not a guest capability and does not touch the sandbox.
+    ///
+    /// The check itself is `wit_component::targets`, not our own
+    /// reimplementation of conformance — see ADR-0007.
+    pub fn check_targets(
+        &self,
+        wasm: &[u8],
+        wit: impl AsRef<Path>,
+        world: Option<&str>,
+    ) -> Result<()> {
+        let wit = wit.as_ref();
+        let mut resolve = wit_parser::Resolve::default();
+        let (package, _sources) = resolve.push_path(wit).map_err(|err| {
+            Error::new(
+                ErrorKind::InvalidArgument,
+                format!("{}: {err:#}", wit.display()),
+            )
+        })?;
+
+        let world_id = resolve.select_world(&[package], world).map_err(|err| {
+            Error::new(
+                ErrorKind::NotFound,
+                match world {
+                    Some(name) => format!("{}: no world {name:?}: {err:#}", wit.display()),
+                    None => format!("{}: {err:#}", wit.display()),
+                },
+            )
+        })?;
+
+        // `targets` reports conformance failure by building a component that
+        // imports the world and instantiating the candidate into it, so a
+        // mismatch surfaces as a validation error. `Load` rather than a new
+        // kind: the C enum is 1:1 with `ErrorKind` and adding a case after
+        // 0.1.0 would move the others.
+        wit_component::targets(&resolve, world_id, wasm).map_err(|err| {
+            let detail = format!("{err:#}");
+            // The first thing everyone hits. `targets` requires the world to
+            // declare *every* import the component has, and a wasm32-wasip2
+            // guest links wasi:io, wasi:cli and friends through std whether or
+            // not its author asked for them -- so a hand-written application
+            // world fails against a real guest until it includes WASI. Say so,
+            // rather than leaving "missing import named `wasi:io/poll`" to be
+            // interpreted.
+            let hint = if detail.contains("missing import named `wasi:") {
+                "\nnote: a world passed to --targets must declare the WASI \
+                 imports the guest's toolchain links, not only the interfaces \
+                 its author wrote; add `include wasi:cli/imports@0.2.x;` to the \
+                 world, with the wasi WIT package vendored under deps/"
+            } else {
+                ""
+            };
+            Error::new(
+                ErrorKind::Load,
+                format!(
+                    "component does not implement world {:?}: {detail}{hint}",
+                    resolve.worlds[world_id].name
+                ),
+            )
+        })
+    }
+
     /// Every function a component imports, by interface and name.
     ///
     /// Compiles but does not instantiate, and does not consult the manifest:

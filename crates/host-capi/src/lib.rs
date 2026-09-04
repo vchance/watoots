@@ -688,6 +688,11 @@ pub unsafe extern "C" fn wt_host_load_binary(
 
 /// Describe what a component would be granted, without instantiating it.
 ///
+/// Answers "what can this plugin do", resolved against the manifest: a granted
+/// filesystem names its directories, an interface the application must serve is
+/// listed separately from a denial, and a capability granted but never imported
+/// is reported. For the raw per-import list, see [`wt_host_inspect_imports`].
+///
 /// Writes a human-readable report to `report_out`; free it with
 /// [`wt_string_delete`].
 #[unsafe(no_mangle)]
@@ -707,8 +712,69 @@ pub unsafe extern "C" fn wt_host_inspect(
         }
         let bytes = unsafe { std::slice::from_raw_parts(wasm, wasm_len) };
         let report = host.inspect(bytes)?;
+        let text = report.summarize(&host.manifest().permissions);
+        unsafe { *report_out = into_c_string(&text)? };
+        Ok(())
+    })
+}
+
+/// Every import and its decision, one per line.
+///
+/// The detail behind [`wt_host_inspect`]. Free `report_out` with
+/// [`wt_string_delete`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wt_host_inspect_imports(
+    host: *const wt_host_t,
+    wasm: *const u8,
+    wasm_len: usize,
+    report_out: *mut *mut c_char,
+    error_out: *mut *mut wt_error_t,
+) -> wt_status {
+    guard(error_out, || {
+        let host = unsafe { borrow_host(host) }?;
+        if wasm.is_null() || report_out.is_null() {
+            return Err(Error::invalid_argument(
+                "wasm and report_out must not be NULL",
+            ));
+        }
+        let bytes = unsafe { std::slice::from_raw_parts(wasm, wasm_len) };
+        let report = host.inspect(bytes)?;
         unsafe { *report_out = into_c_string(&report.describe())? };
         Ok(())
+    })
+}
+
+/// Check that a component implements a world.
+///
+/// `wt_host_inspect` answers "does this plugin ask for anything it should not";
+/// this answers "does it provide what I am about to call". `wit` is a path to a
+/// WIT file, a directory containing one, or a wasm-encoded WIT package. `world`
+/// may be NULL when the package declares exactly one.
+///
+/// Returns `WT_OK` when the component conforms, and `WT_ERR_LOAD` with a
+/// message naming the world when it does not.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wt_host_check_targets(
+    host: *const wt_host_t,
+    wasm: *const u8,
+    wasm_len: usize,
+    wit: *const c_char,
+    world: *const c_char,
+    error_out: *mut *mut wt_error_t,
+) -> wt_status {
+    guard(error_out, || {
+        let host = unsafe { borrow_host(host) }?;
+        if wasm.is_null() {
+            return Err(Error::invalid_argument("wasm must not be NULL"));
+        }
+        let wit = unsafe { borrow_str(wit, "wit") }?;
+        let world = if world.is_null() {
+            None
+        } else {
+            Some(unsafe { borrow_str(world, "world") }?)
+        };
+        let bytes = unsafe { std::slice::from_raw_parts(wasm, wasm_len) };
+        host.check_targets(bytes, wit, world)
     })
 }
 

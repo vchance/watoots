@@ -5,6 +5,8 @@
 // rather than merely compiles.
 
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <optional>
 #include <span>
 #include <string>
@@ -90,10 +92,45 @@ TEST(CApi, InspectDescribesWithoutInstantiating) {
   const wt::Host host = BuildHost();
   const std::string wasm = kWantsNetwork;
 
+  // Inspect answers "what can it do": a capability row, not an interface name.
   auto report = host.Inspect(AsBytes(wasm));
   ASSERT_TRUE(report.has_value()) << report.error().Message();
+  EXPECT_NE(report->find("capabilities"), std::string::npos) << *report;
+  EXPECT_NE(report->find("network"), std::string::npos) << *report;
   EXPECT_NE(report->find("DENY"), std::string::npos) << *report;
+}
+
+TEST(CApi, InspectImportsListsTheInterfaces) {
+  const wt::Host host = BuildHost();
+  const std::string wasm = kWantsNetwork;
+
+  auto report = host.InspectImports(AsBytes(wasm));
+  ASSERT_TRUE(report.has_value()) << report.error().Message();
+  EXPECT_NE(report->find("wasi:sockets/tcp"), std::string::npos) << *report;
   EXPECT_NE(report->find("permissions.net"), std::string::npos) << *report;
+}
+
+TEST(CApi, CheckTargetsRejectsAWorldTheComponentDoesNotImplement) {
+  const wt::Host host = BuildHost();
+  const std::string wasm = kSelfContained;
+
+  // Written next to the binary so the test needs no fixture on disk.
+  const std::filesystem::path wit =
+      std::filesystem::temp_directory_path() / "watoots_capi_targets.wit";
+  {
+    std::ofstream out(wit);
+    out << "package test:other@0.1.0;\n"
+        << "world formatter {\n  export format: func() -> string;\n}\n";
+  }
+
+  auto checked = host.CheckTargets(AsBytes(wasm), wit.string(), "formatter");
+  std::filesystem::remove(wit);
+
+  ASSERT_FALSE(checked.has_value());
+  EXPECT_EQ(checked.error().Code(), WT_ERR_LOAD);
+  EXPECT_NE(checked.error().Message().find("does not implement world"),
+            std::string::npos)
+      << checked.error().Message();
 }
 
 TEST(CApi, AMalformedManifestReportsAMessage) {

@@ -207,6 +207,11 @@ enum wt_status wt_host_load_binary(const struct wt_host_t *host,
 
 // Describe what a component would be granted, without instantiating it.
 //
+// Answers "what can this plugin do", resolved against the manifest: a granted
+// filesystem names its directories, an interface the application must serve is
+// listed separately from a denial, and a capability granted but never imported
+// is reported. For the raw per-import list, see [`wt_host_inspect_imports`].
+//
 // Writes a human-readable report to `report_out`; free it with
 // [`wt_string_delete`].
 enum wt_status wt_host_inspect(const struct wt_host_t *host,
@@ -214,6 +219,32 @@ enum wt_status wt_host_inspect(const struct wt_host_t *host,
                                size_t wasm_len,
                                char **report_out,
                                struct wt_error_t **error_out);
+
+// Every import and its decision, one per line.
+//
+// The detail behind [`wt_host_inspect`]. Free `report_out` with
+// [`wt_string_delete`].
+enum wt_status wt_host_inspect_imports(const struct wt_host_t *host,
+                                       const uint8_t *wasm,
+                                       size_t wasm_len,
+                                       char **report_out,
+                                       struct wt_error_t **error_out);
+
+// Check that a component implements a world.
+//
+// `wt_host_inspect` answers "does this plugin ask for anything it should not";
+// this answers "does it provide what I am about to call". `wit` is a path to a
+// WIT file, a directory containing one, or a wasm-encoded WIT package. `world`
+// may be NULL when the package declares exactly one.
+//
+// Returns `WT_OK` when the component conforms, and `WT_ERR_LOAD` with a
+// message naming the world when it does not.
+enum wt_status wt_host_check_targets(const struct wt_host_t *host,
+                                     const uint8_t *wasm,
+                                     size_t wasm_len,
+                                     const char *wit,
+                                     const char *world,
+                                     struct wt_error_t **error_out);
 
 // Free a plugin. NULL is ignored.
 void wt_plugin_delete(struct wt_plugin_t *plugin);

@@ -382,6 +382,43 @@ class Host {
     return text;
   }
 
+  /// Every import and its decision, one per line: the detail behind `Inspect`.
+  [[nodiscard]] Result<std::string> InspectImports(
+      std::span<const std::byte> wasm) const {
+    char* report = nullptr;
+    wt_error_t* error = nullptr;
+    const wt_status status = wt_host_inspect_imports(
+        handle_.Get(),
+        reinterpret_cast<const uint8_t*>(wasm.data()),  // NOLINT
+        wasm.size(), &report, &error);
+    if (status != WT_OK) {
+      return unexpected(internal::TakeError(status, error));
+    }
+    std::string text(report == nullptr ? "" : report);
+    wt_string_delete(report);
+    return text;
+  }
+
+  /// Check that a component implements a world.
+  ///
+  /// `Inspect` asks whether a plugin wants anything it should not; this asks
+  /// whether it provides what you are about to call. `wit` is a WIT file, a
+  /// directory containing one, or a wasm-encoded WIT package. Omit `world`
+  /// when the package declares exactly one.
+  [[nodiscard]] Result<void> CheckTargets(
+      std::span<const std::byte> wasm, const std::string& wit,
+      const std::optional<std::string>& world = std::nullopt) const {
+    wt_error_t* error = nullptr;
+    const wt_status status = wt_host_check_targets(
+        handle_.Get(),
+        reinterpret_cast<const uint8_t*>(wasm.data()),  // NOLINT
+        wasm.size(), wit.c_str(), world ? world->c_str() : nullptr, &error);
+    if (status != WT_OK) {
+      return unexpected(internal::TakeError(status, error));
+    }
+    return {};
+  }
+
  private:
   friend class HostBuilder;
   Host(wt_host_t* raw, std::vector<std::unique_ptr<HostFunction>> functions,

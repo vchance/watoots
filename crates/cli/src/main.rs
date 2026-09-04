@@ -31,6 +31,37 @@ enum Command {
     /// Convert a trace between the text and binary encodings.
     #[command(subcommand)]
     Trace(TraceCommand),
+    /// Compare two WIT packages for compatibility.
+    #[command(subcommand)]
+    Wit(WitCommand),
+}
+
+#[derive(Subcommand)]
+enum WitCommand {
+    /// Check that one WIT package is a compatible successor to another.
+    ///
+    /// The predicate is wasm-tools': `--current` may have MORE imports and
+    /// FEWER exports than `--previous`, and every type it keeps must be
+    /// structurally identical. For a plugin world that is the useful
+    /// direction -- a host may offer plugins more and demand less of them
+    /// without breaking the ones already built.
+    ///
+    /// Takes two packages rather than a component, which is why it is not a
+    /// flag on `inspect`. See ADR-0007.
+    SemverCheck(SemverCheckArgs),
+}
+
+#[derive(Args)]
+struct SemverCheckArgs {
+    /// The released package.
+    #[arg(long, value_name = "WIT")]
+    previous: PathBuf,
+    /// The package proposed to replace it.
+    #[arg(long, value_name = "WIT")]
+    current: PathBuf,
+    /// Which world to compare. Optional when each package declares exactly one.
+    #[arg(long, value_name = "NAME")]
+    world: Option<String>,
 }
 
 #[derive(Args)]
@@ -48,6 +79,14 @@ struct InspectArgs {
     /// List every import and its decision instead of summarising capabilities.
     #[arg(long)]
     imports: bool,
+    /// Also check the component implements this world. A WIT file, a directory
+    /// containing one, or a wasm-encoded WIT package.
+    #[arg(long, value_name = "WIT")]
+    targets: Option<PathBuf>,
+    /// Which world in `--targets` to check against. Optional when the package
+    /// declares exactly one.
+    #[arg(long, value_name = "NAME", requires = "targets")]
+    world: Option<String>,
 }
 
 /// What `run` and `record` share.
@@ -133,6 +172,7 @@ fn run(cli: Cli) -> Result<ExitCode, String> {
         Command::Run(args) => invoke(&args.invocation, None),
         Command::Record(args) => record(&args),
         Command::Replay(args) => do_replay(&args),
+        Command::Wit(WitCommand::SemverCheck(args)) => semver_check(&args),
         Command::Trace(TraceCommand::Fmt {
             input,
             output,
@@ -166,15 +206,68 @@ fn inspect(args: &InspectArgs) -> Result<ExitCode, String> {
         print!("{}", report.summarize(&host.manifest().permissions));
     }
 
+    // Imports and exports are separate questions, so they get separate lines
+    // and a failure in either fails the command.
+    let mut ok = report.is_satisfied();
     if report.is_satisfied() {
         println!("\nevery import is granted");
-        Ok(ExitCode::SUCCESS)
     } else {
         println!(
             "\n{} import(s) are not granted; `--imports` lists them individually",
             report.denied().count()
         );
-        Ok(ExitCode::FAILURE)
+    }
+
+    if let Some(wit) = &args.targets {
+        match host.check_targets(&wasm, wit, args.world.as_deref()) {
+            Ok(()) => println!("exports match the world in {}", wit.display()),
+            Err(err) => {
+                println!("{}", err.message());
+                ok = false;
+            }
+        }
+    }
+
+    Ok(if ok {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    })
+}
+
+/// `wasm-tools component semver-check`, wrapped rather than reimplemented.
+fn semver_check(args: &SemverCheckArgs) -> Result<ExitCode, String> {
+    let mut resolve = wit_parser::Resolve::default();
+    let mut load = |path: &Path| -> Result<_, String> {
+        resolve
+            .push_path(path)
+            .map(|(package, _)| package)
+            .map_err(|err| format!("{}: {err:#}", path.display()))
+    };
+    let previous = load(&args.previous)?;
+    let current = load(&args.current)?;
+
+    let select = |package, label: &str| {
+        resolve
+            .select_world(&[package], args.world.as_deref())
+            .map_err(|err| format!("{label}: {err:#}"))
+    };
+    let previous_world = select(previous, "--previous")?;
+    let current_world = select(current, "--current")?;
+
+    match wit_component::semver_check(resolve, previous_world, current_world) {
+        Ok(()) => {
+            println!(
+                "{} is a compatible successor to {}",
+                args.current.display(),
+                args.previous.display()
+            );
+            Ok(ExitCode::SUCCESS)
+        }
+        Err(err) => {
+            println!("incompatible: {err:#}");
+            Ok(ExitCode::FAILURE)
+        }
     }
 }
 

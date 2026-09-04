@@ -274,3 +274,89 @@ fn emit_test_writes_a_runnable_fixture() {
     assert!(source.contains("watoots_trace::replay"), "{source}");
     assert!(source.contains("is_faithful"), "{source}");
 }
+
+#[test]
+fn inspect_targets_reports_a_world_the_component_does_not_implement() {
+    let plugin = sample_plugin().display().to_string();
+    let wit = tempfile::Builder::new()
+        .suffix(".wit")
+        .tempfile()
+        .expect("creating a WIT file");
+    std::fs::write(
+        wit.path(),
+        "package test:other@0.1.0;\nworld formatter {\n  export format: func() -> string;\n}\n",
+    )
+    .expect("writing WIT");
+
+    let output = watoots(&[
+        "inspect",
+        &plugin,
+        "--targets",
+        &wit.path().display().to_string(),
+    ]);
+    let text = stdout(&output);
+    assert!(text.contains("does not implement world"), "{text}");
+    assert!(!output.status.success());
+}
+
+#[test]
+fn wit_semver_check_accepts_a_world_that_demands_less() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let previous = dir.path().join("previous.wit");
+    let current = dir.path().join("current.wit");
+    // The compatible direction: the new world asks plugins for fewer exports,
+    // so everything built against the old one still satisfies it.
+    std::fs::write(
+        &previous,
+        "package test:api@0.1.0;\nworld api {\n  export greet: func() -> string;\n  \
+         export farewell: func() -> string;\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        &current,
+        "package test:api@0.2.0;\nworld api {\n  export greet: func() -> string;\n}\n",
+    )
+    .unwrap();
+
+    let output = watoots(&[
+        "wit",
+        "semver-check",
+        "--previous",
+        &previous.display().to_string(),
+        "--current",
+        &current.display().to_string(),
+    ]);
+    assert!(output.status.success(), "{}", stdout(&output));
+}
+
+#[test]
+fn wit_semver_check_rejects_a_changed_signature() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let previous = dir.path().join("previous.wit");
+    let current = dir.path().join("current.wit");
+    std::fs::write(
+        &previous,
+        "package test:api@0.1.0;\nworld api {\n  export greet: func() -> string;\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        &current,
+        "package test:api@0.2.0;\nworld api {\n  export greet: func(formal: bool) -> string;\n}\n",
+    )
+    .unwrap();
+
+    let output = watoots(&[
+        "wit",
+        "semver-check",
+        "--previous",
+        &previous.display().to_string(),
+        "--current",
+        &current.display().to_string(),
+    ]);
+    assert!(!output.status.success(), "{}", stdout(&output));
+    assert!(
+        stdout(&output).contains("incompatible"),
+        "{}",
+        stdout(&output)
+    );
+}
