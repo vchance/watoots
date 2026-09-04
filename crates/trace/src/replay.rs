@@ -87,9 +87,38 @@ impl Cursor {
         });
     }
 
+    /// Step over recorded crossings that nothing here answers.
+    ///
+    /// The mock host stands in for the *application's* interfaces. WASI imports
+    /// are served by the host library, from the manifest that travels in the
+    /// trace header — `wasi:logging` being the one that actually shows up in a
+    /// recording, since a granted plugin's log calls are host-import crossings
+    /// like any other. Those events are the point of a recorded bug report and
+    /// are kept, but no mock consumes them, so leaving them under the cursor
+    /// would report a divergence at the next import the application does serve.
+    fn skip_unserved(&mut self) {
+        loop {
+            let unserved = matches!(
+                self.events.get(self.position),
+                Some(Event::ImportCall { interface, .. }) if interface.starts_with("wasi:")
+            );
+            if !unserved {
+                return;
+            }
+            self.position += 1;
+            if matches!(
+                self.events.get(self.position),
+                Some(Event::ImportReturn { .. })
+            ) {
+                self.position += 1;
+            }
+        }
+    }
+
     /// The next import the trace expects, and the answer it recorded.
     fn expect_import(&mut self, interface: &str, func: &str, args: &[String]) -> Option<Outcome> {
         let actual = format!("{interface}#{func}({})", args.join(", "));
+        self.skip_unserved();
 
         let Some(event) = self.events.get(self.position).cloned() else {
             self.diverge("the trace to be over".to_string(), actual);

@@ -28,7 +28,9 @@ use std::ffi::{CStr, CString, c_char, c_void};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::ptr;
 
-use watoots::{Error, ErrorKind, Host, HostBuilder, HostCall, Manifest, Plugin, Val};
+use watoots::{
+    Error, ErrorKind, Host, HostBuilder, HostCall, LogLevel, LogRecord, Manifest, Plugin, Val,
+};
 
 /// Status codes. Zero is success.
 #[repr(C)]
@@ -56,6 +58,34 @@ impl From<ErrorKind> for wt_status {
             ErrorKind::Trap => Self::WT_ERR_TRAP,
             ErrorKind::LimitExceeded => Self::WT_ERR_LIMIT_EXCEEDED,
             _ => Self::WT_ERR_INTERNAL,
+        }
+    }
+}
+
+/// Severity of a `wasi:logging` message.
+///
+/// The six cases and their order are `wasi:logging@0.1.0-draft`'s own, so the
+/// numeric values are stable for as long as that proposal's `enum level` is.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum wt_log_level {
+    WT_LOG_TRACE = 0,
+    WT_LOG_DEBUG = 1,
+    WT_LOG_INFO = 2,
+    WT_LOG_WARN = 3,
+    WT_LOG_ERROR = 4,
+    WT_LOG_CRITICAL = 5,
+}
+
+impl From<LogLevel> for wt_log_level {
+    fn from(level: LogLevel) -> Self {
+        match level {
+            LogLevel::Trace => Self::WT_LOG_TRACE,
+            LogLevel::Debug => Self::WT_LOG_DEBUG,
+            LogLevel::Info => Self::WT_LOG_INFO,
+            LogLevel::Warn => Self::WT_LOG_WARN,
+            LogLevel::Error => Self::WT_LOG_ERROR,
+            LogLevel::Critical => Self::WT_LOG_CRITICAL,
         }
     }
 }
@@ -100,6 +130,30 @@ pub type wt_host_func_t = Option<
         result_out: *mut *mut c_char,
         error_out: *mut *mut wt_error_t,
     ) -> wt_status,
+>;
+
+/// Where a plugin's `wasi:logging` messages go.
+///
+/// `context` and `message` are NUL-terminated, borrowed for the duration of the
+/// call, and **untrusted**: they come from the plugin. Copy what you keep, and
+/// never pass either to a `printf`-family format argument.
+///
+/// There is no timestamp parameter. A guest-supplied one would defeat the
+/// pinned wall clock and make a recording unreplayable, and a host-supplied one
+/// would only be a worse version of the stamp your own logging framework
+/// applies. Stamp it in the sink.
+///
+/// Returns nothing: `wasi:logging`'s `log` has no result, so there is no
+/// failure for a guest to observe. The sink and `userdata` must be safe to use
+/// from any thread, and must not throw — watoots does not serialise calls into
+/// it, and unwinding across the boundary is undefined behaviour.
+pub type wt_log_sink_t = Option<
+    unsafe extern "C" fn(
+        userdata: *mut c_void,
+        level: wt_log_level,
+        context: *const c_char,
+        message: *const c_char,
+    ),
 >;
 
 // ---------------------------------------------------------------------------
@@ -170,6 +224,20 @@ pub extern "C" fn wt_status_name(status: wt_status) -> *const c_char {
         wt_status::WT_ERR_TRAP => c"WT_ERR_TRAP",
         wt_status::WT_ERR_LIMIT_EXCEEDED => c"WT_ERR_LIMIT_EXCEEDED",
         wt_status::WT_ERR_INTERNAL => c"WT_ERR_INTERNAL",
+    }
+    .as_ptr()
+}
+
+/// The `wasi:logging` spelling of a level, e.g. `"warn"`. Never NULL.
+#[unsafe(no_mangle)]
+pub extern "C" fn wt_log_level_name(level: wt_log_level) -> *const c_char {
+    match level {
+        wt_log_level::WT_LOG_TRACE => c"trace",
+        wt_log_level::WT_LOG_DEBUG => c"debug",
+        wt_log_level::WT_LOG_INFO => c"info",
+        wt_log_level::WT_LOG_WARN => c"warn",
+        wt_log_level::WT_LOG_ERROR => c"error",
+        wt_log_level::WT_LOG_CRITICAL => c"critical",
     }
     .as_ptr()
 }
@@ -384,6 +452,73 @@ pub unsafe extern "C" fn wt_host_builder_host_func(
             })
         }
     })
+}
+
+/// A C log sink plus its userdata, promised to be thread-safe.
+struct Sink {
+    func: wt_log_sink_t,
+    userdata: *mut c_void,
+}
+
+// SAFETY: identical to `Callback` above, and for the same reason — a sink is
+// entered inline on the guest's call, from whatever thread made it.
+unsafe impl Send for Sink {}
+unsafe impl Sync for Sink {}
+
+/// Receive the plugin's `wasi:logging` messages.
+///
+/// Whether the interface links at all is the manifest's decision, not this one:
+/// `permissions.logging` grants it and sets the level ceiling, and a component
+/// importing `wasi:logging` under a manifest that says nothing fails to load
+/// however many sinks are registered. Calling this twice replaces the first
+/// sink; there is one, and watoots does no fan-out.
+///
+/// `userdata` must outlive the host built from this builder.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wt_host_builder_log_sink(
+    builder: *mut wt_host_builder_t,
+    sink: wt_log_sink_t,
+    userdata: *mut c_void,
+    error_out: *mut *mut wt_error_t,
+) -> wt_status {
+    guard(error_out, || {
+        if sink.is_none() {
+            return Err(Error::invalid_argument("sink must not be NULL"));
+        }
+        let sink = Sink {
+            func: sink,
+            userdata,
+        };
+
+        unsafe {
+            with_builder(builder, move |b| {
+                Ok(b.log_sink(move |record| dispatch_log(&sink, record)))
+            })
+        }
+    })
+}
+
+/// Bridge one log record out to C.
+///
+/// A NUL byte inside guest text would truncate a C string silently, which is a
+/// way for a plugin to hide the second half of what it said. Replace the whole
+/// field instead, so the substitution is visible in the log.
+fn dispatch_log(sink: &Sink, record: &LogRecord<'_>) {
+    let context = CString::new(record.context())
+        .unwrap_or_else(|_| c"<context contained a NUL byte>".to_owned());
+    let message = CString::new(record.message())
+        .unwrap_or_else(|_| c"<message contained a NUL byte>".to_owned());
+
+    // SAFETY: both strings outlive the call, and the sink is non-null because
+    // it was checked at registration.
+    unsafe {
+        (sink.func.expect("checked at registration"))(
+            sink.userdata,
+            record.level().into(),
+            context.as_ptr(),
+            message.as_ptr(),
+        );
+    }
 }
 
 /// Bridge one import crossing out to C and back.

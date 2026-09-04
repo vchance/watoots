@@ -17,6 +17,18 @@ use crate::{Error, ErrorKind, Result};
 /// table should not mean "this plugin may exhaust the host".
 pub const DEFAULT_MEMORY_BYTES: u64 = 64 * 1024 * 1024;
 
+/// Log bytes a plugin may push across the boundary in one call, by default.
+///
+/// Same reasoning as [`DEFAULT_MEMORY_BYTES`]: a ceiling nobody stated is still
+/// a ceiling. Fuel bounds how many times a plugin loops; it does not bound how
+/// much text each iteration hands to the host's logging pipeline, and lifting a
+/// guest string into a host `String` is work the host pays for outside the fuel
+/// budget.
+pub const DEFAULT_LOG_BYTES: u64 = 64 * 1024;
+
+/// Log messages a plugin may emit in one call, by default.
+pub const DEFAULT_LOG_MESSAGES: u64 = 1024;
+
 /// A parsed manifest.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields, default)]
@@ -99,6 +111,80 @@ pub struct Permissions {
     pub clocks: Clocks,
     /// Whether `wasi:random` is available.
     pub random: bool,
+    /// The least severe level `wasi:logging` will deliver, or `None` to deny
+    /// the interface outright.
+    ///
+    /// `logging = "warn"` admits `warn`, `error` and `critical` and drops
+    /// everything below; `logging = "trace"` admits all six. Absence denies, so
+    /// a component importing `wasi:logging` fails to load — the same rule as
+    /// every other permission.
+    ///
+    /// Deliberately *not* tri-state the way `net` and `env` are. Those have a
+    /// third state because a runtime links their interfaces whether or not the
+    /// plugin uses them, so "may import, may not reach anything" is a situation
+    /// that really occurs. Nothing links `wasi:logging` behind an author's
+    /// back — it is not part of WASI 0.2 — and "granted but restricted" is
+    /// already what a level says, so a fourth spelling would mean nothing new.
+    pub logging: Option<LogLevel>,
+}
+
+/// A `wasi:logging` severity.
+///
+/// The six cases, their spellings and their order are `wasi:logging`'s own, so
+/// the discriminant a guest passes for `level` is this enum's index and the
+/// derived ordering is severity order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum LogLevel {
+    /// Values of variables and the flow of control within a program.
+    Trace,
+    /// Of interest to someone debugging the program.
+    Debug,
+    /// Of interest to someone monitoring the program.
+    Info,
+    /// A hazardous situation.
+    Warn,
+    /// A serious error.
+    Error,
+    /// A fatal error.
+    Critical,
+}
+
+impl LogLevel {
+    /// Every level, least severe first.
+    pub const ALL: [Self; 6] = [
+        Self::Trace,
+        Self::Debug,
+        Self::Info,
+        Self::Warn,
+        Self::Error,
+        Self::Critical,
+    ];
+
+    /// The spelling `wasi:logging` uses for this case.
+    #[must_use]
+    pub fn as_wit_name(self) -> &'static str {
+        match self {
+            Self::Trace => "trace",
+            Self::Debug => "debug",
+            Self::Info => "info",
+            Self::Warn => "warn",
+            Self::Error => "error",
+            Self::Critical => "critical",
+        }
+    }
+
+    /// The level a `wasi:logging` enum case names, or `None` for a spelling the
+    /// proposal does not define.
+    ///
+    /// Unknown is `None` rather than a fallback level: guessing would let a
+    /// future case slip past a manifest's ceiling.
+    #[must_use]
+    pub fn from_wit_name(name: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|level| level.as_wit_name() == name)
+    }
 }
 
 /// Read and write grants, as host paths.
@@ -162,6 +248,16 @@ pub struct Limits {
     /// Accepts `"200ms"`. `None` leaves epoch interruption off.
     #[serde(with = "humantime_serde")]
     pub timeout: Option<Duration>,
+    /// Log text a plugin may push across the boundary per call, counting the
+    /// context and the message together. Accepts `"64KiB"` or a plain integer.
+    #[serde(deserialize_with = "deserialize_bytes")]
+    pub log_bytes: u64,
+    /// Log messages a plugin may emit per call.
+    ///
+    /// Separate from `log_bytes` because the two abuses are different: one
+    /// enormous message and a million empty ones cost the host in different
+    /// places, and a cap that stops only one of them stops neither.
+    pub log_messages: u64,
 }
 
 impl Default for Limits {
@@ -170,6 +266,8 @@ impl Default for Limits {
             memory: DEFAULT_MEMORY_BYTES,
             fuel: None,
             timeout: None,
+            log_bytes: DEFAULT_LOG_BYTES,
+            log_messages: DEFAULT_LOG_MESSAGES,
         }
     }
 }
@@ -297,6 +395,38 @@ mod tests {
         assert!(manifest.permissions.env.is_none());
         assert_eq!(manifest.permissions.clocks, Clocks::None);
         assert!(!manifest.permissions.random);
+        assert_eq!(manifest.permissions.logging, None);
+    }
+
+    #[test]
+    fn a_logging_grant_names_the_least_severe_level_delivered() {
+        let manifest = Manifest::parse("[permissions]\nlogging = \"warn\"\n").unwrap();
+        assert_eq!(manifest.permissions.logging, Some(LogLevel::Warn));
+
+        let err = Manifest::parse("[permissions]\nlogging = \"chatty\"\n").unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::Manifest);
+    }
+
+    #[test]
+    fn log_levels_order_by_severity_and_round_trip_their_wit_spelling() {
+        assert!(LogLevel::Trace < LogLevel::Warn);
+        assert!(LogLevel::Warn < LogLevel::Critical);
+        for level in LogLevel::ALL {
+            assert_eq!(LogLevel::from_wit_name(level.as_wit_name()), Some(level));
+        }
+        assert_eq!(LogLevel::from_wit_name("verbose"), None);
+    }
+
+    #[test]
+    fn empty_manifest_still_caps_log_volume() {
+        let manifest = Manifest::parse("").unwrap();
+        assert_eq!(manifest.limits.log_bytes, DEFAULT_LOG_BYTES);
+        assert_eq!(manifest.limits.log_messages, DEFAULT_LOG_MESSAGES);
+
+        let tightened =
+            Manifest::parse("[limits]\nlog_bytes = \"1KiB\"\nlog_messages = 4\n").unwrap();
+        assert_eq!(tightened.limits.log_bytes, 1024);
+        assert_eq!(tightened.limits.log_messages, 4);
     }
 
     #[test]

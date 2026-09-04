@@ -8,18 +8,117 @@ use wasmtime::component::{Component, Linker, ResourceTable, Val};
 use wasmtime::{Engine, Store, StoreLimits, StoreLimitsBuilder};
 use wasmtime_wasi::{FsPerms, WasiCtx, WasiCtxView, WasiView};
 
-use crate::host::HostFunc;
+use crate::host::{HostFunc, LogRecord, LogSink};
 use crate::imports::GrantReport;
-use crate::manifest::{Limits, Manifest};
+use crate::manifest::{Limits, LogLevel, Manifest};
 use crate::trace::{Outcome, TraceEvent, TraceHook};
 use crate::{Error, ErrorKind, Result};
+
+/// The `wasi:logging` interface, spelled as the proposal publishes it.
+///
+/// Verified against <https://github.com/WebAssembly/wasi-logging> at commit
+/// `d31c41d0d9eed81aabe02333d0025d42acf3fb75` (2024-10-02, the newest change to
+/// `wit/` as of 2026-09-03). `wit/world.wit` declares
+/// `package wasi:logging@0.1.0-draft;` and `wit/logging.wit` declares
+/// `interface logging` with `enum level { trace, debug, info, warn, error,
+/// critical }` and `log: func(level: level, context: string, message: string);`
+/// — no result. It is a Phase 1 proposal (ADR-0006 accepts that risk), and the
+/// `-draft` suffix is part of the version: semver treats a prerelease as
+/// compatible with nothing but itself, so a guest built against a later
+/// `0.1.0` would *not* resolve to this name.
+const LOGGING_VERSIONED: &str = "wasi:logging/logging@0.1.0-draft";
+
+/// The same interface with the version stripped.
+///
+/// Registered alongside the versioned spelling because a guest built from a
+/// vendored copy of the WIT that dropped the package version imports the bare
+/// name, and the linker matches literally. Costs one empty instance in the
+/// linker and saves an unresolvable-import failure that reads like a bug in the
+/// component.
+const LOGGING_UNVERSIONED: &str = "wasi:logging/logging";
+
+/// The function `wasi:logging/logging` declares.
+const LOGGING_FUNC: &str = "log";
 
 /// Everything the guest can reach, plus the ceilings it runs under.
 struct State {
     wasi: WasiCtx,
     table: ResourceTable,
     limits: StoreLimits,
+    log: LogBudget,
 }
+
+/// How much more a plugin may say during the call in progress.
+///
+/// Per call, like fuel and the deadline, and re-armed by [`arm`]. Per plugin
+/// would make a long-lived plugin's first busy call spend a budget its
+/// thousandth needs, which is the same reasoning that makes fuel per-call.
+#[derive(Debug, Clone, Copy)]
+struct LogBudget {
+    bytes_allowed: u64,
+    messages_allowed: u64,
+    bytes_used: u64,
+    messages_used: u64,
+}
+
+impl LogBudget {
+    fn new(limits: &Limits) -> Self {
+        Self {
+            bytes_allowed: limits.log_bytes,
+            messages_allowed: limits.log_messages,
+            bytes_used: 0,
+            messages_used: 0,
+        }
+    }
+
+    fn rearm(&mut self) {
+        self.bytes_used = 0;
+        self.messages_used = 0;
+    }
+
+    /// Charge one message, or say why it does not fit.
+    ///
+    /// Charged before the level ceiling filters, deliberately: what this bounds
+    /// is the work the *host* does lifting a string out of guest memory, and
+    /// that has already happened by the time we can read the level. Charging
+    /// only what survives the filter would let `logging = "critical"` be a
+    /// licence to push unbounded bytes across the boundary at `trace`.
+    fn charge(&mut self, bytes: u64) -> std::result::Result<(), String> {
+        self.messages_used = self.messages_used.saturating_add(1);
+        self.bytes_used = self.bytes_used.saturating_add(bytes);
+
+        if self.messages_used > self.messages_allowed {
+            return Err(format!(
+                "log message limit exceeded: {} message(s) in one call, limits.log_messages is {}",
+                self.messages_used, self.messages_allowed
+            ));
+        }
+        if self.bytes_used > self.bytes_allowed {
+            return Err(format!(
+                "log volume limit exceeded: {} byte(s) in one call, limits.log_bytes is {}",
+                self.bytes_used, self.bytes_allowed
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Marker carried by the wasmtime error a blown log budget produces.
+///
+/// A ceiling is not a misbehaving guest, and the two are reported differently:
+/// [`Plugin::classify_call_error`] downcasts to this so a log overrun lands as
+/// [`ErrorKind::LimitExceeded`], next to out-of-fuel and the deadline, rather
+/// than as a trap.
+#[derive(Debug)]
+struct LogVolumeExceeded(String);
+
+impl fmt::Display for LogVolumeExceeded {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for LogVolumeExceeded {}
 
 impl WasiView for State {
     fn ctx(&mut self) -> WasiCtxView<'_> {
@@ -35,6 +134,7 @@ pub(crate) struct Wiring<'a> {
     pub manifest: &'a Manifest,
     pub host_funcs: &'a BTreeMap<String, BTreeMap<String, HostFunc>>,
     pub trace: Option<&'a Arc<dyn TraceHook>>,
+    pub log_sink: Option<&'a LogSink>,
 }
 
 /// One instantiated plugin.
@@ -85,6 +185,7 @@ impl Plugin {
             wasi,
             table: ResourceTable::new(),
             limits: StoreLimitsBuilder::new().memory_size(memory).build(),
+            log: LogBudget::new(&manifest.limits),
         };
 
         let mut store = Store::new(engine, state);
@@ -94,6 +195,7 @@ impl Plugin {
         wasmtime_wasi::p2::add_to_linker_sync(&mut linker)
             .map_err(|err| Error::new(ErrorKind::Internal, format!("wiring WASI: {err:?}")))?;
 
+        install_logging(&mut linker, name, wiring)?;
         install_host_funcs(&mut linker, name, wiring)?;
 
         // A fresh store starts with no fuel and a deadline of zero, so the
@@ -238,15 +340,152 @@ impl Plugin {
     /// than raise an error, so a memory ceiling is only ever reported here via
     /// a trap; there is nothing extra to match on.
     fn classify_call_error(&self, export: &str, err: &wasmtime::Error) -> Error {
-        let kind = match err.downcast_ref::<wasmtime::Trap>() {
-            Some(wasmtime::Trap::OutOfFuel | wasmtime::Trap::Interrupt) => ErrorKind::LimitExceeded,
-            _ => ErrorKind::Trap,
+        let kind = if err.downcast_ref::<LogVolumeExceeded>().is_some() {
+            ErrorKind::LimitExceeded
+        } else {
+            match err.downcast_ref::<wasmtime::Trap>() {
+                Some(wasmtime::Trap::OutOfFuel | wasmtime::Trap::Interrupt) => {
+                    ErrorKind::LimitExceeded
+                }
+                _ => ErrorKind::Trap,
+            }
         };
         Error::new(
             kind,
             format!("{}: {export}: {}\n{err}", self.name, err.root_cause()),
         )
     }
+}
+
+/// Install `wasi:logging` on the linker, if the manifest grants it.
+///
+/// Not routed through [`install_host_funcs`] on purpose. Registering it as a
+/// host function would put `wasi:logging/logging` in the host-provided set, and
+/// `classify` consults that set before it looks at the WASI table — so an
+/// application would silently shadow the capability check and the manifest's
+/// `logging` grant would stop meaning anything. Keeping the shim separate keeps
+/// [`crate::imports::Requirement::Logging`] the only thing that admits it.
+fn install_logging(linker: &mut Linker<State>, plugin: &str, wiring: &Wiring<'_>) -> Result<()> {
+    // Absence denies. The load-time check has already refused any component
+    // that imports the interface, so there is nothing to link.
+    let Some(ceiling) = wiring.manifest.permissions.logging else {
+        return Ok(());
+    };
+
+    for interface in [LOGGING_VERSIONED, LOGGING_UNVERSIONED] {
+        let sink = wiring.log_sink.map(Arc::clone);
+        let trace = wiring.trace.map(Arc::clone);
+        let owned_plugin = plugin.to_string();
+
+        let mut instance = linker.instance(interface).map_err(|err| {
+            Error::new(
+                ErrorKind::Internal,
+                format!("{plugin}: cannot define interface {interface:?}: {err:?}"),
+            )
+        })?;
+
+        instance
+            .func_new(LOGGING_FUNC, move |mut store, _ty, params, _results| {
+                // Recorded before the ceiling filters, so a trace is the
+                // plugin's full account of what it thought was happening rather
+                // than the subset this host's policy chose to print.
+                if let Some(hook) = &trace {
+                    hook.on_event(&TraceEvent::ImportCall {
+                        plugin: &owned_plugin,
+                        interface,
+                        func: LOGGING_FUNC,
+                        args: params,
+                    });
+                }
+
+                let outcome = deliver_log(
+                    store.data_mut(),
+                    ceiling,
+                    sink.as_ref(),
+                    &owned_plugin,
+                    params,
+                );
+
+                if let Some(hook) = &trace {
+                    let reported = match &outcome {
+                        Ok(()) => Outcome::Returned(&[]),
+                        Err(err) => Outcome::Failed(err),
+                    };
+                    hook.on_event(&TraceEvent::ImportReturn {
+                        plugin: &owned_plugin,
+                        interface,
+                        func: LOGGING_FUNC,
+                        outcome: reported,
+                    });
+                }
+
+                match outcome {
+                    Ok(()) => Ok(()),
+                    // A ceiling, not a misbehaviour: the marker survives the
+                    // backtrace wasmtime layers on, so the caller sees
+                    // LimitExceeded rather than Trap.
+                    Err(err) if err.kind() == ErrorKind::LimitExceeded => Err(
+                        wasmtime::Error::new(LogVolumeExceeded(err.message().to_string())),
+                    ),
+                    Err(err) => Err(wasmtime::Error::msg(err.message().to_string())),
+                }
+            })
+            .map_err(|err| {
+                Error::new(
+                    ErrorKind::Internal,
+                    format!("{plugin}: cannot define {interface}#{LOGGING_FUNC}: {err:?}"),
+                )
+            })?;
+    }
+    Ok(())
+}
+
+/// Charge one `log` call against the budget, filter it, and hand it on.
+fn deliver_log(
+    state: &mut State,
+    ceiling: LogLevel,
+    sink: Option<&LogSink>,
+    plugin: &str,
+    params: &[Val],
+) -> Result<()> {
+    let [Val::Enum(level), Val::String(context), Val::String(message)] = params else {
+        return Err(Error::new(
+            ErrorKind::Internal,
+            format!(
+                "{plugin}: {LOGGING_VERSIONED}#{LOGGING_FUNC} was called with \
+                 {} argument(s) of an unexpected shape; \
+                 this host implements wasi:logging@0.1.0-draft",
+                params.len()
+            ),
+        ));
+    };
+
+    let bytes = (context.len() as u64).saturating_add(message.len() as u64);
+    state
+        .log
+        .charge(bytes)
+        .map_err(|why| Error::new(ErrorKind::LimitExceeded, format!("{plugin}: {why}")))?;
+
+    let Some(level) = LogLevel::from_wit_name(level) else {
+        // A case this build does not know cannot be compared against the
+        // ceiling, so it cannot be shown to satisfy it. Drop rather than
+        // deliver: the manifest's ceiling has to hold across a revision of a
+        // Phase 1 proposal that adds a case.
+        return Ok(());
+    };
+
+    if level < ceiling {
+        return Ok(());
+    }
+
+    if let Some(sink) = sink {
+        sink(&LogRecord {
+            level,
+            context,
+            message,
+        });
+    }
+    Ok(())
 }
 
 /// Install the application's own interfaces on the linker.
@@ -337,6 +576,7 @@ fn install_host_funcs(linker: &mut Linker<State>, plugin: &str, wiring: &Wiring<
 
 /// Reset the per-call budgets on a store.
 fn arm(store: &mut Store<State>, limits: &Limits, name: &str) -> Result<()> {
+    store.data_mut().log.rearm();
     if let Some(fuel) = limits.fuel {
         store.set_fuel(fuel).map_err(|err| {
             Error::new(

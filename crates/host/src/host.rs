@@ -15,7 +15,7 @@ use wasmtime::component::{Component, Type, Val};
 use wasmtime::{Config, Engine};
 
 use crate::imports::{self, GrantReport};
-use crate::manifest::Manifest;
+use crate::manifest::{LogLevel, Manifest};
 use crate::plugin::{Plugin, Wiring};
 use crate::trace::TraceHook;
 use crate::{Error, ErrorKind, Result};
@@ -58,6 +58,51 @@ impl<'a> HostCall<'a> {
     }
 }
 
+/// Where a plugin's `wasi:logging` messages go.
+///
+/// The application supplies this; watoots wires the interface and stays out of
+/// the logging-framework business. It is invoked inline on the guest's call, so
+/// it must be cheap and must not panic — and, like a [`HostFunc`], it may be
+/// entered from any thread.
+pub type LogSink = Arc<dyn Fn(&LogRecord<'_>) + Send + Sync>;
+
+/// One message a plugin emitted through `wasi:logging`.
+///
+/// There is deliberately **no timestamp field**. A guest-supplied one would
+/// defeat the pinned wall clock and make a recording unreplayable, and a
+/// host-supplied one would be redundant: every logging framework a sink could
+/// forward to stamps its own records, at an instant nearer the truth than the
+/// moment the canonical ABI finished copying the string out of guest memory.
+/// So the sink stamps it, from the host clock, by doing nothing at all.
+#[derive(Debug, Clone, Copy)]
+pub struct LogRecord<'a> {
+    pub(crate) level: LogLevel,
+    pub(crate) context: &'a str,
+    pub(crate) message: &'a str,
+}
+
+impl<'a> LogRecord<'a> {
+    /// Severity, already checked against the manifest's ceiling: a record
+    /// reaching the sink is one the manifest admits.
+    #[must_use]
+    pub fn level(&self) -> LogLevel {
+        self.level
+    }
+
+    /// The guest's uninterpreted grouping string. Untrusted, and not
+    /// necessarily short — treat it as data, never as a format string.
+    #[must_use]
+    pub fn context(&self) -> &'a str {
+        self.context
+    }
+
+    /// The message text. Untrusted, same caveat.
+    #[must_use]
+    pub fn message(&self) -> &'a str {
+        self.message
+    }
+}
+
 impl fmt::Debug for HostCall<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("HostCall")
@@ -84,6 +129,7 @@ struct HostInner {
     vars: BTreeMap<String, String>,
     cache_dir: Option<PathBuf>,
     trace: Option<Arc<dyn TraceHook>>,
+    log_sink: Option<LogSink>,
     /// Kept alive for as long as the host is; dropping it stops the thread.
     _ticker: Option<EpochTicker>,
 }
@@ -215,6 +261,7 @@ impl Host {
             manifest: &manifest,
             host_funcs: &self.inner.host_funcs,
             trace: self.inner.trace.as_ref(),
+            log_sink: self.inner.log_sink.as_ref(),
         };
         Plugin::instantiate(name, &self.inner.engine, &component, &wiring, report)
     }
@@ -309,6 +356,7 @@ impl fmt::Debug for Host {
             .field("vars", &self.inner.vars)
             .field("cache_dir", &self.inner.cache_dir)
             .field("tracing", &self.inner.trace.is_some())
+            .field("log_sink", &self.inner.log_sink.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -331,6 +379,7 @@ pub struct HostBuilder {
     vars: BTreeMap<String, String>,
     cache_dir: Option<PathBuf>,
     trace: Option<Arc<dyn TraceHook>>,
+    log_sink: Option<LogSink>,
 }
 
 impl fmt::Debug for HostBuilder {
@@ -416,6 +465,26 @@ impl HostBuilder {
         self
     }
 
+    /// Receive the plugin's `wasi:logging` messages.
+    ///
+    /// Whether the interface links at all is the manifest's decision, not this
+    /// one: `permissions.logging` grants it and sets the level ceiling, and a
+    /// component importing `wasi:logging` under a manifest that says nothing
+    /// fails to load however many sinks are registered. A grant with no sink is
+    /// legal and discards — the application chose not to listen — but it is
+    /// almost always a bug, so register one.
+    ///
+    /// Setting a sink twice replaces the first; there is one, and watoots does
+    /// no fan-out.
+    #[must_use]
+    pub fn log_sink<F>(mut self, sink: F) -> Self
+    where
+        F: Fn(&LogRecord<'_>) + Send + Sync + 'static,
+    {
+        self.log_sink = Some(Arc::new(sink));
+        self
+    }
+
     /// Build the host and its engine.
     pub fn build(self) -> Result<Host> {
         let limits = &self.manifest.limits;
@@ -468,6 +537,7 @@ impl HostBuilder {
                 vars: self.vars,
                 cache_dir: self.cache_dir,
                 trace: self.trace,
+                log_sink: self.log_sink,
                 _ticker: ticker,
             }),
         })

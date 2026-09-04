@@ -33,6 +33,19 @@ typedef enum wt_status {
   WT_ERR_INTERNAL = 8,
 } wt_status;
 
+// Severity of a `wasi:logging` message.
+//
+// The six cases and their order are `wasi:logging@0.1.0-draft`'s own, so the
+// numeric values are stable for as long as that proposal's `enum level` is.
+typedef enum wt_log_level {
+  WT_LOG_TRACE = 0,
+  WT_LOG_DEBUG = 1,
+  WT_LOG_INFO = 2,
+  WT_LOG_WARN = 3,
+  WT_LOG_ERROR = 4,
+  WT_LOG_CRITICAL = 5,
+} wt_log_level;
+
 // An error: a status code and a message.
 typedef struct wt_error_t wt_error_t;
 
@@ -60,6 +73,26 @@ typedef enum wt_status (*wt_host_func_t)(void *userdata,
                                          char **result_out,
                                          struct wt_error_t **error_out);
 
+// Where a plugin's `wasi:logging` messages go.
+//
+// `context` and `message` are NUL-terminated, borrowed for the duration of the
+// call, and **untrusted**: they come from the plugin. Copy what you keep, and
+// never pass either to a `printf`-family format argument.
+//
+// There is no timestamp parameter. A guest-supplied one would defeat the
+// pinned wall clock and make a recording unreplayable, and a host-supplied one
+// would only be a worse version of the stamp your own logging framework
+// applies. Stamp it in the sink.
+//
+// Returns nothing: `wasi:logging`'s `log` has no result, so there is no
+// failure for a guest to observe. The sink and `userdata` must be safe to use
+// from any thread, and must not throw — watoots does not serialise calls into
+// it, and unwinding across the boundary is undefined behaviour.
+typedef void (*wt_log_sink_t)(void *userdata,
+                              enum wt_log_level level,
+                              const char *context,
+                              const char *message);
+
 #ifdef __cplusplus
 extern "C" {
 #endif // __cplusplus
@@ -69,6 +102,9 @@ const char *wt_version_string(void);
 
 // Stable spelling of a status code, e.g. `"WT_ERR_MANIFEST"`. Never NULL.
 const char *wt_status_name(enum wt_status status);
+
+// The `wasi:logging` spelling of a level, e.g. `"warn"`. Never NULL.
+const char *wt_log_level_name(enum wt_log_level level);
 
 // Copy a C string into one watoots owns, for returning from a host function.
 //
@@ -131,6 +167,20 @@ enum wt_status wt_host_builder_host_func(struct wt_host_builder_t *builder,
                                          wt_host_func_t implementation,
                                          void *userdata,
                                          struct wt_error_t **error_out);
+
+// Receive the plugin's `wasi:logging` messages.
+//
+// Whether the interface links at all is the manifest's decision, not this one:
+// `permissions.logging` grants it and sets the level ceiling, and a component
+// importing `wasi:logging` under a manifest that says nothing fails to load
+// however many sinks are registered. Calling this twice replaces the first
+// sink; there is one, and watoots does no fan-out.
+//
+// `userdata` must outlive the host built from this builder.
+enum wt_status wt_host_builder_log_sink(struct wt_host_builder_t *builder,
+                                        wt_log_sink_t sink,
+                                        void *userdata,
+                                        struct wt_error_t **error_out);
 
 // Build the host. The builder is consumed but must still be freed with
 // [`wt_host_builder_delete`].

@@ -25,6 +25,7 @@ fs.read  = ["${plugin_dir}", "${workspace}/**/*.md"]
 fs.write = ["${plugin_dir}/cache"]
 clocks   = "monotonic"          # durations, but no idea what day it is
 random   = true
+logging  = "warn"               # wasi:logging, warn and above
                                 # `net` absent: no sockets, no HTTP
 
 [limits]

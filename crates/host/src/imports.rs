@@ -93,6 +93,8 @@ pub enum Requirement {
     Random,
     /// `wasi:cli/environment`.
     Environment,
+    /// `wasi:logging` — needs a `logging` level grant.
+    Logging,
     /// An interface the embedding application declared it serves.
     HostProvided,
     /// Something we cannot account for, which is therefore denied.
@@ -112,6 +114,7 @@ impl Requirement {
             Self::WallClock => "permissions.clocks = \"wall\"",
             Self::Random => "permissions.random = true",
             Self::Environment => "permissions.env",
+            Self::Logging => "permissions.logging = \"warn\"",
             Self::HostProvided => "(served by the host application)",
             Self::Unrecognized => "(cannot be granted)",
         }
@@ -156,6 +159,11 @@ pub fn classify(import: ComponentImport<'_>, host_provided: &BTreeSet<String>) -
         // Outbound HTTP is network access by another name. A JS or Python guest
         // links it in by default, so this is not a hypothetical.
         ("http", _) => Requirement::Network,
+        // `wasi:logging@0.1.0-draft` declares exactly one interface, also called
+        // `logging`. Matched by name rather than by package so that a second
+        // interface appearing in a later revision denies until we have looked
+        // at it, instead of riding in on the grant for this one.
+        ("logging", "logging") => Requirement::Logging,
         ("clocks", "wall-clock") => Requirement::WallClock,
         ("clocks", _) => Requirement::MonotonicClock,
         ("random", _) => Requirement::Random,
@@ -252,6 +260,10 @@ fn is_granted(requirement: Requirement, permissions: &Permissions) -> bool {
         // may read it and will find nothing. Absent means it may not read at
         // all, which is why this is an Option and not an emptiness check.
         Requirement::Environment => permissions.env.is_some(),
+        // Granted by naming a level at all. Which levels actually reach the
+        // sink is a filter applied per message; this is only the question of
+        // whether the interface links.
+        Requirement::Logging => permissions.logging.is_some(),
         Requirement::Unrecognized => false,
     }
 }
@@ -316,6 +328,7 @@ mod tests {
                 Requirement::MonotonicClock,
             ),
             ("wasi:random/random@0.2.6", Requirement::Random),
+            ("wasi:logging/logging@0.1.0-draft", Requirement::Logging),
         ];
         for (import, expected) in cases {
             assert_eq!(classify(callable(import), &none), expected, "{import}");
@@ -331,6 +344,57 @@ mod tests {
             ),
             Requirement::Network
         );
+    }
+
+    #[test]
+    fn a_prerelease_version_suffix_still_parses_and_matches_unversioned() {
+        // `wasi:logging` is Phase 1 and ships as `0.1.0-draft`. The hyphen has
+        // to survive parsing, or the grant is matched against a name nobody
+        // ever writes.
+        let iface = InterfaceRef::parse("wasi:logging/logging@0.1.0-draft").unwrap();
+        assert_eq!(iface.version.as_deref(), Some("0.1.0-draft"));
+        assert_eq!(iface.unversioned(), "wasi:logging/logging");
+    }
+
+    #[test]
+    fn logging_is_granted_by_naming_a_level_and_denied_by_saying_nothing() {
+        let denied = Manifest::parse("").unwrap();
+        let report = check(
+            ["wasi:logging/logging@0.1.0-draft"].map(callable),
+            &denied.permissions,
+            &provided(&[]),
+        );
+        assert!(!report.is_satisfied(), "{}", report.describe());
+        assert!(
+            report.describe().contains("permissions.logging"),
+            "{}",
+            report.describe()
+        );
+
+        let granted = Manifest::parse("[permissions]\nlogging = \"critical\"\n").unwrap();
+        let report = check(
+            ["wasi:logging/logging@0.1.0-draft"].map(callable),
+            &granted.permissions,
+            &provided(&[]),
+        );
+        // Even the strictest ceiling grants the interface: what it filters is
+        // which messages reach the sink, not whether the component links.
+        assert!(report.is_satisfied(), "{}", report.describe());
+    }
+
+    #[test]
+    fn a_second_interface_in_the_logging_package_is_not_covered_by_the_grant() {
+        let granted = Manifest::parse("[permissions]\nlogging = \"trace\"\n").unwrap();
+        assert_eq!(
+            classify(callable("wasi:logging/handler@0.2.0"), &provided(&[])),
+            Requirement::Unrecognized
+        );
+        let report = check(
+            ["wasi:logging/handler@0.2.0"].map(callable),
+            &granted.permissions,
+            &provided(&[]),
+        );
+        assert!(!report.is_satisfied(), "{}", report.describe());
     }
 
     #[test]

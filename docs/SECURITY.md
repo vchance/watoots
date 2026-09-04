@@ -14,8 +14,8 @@ it are written down, so here they are.
   a load error, not a runtime trap, so it is visible at install time.
 - **Memory isolation.** Guest linear memory is a bounds-checked region. A plugin
   cannot read or corrupt host memory, or another plugin's.
-- **Per-call resource ceilings.** Fuel, an epoch deadline, and a memory limit,
-  re-armed before each call and held per plugin.
+- **Per-call resource ceilings.** Fuel, an epoch deadline, a memory limit, and a
+  log-volume ceiling, re-armed before each call and held per plugin.
 
 ## What it does not give you
 
@@ -30,7 +30,12 @@ ceiling. Budgeting across plugins is the application's job.
 
 **Protection from the host functions you write.** Every interface you serve is
 attack surface you own. watoots passes arguments to your callback; whether that
-callback then reads a path the manifest never granted is up to you.
+callback then reads a path the manifest never granted is up to you. The
+`wasi:logging` sink is the same deal in a place that looks safer than it is: the
+context and message are guest-controlled text of guest-chosen length, so treat
+them as data — never as a format string — and remember that whatever you forward
+them to inherits the exposure. `limits.log_bytes` and `limits.log_messages` bound
+the volume; they say nothing about the content.
 
 **A trustworthy cache directory.** `cache_dir` holds precompiled machine code
 that the engine loads without re-validating. Write access to it is equivalent to

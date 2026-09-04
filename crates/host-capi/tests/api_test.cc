@@ -189,6 +189,167 @@ TEST(CApi, AHostFunctionCanCaptureApplicationState) {
   EXPECT_EQ(calls, 0);
 }
 
+// A component that imports wasi:logging and calls it once, at `warn`. The
+// index-based instance type is not stylistic: an instance type used as an
+// import may only reference types it also exports, and the text format has no
+// way to bind a name to the exported one. See crates/host/tests/logging.rs.
+constexpr const char* kLogsOnce = R"(
+(component
+  (type (;0;)
+    (instance
+      (type (;0;) (enum "trace" "debug" "info" "warn" "error" "critical"))
+      (export (;1;) "level" (type (eq 0)))
+      (type (;2;) (func (param "level" 1) (param "context" string) (param "message" string)))
+      (export (;0;) "log" (func (type 2)))
+    )
+  )
+  (import "wasi:logging/logging@0.1.0-draft" (instance $log (type 0)))
+  (alias export $log "log" (func $log_fn))
+
+  (core module $libc
+    (memory (export "memory") 1)
+    (func (export "realloc") (param i32 i32 i32 i32) (result i32)
+      i32.const 256)
+  )
+  (core instance $libc_i (instantiate $libc))
+  (core func $log_lowered
+    (canon lower (func $log_fn)
+      (memory $libc_i "memory")
+      (realloc (func $libc_i "realloc"))))
+
+  (core module $m
+    (import "log" "log" (func $log (param i32 i32 i32 i32 i32)))
+    (import "libc" "memory" (memory 1))
+    (data (i32.const 0) "boot")
+    (data (i32.const 8) "config is malformed")
+    (func (export "run")
+      (call $log (i32.const 3) (i32.const 0) (i32.const 4) (i32.const 8) (i32.const 19)))
+  )
+  (core instance $log_i (export "log" (func $log_lowered)))
+  (core instance $i (instantiate $m
+    (with "log" (instance $log_i))
+    (with "libc" (instance $libc_i))))
+
+  (func $run (canon lift (core func $i "run")))
+  (export "run" (func $run))
+)
+)";
+
+TEST(CApi, ALoggingPluginReachesTheApplicationSink) {
+  std::vector<std::string> lines;
+
+  wt::HostBuilder builder;
+  ASSERT_TRUE(builder.ManifestFromString("[permissions]\nlogging = \"info\"\n")
+                  .has_value());
+  ASSERT_TRUE(
+      builder
+          .LogSink([&lines](wt_log_level level, std::string_view context,
+                            std::string_view message) {
+            lines.emplace_back(std::string(wt_log_level_name(level)) + " " +
+                               std::string(context) + ": " +
+                               std::string(message));
+          })
+          .has_value());
+
+  auto host = builder.Build();
+  ASSERT_TRUE(host.has_value()) << host.error().Message();
+
+  const std::string wasm = kLogsOnce;
+  auto plugin = host->LoadBinary("talker", AsBytes(wasm));
+  ASSERT_TRUE(plugin.has_value()) << plugin.error().Message();
+
+  auto result = plugin->Call("run");
+  ASSERT_TRUE(result.has_value()) << result.error().Message();
+
+  ASSERT_EQ(lines.size(), 1U);
+  EXPECT_EQ(lines.front(), "warn boot: config is malformed");
+}
+
+TEST(CApi, LoggingIsRefusedWhenTheManifestDoesNotGrantIt) {
+  // The manifest decides, not the sink: a registered sink does not make an
+  // ungranted import loadable.
+  wt::HostBuilder builder;
+  ASSERT_TRUE(builder.ManifestFromString("").has_value());
+  ASSERT_TRUE(builder
+                  .LogSink([](wt_log_level, std::string_view,
+                              std::string_view) { FAIL(); })
+                  .has_value());
+  auto host = builder.Build();
+  ASSERT_TRUE(host.has_value()) << host.error().Message();
+
+  const std::string wasm = kLogsOnce;
+  auto plugin = host->LoadBinary("talker", AsBytes(wasm));
+  ASSERT_FALSE(plugin.has_value());
+  EXPECT_EQ(plugin.error().Code(), WT_ERR_PERMISSION_DENIED);
+  EXPECT_NE(plugin.error().Message().find("permissions.logging"),
+            std::string::npos)
+      << plugin.error().Message();
+}
+
+TEST(CApi, TheLevelCeilingFiltersBeforeTheSinkSeesAnything) {
+  int calls = 0;
+
+  wt::HostBuilder builder;
+  ASSERT_TRUE(builder.ManifestFromString("[permissions]\nlogging = \"error\"\n")
+                  .has_value());
+  ASSERT_TRUE(builder
+                  .LogSink([&calls](wt_log_level, std::string_view,
+                                    std::string_view) { ++calls; })
+                  .has_value());
+  auto host = builder.Build();
+  ASSERT_TRUE(host.has_value()) << host.error().Message();
+
+  const std::string wasm = kLogsOnce;
+  auto plugin = host->LoadBinary("talker", AsBytes(wasm));
+  ASSERT_TRUE(plugin.has_value()) << plugin.error().Message();
+  ASSERT_TRUE(plugin->Call("run").has_value());
+
+  // The plugin logged at `warn`; the manifest admits `error` and above.
+  EXPECT_EQ(calls, 0);
+}
+
+TEST(CApi, TheLogVolumeCeilingIsReportedAsALimit) {
+  wt::HostBuilder builder;
+  // "boot" + "config is malformed" is 23 bytes, so one message does not fit.
+  ASSERT_TRUE(builder
+                  .ManifestFromString("[permissions]\nlogging = \"trace\"\n\n"
+                                      "[limits]\nlog_bytes = 8\n")
+                  .has_value());
+  ASSERT_TRUE(builder
+                  .LogSink([](wt_log_level, std::string_view,
+                              std::string_view) { FAIL(); })
+                  .has_value());
+  auto host = builder.Build();
+  ASSERT_TRUE(host.has_value()) << host.error().Message();
+
+  const std::string wasm = kLogsOnce;
+  auto plugin = host->LoadBinary("firehose", AsBytes(wasm));
+  ASSERT_TRUE(plugin.has_value()) << plugin.error().Message();
+
+  auto result = plugin->Call("run");
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().Code(), WT_ERR_LIMIT_EXCEEDED);
+  EXPECT_NE(result.error().Message().find("limits.log_bytes"),
+            std::string::npos)
+      << result.error().Message();
+}
+
+TEST(CApi, LogLevelNamesMatchTheWitSpelling) {
+  EXPECT_STREQ(wt_log_level_name(WT_LOG_TRACE), "trace");
+  EXPECT_STREQ(wt_log_level_name(WT_LOG_WARN), "warn");
+  EXPECT_STREQ(wt_log_level_name(WT_LOG_CRITICAL), "critical");
+}
+
+TEST(CApi, ANullLogSinkIsRejected) {
+  wt_error_t* error = nullptr;
+  wt_host_builder_t* builder = wt_host_builder_new();
+  EXPECT_EQ(wt_host_builder_log_sink(builder, nullptr, nullptr, &error),
+            WT_ERR_INVALID_ARGUMENT);
+  ASSERT_NE(error, nullptr);
+  wt_error_delete(error);
+  wt_host_builder_delete(builder);
+}
+
 TEST(CApi, MovingAPluginDoesNotDoubleFree) {
   const wt::Host host = BuildHost();
   const std::string wasm = kSelfContained;

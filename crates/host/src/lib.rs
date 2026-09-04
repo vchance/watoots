@@ -43,9 +43,9 @@ pub mod trace;
 pub mod wave;
 
 pub use error::{Error, ErrorKind, Result};
-pub use host::{Host, HostBuilder, HostCall, HostFunc, ImportedFunction};
+pub use host::{Host, HostBuilder, HostCall, HostFunc, ImportedFunction, LogRecord, LogSink};
 pub use imports::{GrantReport, ImportDecision, Requirement};
-pub use manifest::{Clocks, FsGrants, Limits, Manifest, Permissions};
+pub use manifest::{Clocks, FsGrants, Limits, LogLevel, Manifest, Permissions};
 pub use plugin::Plugin;
 pub use registry::Registry;
 pub use trace::{Outcome, TraceEvent, TraceHook};

@@ -328,3 +328,125 @@ fn the_determinism_settings_travel_with_the_trace() {
     let report = replay(&trace, &wasm).unwrap();
     assert!(report.is_faithful(), "{}", report.describe());
 }
+
+// ---------------------------------------------------------------------------
+// wasi:logging
+// ---------------------------------------------------------------------------
+
+/// The manifest a logging plugin needs, and nothing more.
+const LOGGING_POLICY: &str = r#"
+[permissions]
+logging = "trace"
+"#;
+
+/// Imports `wasi:logging` *and* an application interface, and calls both.
+///
+/// The combination is what matters: a recorded `wasi:logging` crossing is
+/// served by the host library rather than by replay's mock, so a replay that
+/// did not step over it would report the log call as a divergence at the next
+/// real import. WAT rather than a compiled guest, so this stays hermetic — see
+/// `crates/host/tests/logging.rs` for what the index-based instance type is
+/// working around.
+const TALKS_AND_CALLS: &str = r#"
+(component
+  (type (;0;)
+    (instance
+      (type (;0;) (enum "trace" "debug" "info" "warn" "error" "critical"))
+      (export (;1;) "level" (type (eq 0)))
+      (type (;2;) (func (param "level" 1) (param "context" string) (param "message" string)))
+      (export (;0;) "log" (func (type 2)))
+    )
+  )
+  (import "wasi:logging/logging@0.1.0-draft" (instance $log (type 0)))
+  (import "watoots:example/note@0.1.0" (instance $note (export "note" (func))))
+  (alias export $log "log" (func $log_fn))
+  (alias export $note "note" (func $note_fn))
+
+  (core module $libc
+    (memory (export "memory") 1)
+    (func (export "realloc") (param i32 i32 i32 i32) (result i32)
+      i32.const 256)
+  )
+  (core instance $libc_i (instantiate $libc))
+
+  (core func $log_lowered
+    (canon lower (func $log_fn)
+      (memory $libc_i "memory")
+      (realloc (func $libc_i "realloc"))))
+  (core func $note_lowered (canon lower (func $note_fn)))
+
+  (core module $m
+    (import "log" "log" (func $log (param i32 i32 i32 i32 i32)))
+    (import "note" "note" (func $note))
+    (import "libc" "memory" (memory 1))
+    (data (i32.const 0) "ctx")
+    (data (i32.const 8) "hello")
+    (func (export "run")
+      (call $log (i32.const 3) (i32.const 0) (i32.const 3) (i32.const 8) (i32.const 5))
+      (call $note))
+  )
+  (core instance $log_i (export "log" (func $log_lowered)))
+  (core instance $note_i (export "note" (func $note_lowered)))
+  (core instance $i (instantiate $m
+    (with "log" (instance $log_i))
+    (with "note" (instance $note_i))
+    (with "libc" (instance $libc_i))))
+
+  (func $run (canon lift (core func $i "run")))
+  (export "run" (func $run))
+)
+"#;
+
+/// Record one `run` call against the WAT component above.
+fn record_a_logging_session() -> (Trace, Vec<u8>) {
+    let wasm = TALKS_AND_CALLS.as_bytes().to_vec();
+
+    let recorder = Arc::new(Recorder::new(Header {
+        component_sha256: Trace::hash_component(&wasm),
+        plugin: "talker".to_string(),
+        manifest_toml: LOGGING_POLICY.to_string(),
+    }));
+
+    let host = Host::builder()
+        .manifest(Manifest::parse(LOGGING_POLICY).unwrap())
+        .host_func("watoots:example/note@0.1.0", "note", |_call| Ok(Vec::new()))
+        .log_sink(|_record| {})
+        .trace_hook(Arc::clone(&recorder) as Arc<dyn TraceHook>)
+        .build()
+        .unwrap();
+
+    let mut plugin = host.load_binary("talker", &wasm).unwrap();
+    plugin.call("run", &[]).unwrap();
+
+    (recorder.finish().unwrap(), wasm)
+}
+
+#[test]
+fn a_log_call_is_recorded_as_an_import_crossing() {
+    // ADR-0006's claim, checked: logging needs no new trace machinery, so a bug
+    // report carries the plugin's own account of what it thought was happening.
+    let (trace, _) = record_a_logging_session();
+
+    let logged = trace.events.iter().find_map(|event| match event {
+        Event::ImportCall {
+            interface,
+            func,
+            args,
+        } if interface.starts_with("wasi:logging") => Some((func.clone(), args.clone())),
+        _ => None,
+    });
+
+    let (func, args) = logged.expect("the log call should be in the trace");
+    assert_eq!(func, "log");
+    assert_eq!(args, ["warn", "\"ctx\"", "\"hello\""]);
+}
+
+#[test]
+fn replay_steps_over_recorded_wasi_crossings() {
+    // The host library serves wasi:logging from the manifest in the trace
+    // header, so replay's mock never sees the log call. Failing to step over it
+    // would report the *next* import as a divergence.
+    let (trace, wasm) = record_a_logging_session();
+    let report = replay(&trace, &wasm).unwrap();
+    assert!(report.is_faithful(), "{}", report.describe());
+}

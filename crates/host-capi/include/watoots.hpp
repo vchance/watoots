@@ -264,6 +264,21 @@ using Value = std::optional<std::string>;
 using HostFunction =
     std::function<Result<Value>(std::span<const std::string_view> args)>;
 
+/// Where a plugin's `wasi:logging` messages go.
+///
+/// `context` and `message` are untrusted: they come from the plugin. Copy what
+/// you keep, and never pass either as a format string.
+///
+/// No timestamp is handed over -- stamp it here, from the host clock. A
+/// guest-supplied one would defeat the pinned wall clock and make a recording
+/// unreplayable. Whether a plugin may log at all, and from which level up, is
+/// the manifest's `permissions.logging`, not this callback's business.
+///
+/// Must not throw: it is invoked from C, where unwinding is undefined
+/// behaviour.
+using LogFunction = std::function<void(
+    wt_log_level level, std::string_view context, std::string_view message)>;
+
 /// A loaded plugin.
 class Plugin {
  public:
@@ -369,12 +384,16 @@ class Host {
 
  private:
   friend class HostBuilder;
-  Host(wt_host_t* raw, std::vector<std::unique_ptr<HostFunction>> functions)
-      : handle_(raw), functions_(std::move(functions)) {}
+  Host(wt_host_t* raw, std::vector<std::unique_ptr<HostFunction>> functions,
+       std::unique_ptr<LogFunction> log_sink)
+      : handle_(raw),
+        functions_(std::move(functions)),
+        log_sink_(std::move(log_sink)) {}
 
   internal::OwnedHandle<wt_host_t, internal::HostDeleter> handle_;
   // The C API holds raw pointers to these, so they must outlive the host.
   std::vector<std::unique_ptr<HostFunction>> functions_;
+  std::unique_ptr<LogFunction> log_sink_;
 };
 
 /// Adapts a `HostFunction` to the C callback signature.
@@ -403,6 +422,16 @@ extern "C" inline wt_status WatootsHostFuncTrampoline(  // NOLINT
     *result_out = wt_string_new(outcome.value()->c_str());
   }
   return WT_OK;
+}
+
+/// Adapts a `LogFunction` to the C sink signature. See above for why this is
+/// `extern "C"`.
+extern "C" inline void WatootsLogSinkTrampoline(  // NOLINT
+    void* userdata, wt_log_level level, const char* context,
+    const char* message) {
+  auto* sink = static_cast<LogFunction*>(userdata);
+  (*sink)(level, context == nullptr ? "" : context,
+          message == nullptr ? "" : message);
 }
 
 /// Builds a [`Host`].
@@ -458,8 +487,25 @@ class HostBuilder {
     return {};
   }
 
+  /// Receive the plugin's `wasi:logging` messages.
+  ///
+  /// The manifest decides whether a plugin may log at all and from which level
+  /// up; registering a sink only says where the messages that survive that
+  /// ceiling go. Calling this twice replaces the first sink.
+  Result<void> LogSink(LogFunction implementation) {
+    auto owned = std::make_unique<LogFunction>(std::move(implementation));
+    wt_error_t* error = nullptr;
+    const wt_status status = wt_host_builder_log_sink(
+        handle_.Get(), WatootsLogSinkTrampoline, owned.get(), &error);
+    if (status != WT_OK) {
+      return unexpected(internal::TakeError(status, error));
+    }
+    log_sink_ = std::move(owned);
+    return {};
+  }
+
   /// Build the host. The builder is spent afterwards, and the host takes over
-  /// keeping the registered host functions alive.
+  /// keeping the registered host functions and log sink alive.
   Result<Host> Build() {
     wt_host_t* host = nullptr;
     wt_error_t* error = nullptr;
@@ -469,12 +515,14 @@ class HostBuilder {
       return unexpected(internal::TakeError(status, error));
     }
     auto functions = std::move(functions_);
+    auto log_sink = std::move(log_sink_);
     // Spent, and definitively so. The C layer already refuses a second build,
     // but that invariant lives across the FFI boundary where neither the
     // compiler nor the static analyser can see it -- so leave the vector empty
     // rather than merely moved-from.
     functions_.clear();
-    return Host(host, std::move(functions));
+    log_sink_.reset();
+    return Host(host, std::move(functions), std::move(log_sink));
   }
 
  private:
@@ -492,6 +540,7 @@ class HostBuilder {
 
   internal::OwnedHandle<wt_host_builder_t, internal::BuilderDeleter> handle_;
   std::vector<std::unique_ptr<HostFunction>> functions_;
+  std::unique_ptr<LogFunction> log_sink_;
 };
 
 }  // namespace wt

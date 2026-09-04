@@ -215,6 +215,18 @@ fn build_host(invocation: &Invocation, hook: Option<Arc<dyn TraceHook>>) -> Resu
         });
     }
 
+    // A plugin granted `permissions.logging` has to be able to reach somebody,
+    // and stderr is the only answer a CLI can give: stdout carries the call's
+    // return value, and a `watoots run ... > out` has to keep working.
+    builder = builder.log_sink(|record| {
+        eprintln!(
+            "[{}] {}: {}",
+            record.level().as_wit_name(),
+            record.context(),
+            record.message()
+        );
+    });
+
     if let Some(hook) = hook {
         builder = builder.trace_hook(hook);
     }

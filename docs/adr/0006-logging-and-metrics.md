@@ -95,9 +95,9 @@ subsystem.
 ## Consequences
 
 - A plugin gains a portable way to report a problem, and it is recorded: a
-  `wasi:logging` call is a host-import crossing, so record/replay captures it
-  with no new machinery. A replayed bug report carries the plugin's own account
-  of what it thought was happening.
+  `wasi:logging` call is a host-import crossing, so a replayed bug report
+  carries the plugin's own account of what it thought was happening. (See the
+  addendum: "with no new machinery" was wrong.)
 - `examples/wit/lint.wit` keeps `watoots:example/log`, which now demonstrates
   what it was always meant to — *an application's own* interface — rather than
   standing in for a missing standard one.
@@ -112,3 +112,25 @@ subsystem.
 [wasi-otel]: https://github.com/WebAssembly/wasi-otel
 [wasi-observe]: https://github.com/WebAssembly/wasi-observe
 [proposals]: https://github.com/WebAssembly/WASI/blob/main/Proposals.md
+
+## Addendum — 2026-09-03, on implementation
+
+Two corrections from wiring this up. Left here rather than edited into the text
+above, because what a decision got wrong is worth more than a tidy record of it.
+
+**"Record/replay captures it with no new machinery" was wrong.** Replay's mock
+host serves the *application's* interfaces and deliberately ignores `wasi:`
+ones, which the host library answers from the manifest in the trace header. So
+a plugin that both logs and calls an application host function stalls the
+replay cursor on the logging events and reports the next real import as a
+divergence. Fixed by `Cursor::skip_unserved` in `crates/trace/src/replay.rs`,
+with a regression test that fails without it. Small, but it is new machinery,
+and the ADR should not have assumed otherwise from the outside.
+
+**The shim must be installed on the `Linker` directly, not through
+`HostBuilder::host_func`.** `imports::classify` consults `host_provided` before
+it looks at the `wasi` namespace, so registering logging as an ordinary host
+function would let an application shadow the capability check and make
+`permissions.logging` decorative. This ADR said "the application supplies the
+sink" and did not distinguish supplying a sink from supplying the interface.
+Only the sink is the application's.

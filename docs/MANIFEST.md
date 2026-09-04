@@ -48,6 +48,7 @@ gate.
 | `env` | table | `wasi:cli/environment` |
 | `clocks` | `"monotonic"` \| `"wall"` | `wasi:clocks` |
 | `random` | bool | `wasi:random` |
+| `logging` | `"trace"` … `"critical"` | `wasi:logging` |
 
 Absent keys deny. Two of them have a third state that matters:
 
@@ -73,6 +74,45 @@ the situation: the plugin can see the door and cannot open it.
 `"wall"` implies `"monotonic"`. They are separate because the wall clock is the
 one that makes a recorded trace non-reproducible.
 
+### `logging` names a floor, and is how a plugin says anything at all
+
+```toml
+logging = "warn"   # warn, error and critical reach the sink; the rest are dropped
+```
+
+Default-deny has an edge that only shows up in production: a plugin with no
+filesystem, no sockets and no stdout worth the name has **no way to report that
+something is wrong**. The host learns that a call failed and nothing about why.
+[`wasi:logging`][wasi-logging] is the standard answer — one function,
+`log(level, context, message)` — so a plugin written for wasmCloud or Spin logs
+correctly here unchanged.
+
+Absence denies, like everything else: a component importing `wasi:logging` under
+a manifest that does not mention it fails to load. A level names the *least
+severe* message that reaches the application; `"trace"` admits all six.
+
+Where those messages go is the application's decision, not the manifest's:
+`HostBuilder::log_sink` in Rust, `wt_host_builder_log_sink` in C,
+`HostBuilder::LogSink` in C++. watoots wires the interface and stays out of the
+logging-framework business. A grant with no sink links and discards. The `watoots`
+CLI prints to stderr.
+
+Two things the sink does not get, on purpose. There is **no timestamp** — a
+guest-supplied one would defeat the pinned wall clock and make a recording
+unreplayable, and your logging framework already stamps records from the host
+clock at an instant nearer the truth. And there are **no guest-emitted metrics**;
+see [ADR-0006](adr/0006-logging-and-metrics.md) for why that is a sandbox
+argument rather than a scheduling one.
+
+> Note that `wasi:logging` is a [Phase 1 proposal][proposals] published as
+> `0.1.0-draft`, and a prerelease version is semver-compatible with nothing but
+> itself. watoots serves both `wasi:logging/logging@0.1.0-draft` and the bare
+> `wasi:logging/logging`, so a guest built from a version-stripped copy of the
+> WIT also links. Budget for one breaking adjustment before it stabilises.
+
+[wasi-logging]: https://github.com/WebAssembly/wasi-logging
+[proposals]: https://github.com/WebAssembly/WASI/blob/main/Proposals.md
+
 ### Filesystem grants are directory-granular
 
 A path in `fs.read` is preopened as a directory. WASI preopens are directories,
@@ -86,13 +126,24 @@ narrowest directory that works.
 | `memory` | `"64MiB"` or bytes | 64 MiB | `StoreLimits` |
 | `fuel` | integer | none | fuel metering, per call |
 | `timeout` | `"200ms"` | none | epoch interruption, per call |
+| `log_bytes` | `"64KiB"` or bytes | 64 KiB | `wasi:logging`, per call |
+| `log_messages` | integer | 1024 | `wasi:logging`, per call |
 
-`fuel` and `timeout` are **per call**, not per plugin lifetime: both are re-armed
-before every export invocation. Limits are also per plugin — each owns its
+`fuel`, `timeout`, `log_bytes` and `log_messages` are **per call**, not per
+plugin lifetime: all four are re-armed before every export invocation. Limits are also per plugin — each owns its
 store, so one plugin exhausting its fuel says nothing about its neighbours.
 
-An absent `[limits]` table still caps memory. "No limits stated" should not mean
-"this plugin may exhaust the host".
+An absent `[limits]` table still caps memory and log volume. "No limits stated"
+should not mean "this plugin may exhaust the host".
+
+The two log ceilings exist because fuel does not cover this: fuel bounds how many
+times a plugin loops, not how many bytes each iteration pushes into your logging
+pipeline, and lifting a guest string into a host string is work the host pays for
+outside the fuel budget. `log_bytes` counts the context and the message together
+and is charged **before** the `logging` level filters — otherwise
+`logging = "critical"` would be a licence to push unbounded bytes across the
+boundary at `trace`. Exceeding either ceiling fails the call with
+`WT_ERR_LIMIT_EXCEEDED`, the same way running out of fuel does.
 
 ## `[determinism]`
 
