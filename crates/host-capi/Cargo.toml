@@ -19,7 +19,7 @@ categories.workspace = true
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [dependencies]
-watoots = { version = "0.1.0", path = "../host" }
+watoots = { version = "0.2.0", path = "../host" }
 
 [build-dependencies]
 cbindgen = "0.29.4"

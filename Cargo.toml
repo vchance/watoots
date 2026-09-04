@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/host", "crates/host-capi", "crates/trace", "crates/cli"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 # MSRV is whatever Wasmtime 48 requires (ADR-0002 line in CLAUDE.md).
 rust-version = "1.95"

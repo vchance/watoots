@@ -15,7 +15,7 @@ categories.workspace = true
 
 [dependencies]
 sha2 = "0.11.0"
-watoots = { version = "0.1.0", path = "../host" }
+watoots = { version = "0.2.0", path = "../host" }
 
 [dev-dependencies]
 proptest = "1.11.0"

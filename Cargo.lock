@@ -2441,7 +2441,7 @@ dependencies = [
 
 [[package]]
 name = "watoots"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bytesize",
  "humantime-serde",
@@ -2460,7 +2460,7 @@ dependencies = [
 
 [[package]]
 name = "watoots-capi"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "cbindgen",
  "watoots",
@@ -2468,7 +2468,7 @@ dependencies = [
 
 [[package]]
 name = "watoots-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "clap",
  "tempfile",
@@ -2480,7 +2480,7 @@ dependencies = [
 
 [[package]]
 name = "watoots-trace"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "proptest",
  "sha2 0.11.0",

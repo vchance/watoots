@@ -41,13 +41,12 @@ fuel = 200_000_000
 TOML
 dim "\$ watoots inspect $plugin -m tight.toml"
 echo
-if $watoots inspect "$plugin" -m "$work/tight.toml" | grep -E 'DENY|not granted'; then
-  echo
-  dim "exit code was non-zero, so this works as a gate in CI"
-fi
+# Denials mean a non-zero exit, which is the point; keep going anyway.
+$watoots inspect "$plugin" -m "$work/tight.toml" || true
 echo
 dim "No guest code ran. The component declares its imports in the binary,"
-dim "so this is a load-time answer, not a runtime trap."
+dim "so this is a load-time answer, not a runtime trap -- and the exit code is"
+dim "non-zero, so it works as a gate in CI."
 
 # ---------------------------------------------------------------------------
 step "3. Record a session"
@@ -80,6 +79,18 @@ if $watoots replay "$work/edited.wave" -c "$plugin" --assert; then
 else
   dim "exit 1 -- a divergence fails the build"
 fi
+
+# ---------------------------------------------------------------------------
+step "6. Where the time actually goes"
+dim "\$ watoots profile $plugin -m $policy -c lint --repeat 200"
+echo
+$watoots profile "$plugin" -m "$policy" \
+  --answer 'watoots:example/log@0.1.0#emit=' \
+  -c lint --repeat 200 -- '"notes.md"' '"TODO: ship it\n"' | head -12
+echo
+dim "Three buckets, not one number. A slow call is a slow plugin, a slow host"
+dim "function, or a value being copied across the boundary -- and the fix is"
+dim "different in each case."
 
 bold "That is the whole product."
 dim "A manifest you can review before installing, and a bug report that is a"

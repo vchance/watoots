@@ -24,9 +24,8 @@ here and it will get routed.
 
 ## Supported versions
 
-**0.1.x** is the supported line. Fixes land on `main` and go out in the next
-0.1.x tag; there is no backport branch, because there is nothing yet to
-backport to. The only versions on crates.io are the `0.0.0` placeholders that
+**0.2.x** is the supported line. Fixes land on `main` and go out in the next
+0.2.x tag; there is no backport branch, and 0.1.x is not maintained. The only versions on crates.io are the `0.0.0` placeholders that
 reserve the names — they contain no working code and receive no fixes, so
 upgrading means moving the tag you build from.
 
