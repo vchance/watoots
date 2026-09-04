@@ -2,15 +2,18 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::path::Path;
 use std::sync::Arc;
+use std::time::Instant;
 
 use wasmtime::component::{Component, Linker, ResourceTable, Type, Val};
-use wasmtime::{Engine, Store, StoreLimits, StoreLimitsBuilder};
+use wasmtime::{Engine, GuestProfiler, Store, StoreLimits, StoreLimitsBuilder, UpdateDeadline};
 use wasmtime_wasi::{FsPerms, WasiCtx, WasiCtxView, WasiView};
 
-use crate::host::{HostFunc, LogRecord, LogSink};
+use crate::host::{HostFunc, LogRecord, LogSink, epoch_ticks};
 use crate::imports::GrantReport;
 use crate::manifest::{Limits, LogLevel, Manifest};
+use crate::profile::{Deadline, PluginProfile, ProfileState, Profiling};
 use crate::trace::{Outcome, TraceEvent, TraceHook};
 use crate::{Error, ErrorKind, Result};
 
@@ -47,6 +50,12 @@ struct State {
     limits: MeteredLimits,
     log: LogBudget,
     counters: Counters,
+    /// The per-call epoch budget. Present whether or not profiling is on: the
+    /// deadline enforces `limits.timeout` first and samples second.
+    deadline: Deadline,
+    /// `None` unless the host asked for profiling, which is what makes the
+    /// feature free when it is off — there is no call hook either.
+    profile: Option<ProfileState>,
 }
 
 /// `StoreLimits`, plus the high-water mark it passes through.
@@ -215,6 +224,7 @@ pub(crate) struct Wiring<'a> {
     pub host_funcs: &'a BTreeMap<String, BTreeMap<String, HostFunc>>,
     pub trace: Option<&'a Arc<dyn TraceHook>>,
     pub log_sink: Option<&'a LogSink>,
+    pub profiling: Option<Profiling>,
 }
 
 /// One instantiated plugin.
@@ -228,6 +238,9 @@ pub struct Plugin {
     limits: Limits,
     report: GrantReport,
     trace: Option<Arc<dyn TraceHook>>,
+    /// Mirrors `State::profile.is_some()`, so the hot path in [`Plugin::call`]
+    /// costs one bool rather than a store borrow.
+    profiling: bool,
 }
 
 impl fmt::Debug for Plugin {
@@ -261,6 +274,24 @@ impl Plugin {
             )
         })?;
 
+        // The sampler is built before the store because it needs the component
+        // it will be reporting stacks from, and because failing to build it is
+        // a load failure rather than something to discover at the first sample.
+        let profile = match wiring.profiling {
+            None => None,
+            Some(options) => Some(ProfileState::new(build_sampler(
+                name, engine, component, options,
+            )?)),
+        };
+
+        let deadline = Deadline::new(
+            manifest.limits.timeout.map(epoch_ticks),
+            wiring
+                .profiling
+                .and_then(|options| options.sample_interval)
+                .map(epoch_ticks),
+        );
+
         let state = State {
             wasi,
             table: ResourceTable::new(),
@@ -270,10 +301,19 @@ impl Plugin {
             },
             log: LogBudget::new(&manifest.limits),
             counters: Counters::default(),
+            deadline,
+            profile,
         };
 
+        let profiling = state.profile.is_some();
         let mut store = Store::new(engine, state);
         store.limiter(|state| &mut state.limits);
+        if profiling {
+            install_profiler(&mut store);
+        }
+        if deadline.samples() {
+            install_epoch_callback(&mut store);
+        }
 
         let mut linker: Linker<State> = Linker::new(engine);
         wasmtime_wasi::p2::add_to_linker_sync(&mut linker)
@@ -301,6 +341,7 @@ impl Plugin {
             limits: manifest.limits.clone(),
             report,
             trace: wiring.trace.map(Arc::clone),
+            profiling,
         })
     }
 
@@ -336,6 +377,78 @@ impl Plugin {
         }
     }
 
+    /// Where this plugin's time has gone, split at the boundary.
+    ///
+    /// The sibling of [`Plugin::stats`]: both are observed at the crossing
+    /// rather than reported by the guest, and this one answers "where" rather
+    /// than "how much". See [`PluginProfile`] for what each bucket covers, and
+    /// in particular for why `marshalling_nanos` is a remainder rather than a
+    /// measurement.
+    ///
+    /// Fails when the host was not built with
+    /// [`HostBuilder::profile`](crate::HostBuilder::profile), because a page of
+    /// zeroes is a worse answer than being told the feature is off.
+    pub fn profile(&self) -> Result<PluginProfile> {
+        self.store.data().profile.as_ref().map_or_else(
+            || {
+                Err(Error::new(
+                    ErrorKind::InvalidArgument,
+                    format!(
+                        "{}: profiling is not enabled; build the host with \
+                         HostBuilder::profile()",
+                        self.name
+                    ),
+                ))
+            },
+            |state| Ok(state.report()),
+        )
+    }
+
+    /// Write the sampled guest profile as Firefox Profiler JSON.
+    ///
+    /// This is the half of ADR-0009 that is Wasmtime's: `GuestProfiler` answers
+    /// "which guest function is hot", which [`Plugin::profile`] cannot, because
+    /// it never looks inside the guest. Load the file at
+    /// <https://profiler.firefox.com/>.
+    ///
+    /// Needs [`HostBuilder::profile_guest_samples`](crate::HostBuilder::profile_guest_samples).
+    /// The profiler is consumed: sampling stops here, and a second call fails.
+    pub fn write_guest_profile(&mut self, path: impl AsRef<Path>) -> Result<()> {
+        let path = path.as_ref();
+        let profiler = self
+            .store
+            .data_mut()
+            .profile
+            .as_mut()
+            .and_then(|state| state.guest.take())
+            .ok_or_else(|| {
+                Error::new(
+                    ErrorKind::InvalidArgument,
+                    format!(
+                        "{}: no guest samples were collected; build the host with \
+                         HostBuilder::profile_guest_samples(interval), and write \
+                         the profile only once",
+                        self.name
+                    ),
+                )
+            })?;
+
+        let file = std::fs::File::create(path).map_err(|err| {
+            Error::new(
+                ErrorKind::InvalidArgument,
+                format!("cannot write {}: {err}", path.display()),
+            )
+        })?;
+        profiler
+            .finish(std::io::BufWriter::new(file))
+            .map_err(|err| {
+                Error::new(
+                    ErrorKind::Internal,
+                    format!("{}: writing {}: {err:?}", self.name, path.display()),
+                )
+            })
+    }
+
     /// Fold the call that just finished into the lifetime totals.
     ///
     /// Fuel and the log budget are per call and re-armed by [`arm`], so they
@@ -366,6 +479,11 @@ impl Plugin {
     /// `timeout` in the manifest are per-call budgets rather than per-plugin
     /// ones.
     pub fn call(&mut self, export: &str, args: &[Val]) -> Result<Vec<Val>> {
+        // The wall clock for the marshalling remainder starts here, before the
+        // export lookup, because the remainder is honest about absorbing our own
+        // dispatch overhead rather than quietly excluding it.
+        let started = self.profiling.then(Instant::now);
+
         let func = self
             .instance
             .get_func(&mut self.store, export)
@@ -395,7 +513,14 @@ impl Plugin {
 
         // Before the early return below: a call that trapped burned fuel and
         // may have logged, and those are exactly the calls an operator is
-        // trying to account for.
+        // trying to account for. A call that trapped also spent time, and the
+        // same argument applies.
+        if let Some(started) = started {
+            let wall = started.elapsed();
+            if let Some(profile) = self.store.data_mut().profile.as_mut() {
+                profile.finish_call(export, wall);
+            }
+        }
         self.settle();
 
         if let Some(hook) = &self.trace {
@@ -535,6 +660,12 @@ fn install_logging(linker: &mut Linker<State>, plugin: &str, wiring: &Wiring<'_>
 
         instance
             .func_new(LOGGING_FUNC, move |mut store, _ty, params, _results| {
+                // The call hook opened a host window when the guest crossed;
+                // only the shim knows whose it is. See `ProfileState::serving`.
+                if let Some(profile) = store.data_mut().profile.as_mut() {
+                    profile.serving(interface, LOGGING_FUNC);
+                }
+
                 // Recorded before the ceiling filters, so a trace is the
                 // plugin's full account of what it thought was happening rather
                 // than the subset this host's policy chose to print.
@@ -662,7 +793,13 @@ fn install_host_funcs(linker: &mut Linker<State>, plugin: &str, wiring: &Wiring<
             let owned_func = func_name.clone();
 
             instance
-                .func_new(func_name, move |_store, ty, params, results| {
+                .func_new(func_name, move |mut store, ty, params, results| {
+                    // See the logging shim: the call hook timed the crossing,
+                    // the shim names it.
+                    if let Some(profile) = store.data_mut().profile.as_mut() {
+                        profile.serving(&owned_interface, &owned_func);
+                    }
+
                     if let Some(hook) = &trace {
                         hook.on_event(&TraceEvent::ImportCall {
                             plugin: &owned_plugin,
@@ -734,14 +871,95 @@ fn arm(store: &mut Store<State>, limits: &Limits, name: &str) -> Result<()> {
             )
         })?;
     }
-    if let Some(timeout) = limits.timeout {
-        // Deadlines are counted in epoch ticks; see EPOCH_TICK in host.rs.
-        let ticks = u64::try_from(timeout.as_millis())
-            .unwrap_or(u64::MAX)
-            .max(1);
+    // Deadlines are counted in epoch ticks; see EPOCH_TICK in host.rs. The
+    // budget knows about both `limits.timeout` and the sampling interval, and
+    // hands out the shorter of the two — see `Deadline`.
+    if let Some(ticks) = store.data_mut().deadline.rearm() {
         store.set_epoch_deadline(ticks);
     }
     Ok(())
+}
+
+/// Build the Firefox-profile sampler, when one was asked for.
+///
+/// `GuestProfiler::new_component` needs the component's core modules, so this
+/// takes the `Component` rather than the bytes — including one deserialized
+/// from the `.cwasm` cache, which carries its modules just as a freshly
+/// compiled one does.
+fn build_sampler(
+    name: &str,
+    engine: &Engine,
+    component: &Component,
+    options: Profiling,
+) -> Result<Option<GuestProfiler>> {
+    let Some(interval) = options.sample_interval else {
+        return Ok(None);
+    };
+    GuestProfiler::new_component(engine, name, interval, component.clone(), [])
+        .map(Some)
+        .map_err(|err| {
+            Error::new(
+                ErrorKind::Internal,
+                format!("{name}: cannot start the guest profiler: {err:?}"),
+            )
+        })
+}
+
+/// Observe every host↔guest transition, for the three buckets and for the
+/// sampled profile's host-call markers.
+fn install_profiler(store: &mut Store<State>) {
+    store.call_hook(|mut store, kind| {
+        // Taken out and put back so the profiler can be handed the store it is
+        // reading stacks from; wasmtime does the same dance with the epoch
+        // callback, and for the same borrow reason.
+        let mut guest = store
+            .data_mut()
+            .profile
+            .as_mut()
+            .and_then(|p| p.guest.take());
+        if let Some(profiler) = &mut guest {
+            profiler.call_hook(&store, kind);
+        }
+        if let Some(profile) = store.data_mut().profile.as_mut() {
+            profile.guest = guest;
+            profile.on_call_hook(kind);
+        }
+        Ok(())
+    });
+}
+
+/// Share the epoch deadline between sampling and the timeout.
+///
+/// **The timeout wins.** Sampling is the reason the callback exists, but the
+/// callback is on the path that stops a runaway plugin, so it samples and then
+/// asks [`Deadline`] what is left of the budget: a slice while there is one, a
+/// trap once there is not. Extending the deadline past the budget here would
+/// defeat the thing this project is for.
+fn install_epoch_callback(store: &mut Store<State>) {
+    store.epoch_deadline_callback(|mut store| {
+        let mut guest = store
+            .data_mut()
+            .profile
+            .as_mut()
+            .and_then(|p| p.guest.take());
+        if let Some(profiler) = &mut guest {
+            let delta = store
+                .data_mut()
+                .profile
+                .as_mut()
+                .map_or(std::time::Duration::ZERO, ProfileState::sample_delta);
+            profiler.sample(&store, delta);
+        }
+        let state = store.data_mut();
+        if let Some(profile) = state.profile.as_mut() {
+            profile.guest = guest;
+        }
+
+        Ok(match state.deadline.next() {
+            Some(ticks) => UpdateDeadline::Continue(ticks),
+            None => UpdateDeadline::Interrupt,
+        })
+    });
 }
 
 /// Turn manifest grants into a WASI context.

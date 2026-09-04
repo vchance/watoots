@@ -46,6 +46,14 @@ typedef enum wt_log_level {
   WT_LOG_CRITICAL = 5,
 } wt_log_level;
 
+// Whether a profile row describes an export or an import.
+typedef enum wt_function_kind {
+  // A function the component exports, entered through [`wt_plugin_call`].
+  WT_FUNCTION_EXPORT = 0,
+  // A function the host serves and the component imported.
+  WT_FUNCTION_IMPORT = 1,
+} wt_function_kind;
+
 // An error: a status code and a message.
 typedef struct wt_error_t wt_error_t;
 
@@ -115,6 +123,61 @@ typedef struct wt_plugin_stats_t {
   // How many of those the manifest did not grant.
   uint64_t imports_denied;
 } wt_plugin_stats_t;
+
+// Where a plugin's time has gone, split at the host/guest boundary.
+//
+// Plain integers, owned by the caller: there is nothing to free. `guest_nanos`
+// and `host_nanos` are measured from the exact transitions the engine reports;
+// `marshalling_nanos` is **derived** — it is what is left of `wall_nanos`
+// after the other two, so it holds the canonical ABI's copying *and* watoots'
+// own dispatch overhead. Read it as "not accounted for elsewhere" rather than
+// as a measurement of copying. See ADR-0009.
+//
+// `host_nanos` counts every host call, the `wasi:` interfaces included, but
+// only the host functions watoots installed itself get a row, so the rows do
+// not add up to the bucket.
+typedef struct wt_plugin_profile_t {
+  // Calls through [`wt_plugin_call`] that have completed.
+  uint64_t calls;
+  // Wall time spent inside those calls.
+  uint64_t wall_nanos;
+  // Of that, time executing wasm, host calls made from it excluded.
+  uint64_t guest_nanos;
+  // Of that, time inside host functions the guest called.
+  uint64_t host_nanos;
+  // What is left. A remainder, not a measurement.
+  uint64_t marshalling_nanos;
+  // How many rows [`wt_plugin_profile_function`] will serve.
+  uint64_t function_count;
+} wt_plugin_profile_t;
+
+// One per-WIT-function row of a profile.
+//
+// `iface` and `func` are **borrowed**: they point into the plugin and stay
+// valid until the next [`wt_plugin_profile`] on it or until the plugin is
+// deleted. Copy what you keep. `iface` is `""` for an export, which
+// [`wt_plugin_call`] names without an interface.
+//
+// An import row carries only `host_nanos`, with `wall_nanos` equal to it:
+// watoots times the host function but sees no boundary of its own inside it.
+typedef struct wt_function_profile_t {
+  // Export or import.
+  enum wt_function_kind kind;
+  // Interface name, version included; `""` for an export. Borrowed.
+  const char *iface;
+  // The function's own name. Borrowed.
+  const char *func;
+  // How many times it was entered.
+  uint64_t calls;
+  // Wall time across those entries.
+  uint64_t wall_nanos;
+  // Time inside wasm, host calls made from it excluded. Zero for an import.
+  uint64_t guest_nanos;
+  // Time inside host functions.
+  uint64_t host_nanos;
+  // The remainder. Zero for an import.
+  uint64_t marshalling_nanos;
+} wt_function_profile_t;
 
 #ifdef __cplusplus
 extern "C" {
@@ -205,6 +268,31 @@ enum wt_status wt_host_builder_log_sink(struct wt_host_builder_t *builder,
                                         void *userdata,
                                         struct wt_error_t **error_out);
 
+// Split every plugin's time into guest, host-call and marshalling.
+//
+// Opt-in, because a call hook then fires on every host/guest transition. Read
+// the result with [`wt_plugin_profile`]. Refused alongside a trace recorder:
+// profiling changes timing, so a session recorded under it would not
+// reproduce — [`wt_host_builder_build`] reports that as
+// `WT_ERR_INVALID_ARGUMENT`.
+enum wt_status wt_host_builder_profile(struct wt_host_builder_t *builder,
+                                       struct wt_error_t **error_out);
+
+// Also sample guest stacks every `interval_ms`, for a Firefox Profiler JSON.
+//
+// Implies [`wt_host_builder_profile`], and adds the half of the answer the
+// boundary buckets cannot give: which *guest* function is hot. Write the
+// result with [`wt_plugin_write_guest_profile`].
+//
+// Sampling is driven from the same epoch deadline that enforces
+// `limits.timeout`, and **the timeout wins**: the interval is clamped to what
+// is left of the budget, so profiling a runaway plugin does not keep it alive.
+// An interval of zero is rejected; anything under a millisecond samples once
+// per millisecond, which is the epoch granularity.
+enum wt_status wt_host_builder_profile_guest_samples(struct wt_host_builder_t *builder,
+                                                     uint64_t interval_ms,
+                                                     struct wt_error_t **error_out);
+
 // Build the host. The builder is consumed but must still be freed with
 // [`wt_host_builder_delete`].
 enum wt_status wt_host_builder_build(struct wt_host_builder_t *builder,
@@ -279,6 +367,38 @@ const char *wt_plugin_name(const struct wt_plugin_t *plugin);
 enum wt_status wt_plugin_stats(const struct wt_plugin_t *plugin,
                                struct wt_plugin_stats_t *stats_out,
                                struct wt_error_t **error_out);
+
+// Read a plugin's time split into `profile_out`.
+//
+// Takes a mutable plugin because it also refreshes the per-function rows that
+// [`wt_plugin_profile_function`] serves, which invalidates the `iface` and
+// `func` pointers from any earlier call.
+//
+// Fails with `WT_ERR_INVALID_ARGUMENT` when the host was not built with
+// [`wt_host_builder_profile`]: a page of zeroes is a worse answer than being
+// told the feature is off.
+enum wt_status wt_plugin_profile(struct wt_plugin_t *plugin,
+                                 struct wt_plugin_profile_t *profile_out,
+                                 struct wt_error_t **error_out);
+
+// Read one row of the profile most recently taken by [`wt_plugin_profile`].
+//
+// `index` is below that call's `function_count`. The `iface` and `func`
+// pointers are borrowed from the plugin and are invalidated by the next
+// [`wt_plugin_profile`] on it.
+enum wt_status wt_plugin_profile_function(const struct wt_plugin_t *plugin,
+                                          uint64_t index,
+                                          struct wt_function_profile_t *function_out,
+                                          struct wt_error_t **error_out);
+
+// Write the sampled guest profile to `path`, as Firefox Profiler JSON.
+//
+// Needs [`wt_host_builder_profile_guest_samples`]. The profiler is consumed:
+// sampling stops here and a second call fails. Load the file at
+// <https://profiler.firefox.com/>.
+enum wt_status wt_plugin_write_guest_profile(struct wt_plugin_t *plugin,
+                                             const char *path,
+                                             struct wt_error_t **error_out);
 
 // Call an exported function with WAVE-encoded arguments.
 //

@@ -9,7 +9,9 @@ use std::sync::{Arc, Mutex};
 
 use clap::{Args, Parser, Subcommand};
 use watoots::fuzz::Generator;
-use watoots::{Host, HostBuilder, Manifest, TraceHook};
+use watoots::{
+    FunctionKind, FunctionProfile, Host, HostBuilder, Manifest, PluginProfile, Profiling, TraceHook,
+};
 use watoots_trace::{Header, Recorder, Trace, binary, replay, text};
 
 #[derive(Parser)]
@@ -25,6 +27,8 @@ enum Command {
     Inspect(InspectArgs),
     /// Call an exported function.
     Run(RunArgs),
+    /// Call an exported function and report where its time went.
+    Profile(ProfileArgs),
     /// Call an exported function and write a trace of every crossing.
     Record(RecordArgs),
     /// Re-run a recorded session against a component, with no application.
@@ -120,6 +124,30 @@ struct RunArgs {
     invocation: Invocation,
 }
 
+/// `watoots profile`: the three buckets, and optionally the guest's own stacks.
+///
+/// Deliberately not a flag on `run`. Profiling changes timing, so a profiled
+/// run is not the run `run` reproduces — and it cannot be combined with
+/// `record` at all, which a flag would invite. See ADR-0009.
+#[derive(Args)]
+struct ProfileArgs {
+    #[command(flatten)]
+    invocation: Invocation,
+    /// Repeat the call this many times before reporting. One call is usually
+    /// all boundary crossing and no guest, so a hot loop is what makes the
+    /// split legible.
+    #[arg(long, default_value_t = 1, value_name = "N")]
+    repeat: u32,
+    /// Also write a Firefox Profiler JSON of sampled guest stacks. Load it at
+    /// <https://profiler.firefox.com/>.
+    #[arg(long, value_name = "FILE")]
+    firefox: Option<PathBuf>,
+    /// How often to sample guest stacks, in milliseconds. Rounded up to the
+    /// 1ms epoch tick, and clamped by `limits.timeout`, which always wins.
+    #[arg(long, default_value_t = 1, value_name = "MS", requires = "firefox")]
+    sample_interval_ms: u64,
+}
+
 #[derive(Args)]
 struct RecordArgs {
     #[command(flatten)]
@@ -208,6 +236,7 @@ fn run(cli: Cli) -> Result<ExitCode, String> {
     match cli.command {
         Command::Inspect(args) => inspect(&args),
         Command::Run(args) => invoke(&args.invocation, None),
+        Command::Profile(args) => profile(&args),
         Command::Record(args) => record(&args),
         Command::Replay(args) => do_replay(&args),
         Command::Fuzz(args) => fuzz(&args),
@@ -336,9 +365,25 @@ fn parse_answers(raw: &[String]) -> Result<Vec<Answer>, String> {
 }
 
 /// Build a host that serves whatever the caller said to answer with.
-fn build_host(invocation: &Invocation, hook: Option<Arc<dyn TraceHook>>) -> Result<Host, String> {
+fn build_host(
+    invocation: &Invocation,
+    hook: Option<Arc<dyn TraceHook>>,
+    profiling: Option<Profiling>,
+) -> Result<Host, String> {
     let mut builder: HostBuilder =
         Host::builder().manifest(read_manifest(invocation.manifest.as_deref())?);
+
+    // `record` and `profile` are separate subcommands precisely so this cannot
+    // be asked for; the host would refuse it anyway.
+    builder = match profiling {
+        None => builder,
+        Some(Profiling {
+            sample_interval: None,
+        }) => builder.profile(),
+        Some(Profiling {
+            sample_interval: Some(interval),
+        }) => builder.profile_guest_samples(interval),
+    };
 
     if let Some(dir) = invocation.component.parent() {
         builder = builder.var("plugin_dir", dir.display().to_string());
@@ -377,7 +422,7 @@ fn build_host(invocation: &Invocation, hook: Option<Arc<dyn TraceHook>>) -> Resu
 }
 
 fn invoke(invocation: &Invocation, hook: Option<Arc<dyn TraceHook>>) -> Result<ExitCode, String> {
-    let host = build_host(invocation, hook)?;
+    let host = build_host(invocation, hook, None)?;
     let mut plugin = host
         .load(&invocation.component)
         .map_err(|err| err.message().to_string())?;
@@ -391,6 +436,147 @@ fn invoke(invocation: &Invocation, hook: Option<Arc<dyn TraceHook>>) -> Result<E
         println!("{value}");
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// `watoots profile`: call a plugin and say where the time went.
+fn profile(args: &ProfileArgs) -> Result<ExitCode, String> {
+    if args.repeat == 0 {
+        return Err("--repeat must be at least 1".to_string());
+    }
+
+    let host = build_host(
+        &args.invocation,
+        None,
+        Some(Profiling {
+            sample_interval: args
+                .firefox
+                .is_some()
+                .then(|| std::time::Duration::from_millis(args.sample_interval_ms.max(1))),
+        }),
+    )?;
+
+    let mut plugin = host
+        .load(&args.invocation.component)
+        .map_err(|err| err.message().to_string())?;
+
+    let call_args: Vec<&str> = args.invocation.args.iter().map(String::as_str).collect();
+    let mut last = Vec::new();
+    for _ in 0..args.repeat {
+        last = plugin
+            .call_wave(&args.invocation.call, &call_args)
+            .map_err(|err| err.message().to_string())?;
+    }
+
+    // The return value goes to stdout as `run` prints it, so a profiled call
+    // stays a call. The report follows it.
+    for value in &last {
+        println!("{value}");
+    }
+
+    let profile = plugin.profile().map_err(|err| err.message().to_string())?;
+    print!("{}", render_profile(&profile));
+
+    if let Some(path) = &args.firefox {
+        plugin
+            .write_guest_profile(path)
+            .map_err(|err| err.message().to_string())?;
+        eprintln!(
+            "wrote {} — open it at https://profiler.firefox.com/",
+            path.display()
+        );
+    }
+
+    Ok(ExitCode::SUCCESS)
+}
+
+/// A duration in nanoseconds, at a scale a human reads without counting zeroes.
+fn duration(nanos: u64) -> String {
+    match nanos {
+        n if n < 1_000 => format!("{n}ns"),
+        n if n < 1_000_000 => format!("{:.3}µs", n as f64 / 1_000.0),
+        n if n < 1_000_000_000 => format!("{:.3}ms", n as f64 / 1_000_000.0),
+        n => format!("{:.3}s", n as f64 / 1_000_000_000.0),
+    }
+}
+
+fn percent(part: u64, whole: u64) -> String {
+    if whole == 0 {
+        return "  0.0%".to_string();
+    }
+    format!("{:5.1}%", (part as f64 / whole as f64) * 100.0)
+}
+
+fn render_profile(profile: &PluginProfile) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::new();
+
+    let _ = writeln!(out, "\n{} call(s)", profile.calls);
+    for (label, nanos) in [
+        ("guest", profile.guest_nanos),
+        ("host call", profile.host_nanos),
+        ("marshalling", profile.marshalling_nanos),
+    ] {
+        let _ = writeln!(
+            out,
+            "  {label:<12} {:>12}  {}",
+            duration(nanos),
+            percent(nanos, profile.wall_nanos)
+        );
+    }
+    let _ = writeln!(out, "  {:<12} {:>12}", "wall", duration(profile.wall_nanos));
+    // Said every time rather than in the help, because the number is the one a
+    // reader is most likely to over-interpret.
+    let _ = writeln!(
+        out,
+        "\nmarshalling is the remainder — the canonical ABI's lift and lower, \
+         plus watoots'\nown dispatch. It is a diagnostic, not a measurement."
+    );
+
+    if profile.functions.is_empty() {
+        return out;
+    }
+
+    let _ = writeln!(out, "\nper function");
+    for row in &profile.functions {
+        let _ = writeln!(out, "  {}", render_row(row));
+    }
+    // The rows are a subset of the bucket by construction, and saying so beats
+    // leaving someone to work out why the arithmetic does not close.
+    if profile
+        .functions
+        .iter()
+        .any(|row| row.kind == FunctionKind::Import)
+        || profile.host_nanos > 0
+    {
+        let _ = writeln!(
+            out,
+            "\nonly host functions this application serves get a row; time in \
+             `wasi:` interfaces\nis in the host-call bucket and not in the list."
+        );
+    }
+    out
+}
+
+fn render_row(row: &FunctionProfile) -> String {
+    let name = if row.interface.is_empty() {
+        row.func.clone()
+    } else {
+        format!("{}#{}", row.interface, row.func)
+    };
+    match row.kind {
+        FunctionKind::Export => format!(
+            "export  {name:<44} {:>6} call(s)  wall {:>12}  guest {:>12}  host {:>12}",
+            row.calls,
+            duration(row.wall_nanos),
+            duration(row.guest_nanos),
+            duration(row.host_nanos)
+        ),
+        FunctionKind::Import => format!(
+            "import  {name:<44} {:>6} call(s)  host {:>12}",
+            row.calls,
+            duration(row.host_nanos)
+        ),
+    }
 }
 
 fn record(args: &RecordArgs) -> Result<ExitCode, String> {

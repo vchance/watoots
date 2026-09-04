@@ -279,6 +279,43 @@ using HostFunction =
 using LogFunction = std::function<void(
     wt_log_level level, std::string_view context, std::string_view message)>;
 
+/// One per-WIT-function row of a profile, with its names owned.
+///
+/// The C row borrows its strings from the plugin and is invalidated by the
+/// next profile taken on it; this copies them, so a caller can keep a profile
+/// around and compare it with a later one.
+struct FunctionProfile {
+  wt_function_kind kind = WT_FUNCTION_EXPORT;
+  /// Interface name, version included. Empty for an export.
+  std::string interface_name;
+  std::string func;
+  uint64_t calls = 0;
+  uint64_t wall_nanos = 0;
+  uint64_t guest_nanos = 0;
+  uint64_t host_nanos = 0;
+  uint64_t marshalling_nanos = 0;
+};
+
+/// Where a plugin's time has gone, split at the host/guest boundary.
+///
+/// `guest_nanos` and `host_nanos` are measured at the exact transitions the
+/// engine reports. `marshalling_nanos` is derived -- what is left of
+/// `wall_nanos` after the other two -- so it holds the canonical ABI's copying
+/// and watoots' own dispatch alike. It is a diagnostic, not an accounting
+/// identity. See ADR-0009.
+struct PluginProfile {
+  uint64_t calls = 0;
+  uint64_t wall_nanos = 0;
+  uint64_t guest_nanos = 0;
+  uint64_t host_nanos = 0;
+  uint64_t marshalling_nanos = 0;
+  /// Exports first, then imports, each group sorted by name. Only the host
+  /// functions watoots installed itself appear, so these do not add up to
+  /// `host_nanos` -- the `wasi:` interfaces are in the bucket and not in the
+  /// list.
+  std::vector<FunctionProfile> functions;
+};
+
 /// A loaded plugin.
 class Plugin {
  public:
@@ -305,6 +342,66 @@ class Plugin {
       return unexpected(internal::TakeError(status, error));
     }
     return stats;
+  }
+
+  /// Where this plugin's time has gone, split at the boundary.
+  ///
+  /// The sibling of `Stats`: same rationale, different question -- "where"
+  /// rather than "how much". Needs `HostBuilder::Profile`, and fails with
+  /// `WT_ERR_INVALID_ARGUMENT` without it, because a page of zeroes is a worse
+  /// answer than being told the feature is off.
+  ///
+  /// Not const: taking a profile refreshes the rows the C API borrows names
+  /// from, which invalidates any row read earlier.
+  [[nodiscard]] Result<PluginProfile> Profile() {
+    wt_plugin_profile_t totals{};
+    wt_error_t* error = nullptr;
+    wt_status status = wt_plugin_profile(handle_.Get(), &totals, &error);
+    if (status != WT_OK) {
+      return unexpected(internal::TakeError(status, error));
+    }
+
+    PluginProfile profile;
+    profile.calls = totals.calls;
+    profile.wall_nanos = totals.wall_nanos;
+    profile.guest_nanos = totals.guest_nanos;
+    profile.host_nanos = totals.host_nanos;
+    profile.marshalling_nanos = totals.marshalling_nanos;
+    profile.functions.reserve(totals.function_count);
+
+    for (uint64_t index = 0; index < totals.function_count; ++index) {
+      wt_function_profile_t row{};
+      status = wt_plugin_profile_function(handle_.Get(), index, &row, &error);
+      if (status != WT_OK) {
+        return unexpected(internal::TakeError(status, error));
+      }
+      profile.functions.push_back(FunctionProfile{
+          .kind = row.kind,
+          .interface_name = row.iface == nullptr ? "" : row.iface,
+          .func = row.func == nullptr ? "" : row.func,
+          .calls = row.calls,
+          .wall_nanos = row.wall_nanos,
+          .guest_nanos = row.guest_nanos,
+          .host_nanos = row.host_nanos,
+          .marshalling_nanos = row.marshalling_nanos,
+      });
+    }
+    return profile;
+  }
+
+  /// Write the sampled guest profile to `path`, as Firefox Profiler JSON.
+  ///
+  /// Needs `HostBuilder::ProfileGuestSamples`. The profiler is consumed, so
+  /// sampling stops here and a second call fails. Load the file at
+  /// https://profiler.firefox.com/.
+  Result<void> WriteGuestProfile(const std::string& path) {
+    wt_error_t* error = nullptr;
+    const wt_status status =
+        wt_plugin_write_guest_profile(handle_.Get(), path.c_str(), &error);
+    if (status != WT_OK) {
+      return unexpected(internal::TakeError(status, error));
+    }
+    return {};
   }
 
   /// Call an exported function with WAVE-encoded arguments.
@@ -552,6 +649,35 @@ class HostBuilder {
       return unexpected(internal::TakeError(status, error));
     }
     log_sink_ = std::move(owned);
+    return {};
+  }
+
+  /// Split every plugin's time into guest, host-call and marshalling.
+  ///
+  /// Opt-in: a call hook then fires on every host/guest transition. Read the
+  /// result with `Plugin::Profile`. Refused alongside a trace recorder, since
+  /// profiling changes timing and the recording would not reproduce.
+  Result<void> Profile() {
+    wt_error_t* error = nullptr;
+    const wt_status status = wt_host_builder_profile(handle_.Get(), &error);
+    if (status != WT_OK) {
+      return unexpected(internal::TakeError(status, error));
+    }
+    return {};
+  }
+
+  /// Also sample guest stacks every `interval_ms`, for a Firefox profile.
+  ///
+  /// Implies `Profile`. Sampling shares the epoch deadline with
+  /// `limits.timeout` and the timeout wins, so this cannot keep a runaway
+  /// plugin alive. Write the result with `Plugin::WriteGuestProfile`.
+  Result<void> ProfileGuestSamples(uint64_t interval_ms) {
+    wt_error_t* error = nullptr;
+    const wt_status status = wt_host_builder_profile_guest_samples(
+        handle_.Get(), interval_ms, &error);
+    if (status != WT_OK) {
+      return unexpected(internal::TakeError(status, error));
+    }
     return {};
   }
 

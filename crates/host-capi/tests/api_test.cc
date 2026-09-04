@@ -423,3 +423,129 @@ TEST(CApi, PluginStatsAreObservedNotReported) {
   EXPECT_EQ(after->calls, 1U);
   EXPECT_EQ(after->imports_denied, 0U);
 }
+
+// ---------------------------------------------------------------------------
+// Profiling (ADR-0009)
+// ---------------------------------------------------------------------------
+
+// A host with profiling on. Not folded into BuildHost: every other test in this
+// file is meant to run on the unprofiled path, which is the default one.
+wt::Host BuildProfiledHost(uint64_t sample_interval_ms = 0) {
+  wt::HostBuilder builder;
+  if (sample_interval_ms == 0) {
+    EXPECT_TRUE(builder.Profile().has_value());
+  } else {
+    EXPECT_TRUE(builder.ProfileGuestSamples(sample_interval_ms).has_value());
+  }
+  auto host = builder.Build();
+  EXPECT_TRUE(host.has_value());
+  return std::move(host).value();
+}
+
+TEST(CApi, ProfilingIsRefusedUntilItIsAskedFor) {
+  const wt::Host host = BuildHost();
+  const std::string wasm = kSelfContained;
+
+  auto plugin = host.LoadBinary("answer", AsBytes(wasm));
+  ASSERT_TRUE(plugin.has_value()) << plugin.error().Message();
+
+  auto profile = plugin->Profile();
+  ASSERT_FALSE(profile.has_value());
+  EXPECT_EQ(profile.error().Code(), WT_ERR_INVALID_ARGUMENT);
+}
+
+TEST(CApi, ProfileSplitsTimeAtTheBoundary) {
+  const wt::Host host = BuildProfiledHost();
+  const std::string wasm = kSelfContained;
+
+  auto plugin = host.LoadBinary("answer", AsBytes(wasm));
+  ASSERT_TRUE(plugin.has_value()) << plugin.error().Message();
+
+  auto called = plugin->Call("answer");
+  ASSERT_TRUE(called.has_value()) << called.error().Message();
+
+  auto profile = plugin->Profile();
+  ASSERT_TRUE(profile.has_value()) << profile.error().Message();
+  EXPECT_EQ(profile->calls, 1U);
+  EXPECT_GT(profile->wall_nanos, 0U);
+  // Marshalling is defined as the remainder, so the three always add up to the
+  // wall time. That is the definition rather than a measurement, and this pins
+  // the definition.
+  EXPECT_EQ(
+      profile->guest_nanos + profile->host_nanos + profile->marshalling_nanos,
+      profile->wall_nanos);
+
+  ASSERT_EQ(profile->functions.size(), 1U);
+  const wt::FunctionProfile& row = profile->functions.front();
+  EXPECT_EQ(row.kind, WT_FUNCTION_EXPORT);
+  EXPECT_EQ(row.func, "answer");
+  EXPECT_EQ(row.interface_name, "");
+  EXPECT_EQ(row.calls, 1U);
+}
+
+// Straight against the C API, because the C++ accessor never asks for a row it
+// was not told exists -- and the bounds check is the thing being tested.
+TEST(CApi, AProfileRowOutOfRangeIsNotFound) {
+  wt_error_t* error = nullptr;
+  wt_host_builder_t* builder = wt_host_builder_new();
+  ASSERT_EQ(wt_host_builder_profile(builder, &error), WT_OK);
+
+  wt_host_t* host = nullptr;
+  ASSERT_EQ(wt_host_builder_build(builder, &host, &error), WT_OK);
+  wt_host_builder_delete(builder);
+
+  const std::string wasm = kSelfContained;
+  wt_plugin_t* plugin = nullptr;
+  ASSERT_EQ(wt_host_load_binary(
+                host, "answer",
+                // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+                reinterpret_cast<const uint8_t*>(wasm.data()), wasm.size(),
+                &plugin, &error),
+            WT_OK);
+
+  wt_plugin_profile_t totals{};
+  ASSERT_EQ(wt_plugin_profile(plugin, &totals, &error), WT_OK);
+  EXPECT_EQ(totals.function_count, 0U);
+
+  wt_function_profile_t row{};
+  EXPECT_EQ(wt_plugin_profile_function(plugin, 0, &row, &error),
+            WT_ERR_NOT_FOUND);
+  ASSERT_NE(error, nullptr);
+  wt_error_delete(error);
+
+  wt_plugin_delete(plugin);
+  wt_host_delete(host);
+}
+
+TEST(CApi, GuestSamplesWriteAFirefoxProfile) {
+  const wt::Host host = BuildProfiledHost(1);
+  const std::string wasm = kSelfContained;
+
+  auto plugin = host.LoadBinary("answer", AsBytes(wasm));
+  ASSERT_TRUE(plugin.has_value()) << plugin.error().Message();
+  ASSERT_TRUE(plugin->Call("answer").has_value());
+
+  const std::filesystem::path json =
+      std::filesystem::temp_directory_path() / "watoots_capi_guest.json";
+  auto wrote = plugin->WriteGuestProfile(json.string());
+  ASSERT_TRUE(wrote.has_value()) << wrote.error().Message();
+
+  std::ifstream in(json);
+  std::string first;
+  std::getline(in, first);
+  ASSERT_FALSE(first.empty());
+  EXPECT_EQ(first.front(), '{');
+  in.close();
+  std::filesystem::remove(json);
+
+  // The profiler is consumed by writing it, and says so rather than quietly
+  // producing an empty second file.
+  EXPECT_FALSE(plugin->WriteGuestProfile(json.string()).has_value());
+}
+
+TEST(CApi, AZeroSampleIntervalIsRejected) {
+  wt::HostBuilder builder;
+  auto refused = builder.ProfileGuestSamples(0);
+  ASSERT_FALSE(refused.has_value());
+  EXPECT_EQ(refused.error().Code(), WT_ERR_INVALID_ARGUMENT);
+}

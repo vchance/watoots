@@ -39,6 +39,7 @@ mod host;
 pub mod imports;
 pub mod manifest;
 mod plugin;
+mod profile;
 mod registry;
 pub mod trace;
 pub mod wave;
@@ -48,6 +49,7 @@ pub use host::{Host, HostBuilder, HostCall, HostFunc, ImportedFunction, LogRecor
 pub use imports::{GrantReport, ImportDecision, Requirement};
 pub use manifest::{Clocks, FsGrants, Limits, LogLevel, Manifest, Permissions};
 pub use plugin::{Plugin, PluginStats};
+pub use profile::{FunctionKind, FunctionProfile, PluginProfile, Profiling};
 pub use registry::Registry;
 pub use trace::{Outcome, TraceEvent, TraceHook};
 pub use wave::{from_wave, to_wave};

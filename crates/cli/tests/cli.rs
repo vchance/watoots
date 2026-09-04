@@ -515,3 +515,78 @@ fn fuzz_refuses_an_export_the_component_does_not_have() {
         "a refusal should say what there is: {stderr}"
     );
 }
+
+#[test]
+fn profile_reports_the_three_buckets_and_names_the_functions() {
+    let plugin = sample_plugin().display().to_string();
+    let output = watoots(&[
+        "profile",
+        &plugin,
+        "-m",
+        &policy(),
+        "--answer",
+        "watoots:example/log@0.1.0#emit=",
+        "-c",
+        "lint",
+        "--repeat",
+        "5",
+        "--",
+        r#""notes.md""#,
+        r#""TODO: fix\n""#,
+    ]);
+    assert!(output.status.success(), "{output:?}");
+
+    let text = stdout(&output);
+    assert!(text.contains("5 call(s)"), "{text}");
+    assert!(text.contains("guest"), "{text}");
+    assert!(text.contains("host call"), "{text}");
+    assert!(text.contains("marshalling"), "{text}");
+    // The number most likely to be over-read says what it is, every time.
+    assert!(text.contains("marshalling is the remainder"), "{text}");
+    // Per-function attribution: the export by name, and the host function the
+    // guest called by interface and name.
+    assert!(text.contains("export  lint"), "{text}");
+    assert!(
+        text.contains("import  watoots:example/log@0.1.0#emit"),
+        "{text}"
+    );
+}
+
+#[test]
+fn profile_writes_a_firefox_profile_when_asked() {
+    let dir = tempfile::tempdir().unwrap();
+    let json = dir.path().join("guest.json");
+    let plugin = sample_plugin().display().to_string();
+
+    let output = watoots(&[
+        "profile",
+        &plugin,
+        "-m",
+        &policy(),
+        "--answer",
+        "watoots:example/log@0.1.0#emit=",
+        "-c",
+        "lint",
+        "--firefox",
+        &json.display().to_string(),
+        "--",
+        r#""notes.md""#,
+        r#""TODO: fix\n""#,
+    ]);
+    assert!(output.status.success(), "{output:?}");
+
+    let written = std::fs::read_to_string(&json).unwrap();
+    assert!(written.starts_with('{'), "the processed profile is JSON");
+    assert!(written.contains("\"threads\""), "and it has threads");
+}
+
+#[test]
+fn profiling_and_recording_are_separate_subcommands() {
+    // ADR-0009 refuses the combination rather than permitting it silently, and
+    // the CLI expresses that by not offering a --record flag on `profile`.
+    let plugin = sample_plugin().display().to_string();
+    let output = watoots(&["profile", &plugin, "-c", "lint", "--output", "t.wave"]);
+    assert!(!output.status.success());
+    let text = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert!(text.contains("unexpected argument"), "{text}");
+}

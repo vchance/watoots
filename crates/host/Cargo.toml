@@ -20,7 +20,10 @@ serde = { version = "1.0.229", features = ["derive"] }
 sha2 = "0.11.0"
 toml = "1.1.4"
 wasm-wave = "0.254"
-wasmtime = { version = "48", features = ["wave"] }
+# `call-hook` is not on by default and is what makes the profiler possible:
+# it is the exact host<->guest transition signal ADR-0009 splits time with.
+# `profiling` is already a default feature and supplies `GuestProfiler`.
+wasmtime = { version = "48", features = ["wave", "call-hook"] }
 # Pinned to the copy Wasmtime 48 already pulls in: a semver-incompatible
 # version compiles a second wasmparser, and its Resolve and WorldId are then
 # different types from the ones in Wasmtime's copy. See ADR-0007, and

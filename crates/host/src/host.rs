@@ -17,6 +17,7 @@ use wasmtime::{Config, Engine};
 use crate::imports::{self, GrantReport};
 use crate::manifest::{LogLevel, Manifest};
 use crate::plugin::{Plugin, Wiring};
+use crate::profile::Profiling;
 use crate::trace::TraceHook;
 use crate::{Error, ErrorKind, Result};
 
@@ -25,6 +26,18 @@ use crate::{Error, ErrorKind, Result};
 /// Deadlines are expressed in whole ticks, so this is also the granularity of a
 /// `timeout`: a 200ms timeout is 200 ticks.
 const EPOCH_TICK: Duration = Duration::from_millis(1);
+
+/// How many epoch ticks a duration is worth, rounded up and never zero.
+///
+/// A deadline of zero ticks has already expired, so anything shorter than one
+/// tick becomes one tick: that is the granularity `EPOCH_TICK` can express, and
+/// asking for less would trap immediately rather than sooner.
+pub(crate) fn epoch_ticks(duration: Duration) -> u64 {
+    let tick = EPOCH_TICK.as_nanos();
+    u64::try_from(duration.as_nanos().div_ceil(tick))
+        .unwrap_or(u64::MAX)
+        .max(1)
+}
 
 /// A function the application serves to plugins.
 ///
@@ -130,6 +143,7 @@ struct HostInner {
     cache_dir: Option<PathBuf>,
     trace: Option<Arc<dyn TraceHook>>,
     log_sink: Option<LogSink>,
+    profiling: Option<Profiling>,
     /// Kept alive for as long as the host is; dropping it stops the thread.
     _ticker: Option<EpochTicker>,
 }
@@ -355,6 +369,7 @@ impl Host {
             host_funcs: &self.inner.host_funcs,
             trace: self.inner.trace.as_ref(),
             log_sink: self.inner.log_sink.as_ref(),
+            profiling: self.inner.profiling,
         };
         Plugin::instantiate(name, &self.inner.engine, &component, &wiring, report)
     }
@@ -450,6 +465,7 @@ impl fmt::Debug for Host {
             .field("cache_dir", &self.inner.cache_dir)
             .field("tracing", &self.inner.trace.is_some())
             .field("log_sink", &self.inner.log_sink.is_some())
+            .field("profiling", &self.inner.profiling)
             .finish_non_exhaustive()
     }
 }
@@ -473,6 +489,7 @@ pub struct HostBuilder {
     cache_dir: Option<PathBuf>,
     trace: Option<Arc<dyn TraceHook>>,
     log_sink: Option<LogSink>,
+    profiling: Option<Profiling>,
 }
 
 impl fmt::Debug for HostBuilder {
@@ -578,9 +595,57 @@ impl HostBuilder {
         self
     }
 
+    /// Split every plugin's time into guest, host-call and marshalling.
+    ///
+    /// Opt-in, because it is not free: a call hook fires on every host↔guest
+    /// transition. It answers the question `PluginStats` cannot — *where* the
+    /// time went, per WIT function — and like `PluginStats` it observes at the
+    /// boundary, so a guest can neither forge nor inflate it. Read the result
+    /// with [`Plugin::profile`].
+    ///
+    /// Refused alongside [`HostBuilder::trace_hook`]: profiling changes timing,
+    /// and a trace recorded under it would record a run nobody can reproduce.
+    /// See ADR-0009.
+    #[must_use]
+    pub fn profile(mut self) -> Self {
+        self.profiling.get_or_insert_default();
+        self
+    }
+
+    /// Also sample guest stacks, for a Firefox Profiler JSON.
+    ///
+    /// Implies [`HostBuilder::profile`], and adds the half of the answer that
+    /// is Wasmtime's: which *guest* function is hot, which the boundary buckets
+    /// cannot say. Write the result with [`Plugin::write_guest_profile`].
+    ///
+    /// Sampling is driven from the epoch deadline, which also enforces
+    /// `limits.timeout`. They share it and **the timeout wins**: the callback
+    /// samples and then continues with `min(interval, remaining timeout)`, so
+    /// profiling a runaway plugin does not keep it alive. The interval is
+    /// rounded up to a whole epoch tick (1ms).
+    #[must_use]
+    pub fn profile_guest_samples(mut self, interval: Duration) -> Self {
+        self.profiling = Some(Profiling {
+            sample_interval: Some(interval),
+        });
+        self
+    }
+
     /// Build the host and its engine.
     pub fn build(self) -> Result<Host> {
         let limits = &self.manifest.limits;
+
+        // Timing is exactly what the determinism knobs exist to pin, and a
+        // profiler perturbs it. Refused rather than silently permitted, because
+        // the cost lands on whoever tries to replay the trace afterwards.
+        if self.profiling.is_some() && self.trace.is_some() {
+            return Err(Error::new(
+                ErrorKind::InvalidArgument,
+                "profiling and a trace hook cannot both be enabled: profiling \
+                 changes timing, so a session recorded under it would not \
+                 reproduce. Record first, then profile the replay.",
+            ));
+        }
 
         // An empty `net` list is fine: it grants the socket interfaces while
         // wasmtime-wasi's own default refuses every connection. A non-empty
@@ -601,10 +666,18 @@ impl HostBuilder {
             ));
         }
 
+        // Sampling is driven from the epoch deadline too, so it needs the
+        // interruption machinery and the ticker even when no timeout asked for
+        // them.
+        let samples = self
+            .profiling
+            .is_some_and(|options| options.sample_interval.is_some());
+        let needs_epoch = limits.timeout.is_some() || samples;
+
         let mut config = Config::new();
         config.wasm_component_model(true);
         config.consume_fuel(limits.fuel.is_some());
-        config.epoch_interruption(limits.timeout.is_some());
+        config.epoch_interruption(needs_epoch);
 
         // Two runs of the same guest must agree on float bit patterns, or a
         // recorded trace stops reproducing on a different machine.
@@ -616,10 +689,7 @@ impl HostBuilder {
         let engine = Engine::new(&config)
             .map_err(|err| Error::new(ErrorKind::Internal, format!("engine config: {err:?}")))?;
 
-        let ticker = limits
-            .timeout
-            .is_some()
-            .then(|| EpochTicker::spawn(engine.clone()));
+        let ticker = needs_epoch.then(|| EpochTicker::spawn(engine.clone()));
 
         Ok(Host {
             inner: Arc::new(HostInner {
@@ -631,6 +701,7 @@ impl HostBuilder {
                 cache_dir: self.cache_dir,
                 trace: self.trace,
                 log_sink: self.log_sink,
+                profiling: self.profiling,
                 _ticker: ticker,
             }),
         })

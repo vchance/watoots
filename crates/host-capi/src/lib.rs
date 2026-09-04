@@ -29,7 +29,8 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::ptr;
 
 use watoots::{
-    Error, ErrorKind, Host, HostBuilder, HostCall, LogLevel, LogRecord, Manifest, Plugin, Val,
+    Error, ErrorKind, FunctionKind, FunctionProfile, Host, HostBuilder, HostCall, LogLevel,
+    LogRecord, Manifest, Plugin, Val,
 };
 
 /// Status codes. Zero is success.
@@ -111,6 +112,17 @@ pub struct wt_plugin_t {
     inner: Plugin,
     /// Kept so [`wt_plugin_name`] can hand out a stable pointer.
     name: CString,
+    /// The rows behind the last [`wt_plugin_profile`], kept so
+    /// [`wt_plugin_profile_function`] can hand out borrowed names rather than
+    /// making the caller free a string per row.
+    profile_rows: Vec<ProfileRow>,
+}
+
+/// One per-function profile row, with its names owned by the plugin handle.
+struct ProfileRow {
+    interface: CString,
+    func: CString,
+    numbers: wt_function_profile_t,
 }
 
 /// A function the application serves to plugins.
@@ -592,6 +604,54 @@ fn status_to_kind(status: wt_status) -> ErrorKind {
     }
 }
 
+/// Split every plugin's time into guest, host-call and marshalling.
+///
+/// Opt-in, because a call hook then fires on every host/guest transition. Read
+/// the result with [`wt_plugin_profile`]. Refused alongside a trace recorder:
+/// profiling changes timing, so a session recorded under it would not
+/// reproduce — [`wt_host_builder_build`] reports that as
+/// `WT_ERR_INVALID_ARGUMENT`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wt_host_builder_profile(
+    builder: *mut wt_host_builder_t,
+    error_out: *mut *mut wt_error_t,
+) -> wt_status {
+    guard(error_out, || unsafe {
+        with_builder(builder, |b| Ok(b.profile()))
+    })
+}
+
+/// Also sample guest stacks every `interval_ms`, for a Firefox Profiler JSON.
+///
+/// Implies [`wt_host_builder_profile`], and adds the half of the answer the
+/// boundary buckets cannot give: which *guest* function is hot. Write the
+/// result with [`wt_plugin_write_guest_profile`].
+///
+/// Sampling is driven from the same epoch deadline that enforces
+/// `limits.timeout`, and **the timeout wins**: the interval is clamped to what
+/// is left of the budget, so profiling a runaway plugin does not keep it alive.
+/// An interval of zero is rejected; anything under a millisecond samples once
+/// per millisecond, which is the epoch granularity.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wt_host_builder_profile_guest_samples(
+    builder: *mut wt_host_builder_t,
+    interval_ms: u64,
+    error_out: *mut *mut wt_error_t,
+) -> wt_status {
+    guard(error_out, || {
+        if interval_ms == 0 {
+            return Err(Error::invalid_argument(
+                "interval_ms must be at least 1; sampling has millisecond granularity",
+            ));
+        }
+        unsafe {
+            with_builder(builder, |b| {
+                Ok(b.profile_guest_samples(std::time::Duration::from_millis(interval_ms)))
+            })
+        }
+    })
+}
+
 /// Build the host. The builder is consumed but must still be freed with
 /// [`wt_host_builder_delete`].
 #[unsafe(no_mangle)]
@@ -640,6 +700,7 @@ fn wrap_plugin(plugin: Plugin, plugin_out: *mut *mut wt_plugin_t) -> Result<(), 
         *plugin_out = Box::into_raw(Box::new(wt_plugin_t {
             inner: plugin,
             name,
+            profile_rows: Vec::new(),
         }));
     }
     Ok(())
@@ -851,6 +912,229 @@ pub unsafe extern "C" fn wt_plugin_stats(
             };
         }
         Ok(())
+    })
+}
+
+/// Whether a profile row describes an export or an import.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum wt_function_kind {
+    /// A function the component exports, entered through [`wt_plugin_call`].
+    WT_FUNCTION_EXPORT = 0,
+    /// A function the host serves and the component imported.
+    WT_FUNCTION_IMPORT = 1,
+}
+
+impl From<FunctionKind> for wt_function_kind {
+    fn from(kind: FunctionKind) -> Self {
+        match kind {
+            FunctionKind::Export => Self::WT_FUNCTION_EXPORT,
+            FunctionKind::Import => Self::WT_FUNCTION_IMPORT,
+        }
+    }
+}
+
+/// Where a plugin's time has gone, split at the host/guest boundary.
+///
+/// Plain integers, owned by the caller: there is nothing to free. `guest_nanos`
+/// and `host_nanos` are measured from the exact transitions the engine reports;
+/// `marshalling_nanos` is **derived** — it is what is left of `wall_nanos`
+/// after the other two, so it holds the canonical ABI's copying *and* watoots'
+/// own dispatch overhead. Read it as "not accounted for elsewhere" rather than
+/// as a measurement of copying. See ADR-0009.
+///
+/// `host_nanos` counts every host call, the `wasi:` interfaces included, but
+/// only the host functions watoots installed itself get a row, so the rows do
+/// not add up to the bucket.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+#[allow(non_camel_case_types)]
+pub struct wt_plugin_profile_t {
+    /// Calls through [`wt_plugin_call`] that have completed.
+    pub calls: u64,
+    /// Wall time spent inside those calls.
+    pub wall_nanos: u64,
+    /// Of that, time executing wasm, host calls made from it excluded.
+    pub guest_nanos: u64,
+    /// Of that, time inside host functions the guest called.
+    pub host_nanos: u64,
+    /// What is left. A remainder, not a measurement.
+    pub marshalling_nanos: u64,
+    /// How many rows [`wt_plugin_profile_function`] will serve.
+    pub function_count: u64,
+}
+
+/// One per-WIT-function row of a profile.
+///
+/// `iface` and `func` are **borrowed**: they point into the plugin and stay
+/// valid until the next [`wt_plugin_profile`] on it or until the plugin is
+/// deleted. Copy what you keep. `iface` is `""` for an export, which
+/// [`wt_plugin_call`] names without an interface.
+///
+/// An import row carries only `host_nanos`, with `wall_nanos` equal to it:
+/// watoots times the host function but sees no boundary of its own inside it.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+#[allow(non_camel_case_types)]
+pub struct wt_function_profile_t {
+    /// Export or import.
+    pub kind: wt_function_kind,
+    /// Interface name, version included; `""` for an export. Borrowed.
+    pub iface: *const c_char,
+    /// The function's own name. Borrowed.
+    pub func: *const c_char,
+    /// How many times it was entered.
+    pub calls: u64,
+    /// Wall time across those entries.
+    pub wall_nanos: u64,
+    /// Time inside wasm, host calls made from it excluded. Zero for an import.
+    pub guest_nanos: u64,
+    /// Time inside host functions.
+    pub host_nanos: u64,
+    /// The remainder. Zero for an import.
+    pub marshalling_nanos: u64,
+}
+
+impl Default for wt_function_profile_t {
+    fn default() -> Self {
+        Self {
+            kind: wt_function_kind::WT_FUNCTION_EXPORT,
+            iface: ptr::null(),
+            func: ptr::null(),
+            calls: 0,
+            wall_nanos: 0,
+            guest_nanos: 0,
+            host_nanos: 0,
+            marshalling_nanos: 0,
+        }
+    }
+}
+
+fn row_from(profile: &FunctionProfile) -> Result<ProfileRow, Error> {
+    let interface = CString::new(profile.interface.as_str())
+        .map_err(|_| Error::internal("an interface name contained a NUL byte"))?;
+    let func = CString::new(profile.func.as_str())
+        .map_err(|_| Error::internal("a function name contained a NUL byte"))?;
+    Ok(ProfileRow {
+        interface,
+        func,
+        numbers: wt_function_profile_t {
+            kind: profile.kind.into(),
+            // Filled in by `wt_plugin_profile_function`, once the strings have
+            // a stable address inside the plugin.
+            iface: ptr::null(),
+            func: ptr::null(),
+            calls: profile.calls,
+            wall_nanos: profile.wall_nanos,
+            guest_nanos: profile.guest_nanos,
+            host_nanos: profile.host_nanos,
+            marshalling_nanos: profile.marshalling_nanos,
+        },
+    })
+}
+
+/// Read a plugin's time split into `profile_out`.
+///
+/// Takes a mutable plugin because it also refreshes the per-function rows that
+/// [`wt_plugin_profile_function`] serves, which invalidates the `iface` and
+/// `func` pointers from any earlier call.
+///
+/// Fails with `WT_ERR_INVALID_ARGUMENT` when the host was not built with
+/// [`wt_host_builder_profile`]: a page of zeroes is a worse answer than being
+/// told the feature is off.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wt_plugin_profile(
+    plugin: *mut wt_plugin_t,
+    profile_out: *mut wt_plugin_profile_t,
+    error_out: *mut *mut wt_error_t,
+) -> wt_status {
+    guard(error_out, || {
+        if plugin.is_null() || profile_out.is_null() {
+            return Err(Error::invalid_argument(
+                "plugin and profile_out must not be NULL",
+            ));
+        }
+        let handle = unsafe { &mut *plugin };
+        let profile = handle.inner.profile()?;
+
+        handle.profile_rows = profile
+            .functions
+            .iter()
+            .map(row_from)
+            .collect::<Result<Vec<_>, Error>>()?;
+
+        unsafe {
+            *profile_out = wt_plugin_profile_t {
+                calls: profile.calls,
+                wall_nanos: profile.wall_nanos,
+                guest_nanos: profile.guest_nanos,
+                host_nanos: profile.host_nanos,
+                marshalling_nanos: profile.marshalling_nanos,
+                function_count: handle.profile_rows.len() as u64,
+            };
+        }
+        Ok(())
+    })
+}
+
+/// Read one row of the profile most recently taken by [`wt_plugin_profile`].
+///
+/// `index` is below that call's `function_count`. The `iface` and `func`
+/// pointers are borrowed from the plugin and are invalidated by the next
+/// [`wt_plugin_profile`] on it.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wt_plugin_profile_function(
+    plugin: *const wt_plugin_t,
+    index: u64,
+    function_out: *mut wt_function_profile_t,
+    error_out: *mut *mut wt_error_t,
+) -> wt_status {
+    guard(error_out, || {
+        if plugin.is_null() || function_out.is_null() {
+            return Err(Error::invalid_argument(
+                "plugin and function_out must not be NULL",
+            ));
+        }
+        let rows = unsafe { &(*plugin).profile_rows };
+        let row = usize::try_from(index)
+            .ok()
+            .and_then(|index| rows.get(index))
+            .ok_or_else(|| {
+                Error::new(
+                    ErrorKind::NotFound,
+                    format!(
+                        "profile row {index} does not exist; the last \
+                         wt_plugin_profile reported {} row(s)",
+                        rows.len()
+                    ),
+                )
+            })?;
+
+        let mut numbers = row.numbers;
+        numbers.iface = row.interface.as_ptr();
+        numbers.func = row.func.as_ptr();
+        unsafe { *function_out = numbers };
+        Ok(())
+    })
+}
+
+/// Write the sampled guest profile to `path`, as Firefox Profiler JSON.
+///
+/// Needs [`wt_host_builder_profile_guest_samples`]. The profiler is consumed:
+/// sampling stops here and a second call fails. Load the file at
+/// <https://profiler.firefox.com/>.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wt_plugin_write_guest_profile(
+    plugin: *mut wt_plugin_t,
+    path: *const c_char,
+    error_out: *mut *mut wt_error_t,
+) -> wt_status {
+    guard(error_out, || {
+        if plugin.is_null() {
+            return Err(Error::invalid_argument("plugin must not be NULL"));
+        }
+        let path = unsafe { borrow_str(path, "path") }?;
+        unsafe { (*plugin).inner.write_guest_profile(path) }
     })
 }
 
