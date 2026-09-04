@@ -18,4 +18,5 @@ sha2 = "0.11.0"
 watoots = { version = "0.1.0", path = "../host" }
 
 [dev-dependencies]
+proptest = "1.11.0"
 tempfile = "3.27.0"

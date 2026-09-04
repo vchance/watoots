@@ -5,9 +5,10 @@
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use clap::{Args, Parser, Subcommand};
+use watoots::fuzz::Generator;
 use watoots::{Host, HostBuilder, Manifest, TraceHook};
 use watoots_trace::{Header, Recorder, Trace, binary, replay, text};
 
@@ -28,6 +29,8 @@ enum Command {
     Record(RecordArgs),
     /// Re-run a recorded session against a component, with no application.
     Replay(ReplayArgs),
+    /// Call a plugin with generated arguments and check it records and replays.
+    Fuzz(FuzzArgs),
     /// Convert a trace between the text and binary encodings.
     #[command(subcommand)]
     Trace(TraceCommand),
@@ -141,6 +144,41 @@ struct ReplayArgs {
     emit_test: Option<PathBuf>,
 }
 
+/// `watoots fuzz`: the campaign form of the property tests.
+///
+/// The oracles are the ones in `docs/adr/0008-fuzzing.md`, and the generator is
+/// literally the same code — `watoots::fuzz` — so a finding here and a finding
+/// in `cargo test` mean the same thing.
+#[derive(Args)]
+struct FuzzArgs {
+    /// The component to fuzz.
+    component: PathBuf,
+    /// Manifest granting what the component imports. Without one a component
+    /// that imports anything will be refused at load, which is the point of
+    /// the manifest and not a finding.
+    #[arg(short, long)]
+    manifest: Option<PathBuf>,
+    /// Exported function to call. Repeat to narrow; the default is all of them.
+    #[arg(long = "call", value_name = "NAME")]
+    calls: Vec<String>,
+    /// How many recorded sessions to run.
+    #[arg(long, default_value_t = 64, value_name = "N")]
+    cases: u64,
+    /// Where the values come from. The same seed runs the same campaign, so a
+    /// finding reproduces with `--seed <n> --cases 1`.
+    #[arg(long, default_value_t = 0, value_name = "N")]
+    seed: u64,
+    /// Calls per session. More than one is what exercises replay's ordering.
+    #[arg(long, default_value_t = 3, value_name = "N")]
+    calls_per_case: usize,
+    /// Where to write `crash-NNN.wave`.
+    #[arg(long, default_value = ".", value_name = "DIR")]
+    out: PathBuf,
+    /// Stop after this many crashes. `0` runs the whole campaign.
+    #[arg(long, default_value_t = 1, value_name = "N")]
+    max_crashes: usize,
+}
+
 #[derive(Subcommand)]
 enum TraceCommand {
     /// Convert a trace between encodings.
@@ -172,6 +210,7 @@ fn run(cli: Cli) -> Result<ExitCode, String> {
         Command::Run(args) => invoke(&args.invocation, None),
         Command::Record(args) => record(&args),
         Command::Replay(args) => do_replay(&args),
+        Command::Fuzz(args) => fuzz(&args),
         Command::Wit(WitCommand::SemverCheck(args)) => semver_check(&args),
         Command::Trace(TraceCommand::Fmt {
             input,
@@ -405,6 +444,332 @@ fn do_replay(args: &ReplayArgs) -> Result<ExitCode, String> {
         return Ok(ExitCode::FAILURE);
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// What one generated session was checked against, and what it found.
+///
+/// Every check here is one of ADR-0008's properties, applied to a component the
+/// user chose rather than to one a test constructed. None of them needs an
+/// opinion about what the plugin ought to return: they compare watoots against
+/// watoots.
+fn check_session(trace: &Trace, wasm: &[u8]) -> Result<(), String> {
+    let via_text = text::from_text(&text::to_text(trace))
+        .map_err(|err| format!("the trace does not survive its own text encoding: {err}"))?;
+    if via_text != *trace {
+        return Err("the trace does not survive its own text encoding".to_string());
+    }
+
+    let via_binary = binary::from_bytes(&binary::to_bytes(trace))
+        .map_err(|err| format!("the trace does not survive its own binary encoding: {err}"))?;
+    if via_binary != *trace {
+        return Err("the trace does not survive its own binary encoding".to_string());
+    }
+
+    // The one that matters: with the application gone, the recording has to
+    // reproduce itself.
+    let report = replay(trace, wasm).map_err(|err| format!("replay refused: {err}"))?;
+    if !report.is_faithful() {
+        return Err(report.describe());
+    }
+    Ok(())
+}
+
+/// Property 1, in the form a campaign can apply to a live value.
+///
+/// Stated as "parsing is a fixed point" rather than as `from_wave(to_wave(v))
+/// == v`, because `wasm-wave` normalises as it parses — it returns a flag set
+/// sorted alphabetically rather than in the world's declared order — and that
+/// normalisation is not a defect to report on every run. What would be a defect
+/// is a second trip changing the value again, or either trip failing.
+fn wave_is_stable(ty: &watoots::Type, value: &watoots::Val) -> Result<(), String> {
+    let render = |value: &watoots::Val| {
+        watoots::to_wave(value).map_err(|err| format!("no WAVE rendering: {}", err.message()))
+    };
+    let parse = |text: &str| {
+        watoots::from_wave(ty, text)
+            .map_err(|err| format!("{text:?} does not parse back: {}", err.message()))
+    };
+
+    let once = parse(&render(value)?)?;
+    let twice = parse(&render(&once)?)?;
+    if once != twice {
+        return Err(format!(
+            "a WAVE round trip is not stable:\n  after one: {once:?}\n  after two: {twice:?}"
+        ));
+    }
+    Ok(())
+}
+
+/// One generated session: build a host, call the plugin, take the recording.
+///
+/// The generator answers the plugin's imports as well as supplying its
+/// arguments, so a whole session is a function of one seed and reproduces
+/// exactly.
+struct Session {
+    trace: Trace,
+    /// Set if the generator was asked for something it cannot build — a
+    /// resource handle in an argument or in a host function's result type. Not
+    /// a finding: the component is out of range, and the campaign has to say so
+    /// and stop rather than file it as a crash.
+    unfuzzable: Option<String>,
+    /// A property that failed before the recording was even taken, so the crash
+    /// report can carry it alongside the trace.
+    finding: Option<String>,
+}
+
+fn run_session(
+    wasm: &[u8],
+    name: &str,
+    manifest_toml: &str,
+    exports: &[String],
+    serve: &[watoots::ImportedFunction],
+    seed: u64,
+    calls: usize,
+) -> Result<Session, String> {
+    let manifest = Manifest::parse(manifest_toml).map_err(|err| err.message().to_string())?;
+
+    let recorder = Arc::new(Recorder::new(Header {
+        component_sha256: Trace::hash_component(wasm),
+        plugin: name.to_string(),
+        manifest_toml: manifest_toml.to_string(),
+    }));
+
+    let generator = Arc::new(Mutex::new(Generator::from_seed(seed)));
+    let unfuzzable: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+
+    let mut builder = Host::builder()
+        .manifest(manifest)
+        .trace_hook(Arc::clone(&recorder) as Arc<dyn TraceHook>)
+        // A granted plugin has to be able to reach somebody, but a campaign
+        // that printed every message would bury its own findings.
+        .log_sink(|_record| {});
+
+    for imported in serve {
+        let generator = Arc::clone(&generator);
+        let unfuzzable = Arc::clone(&unfuzzable);
+        builder = builder.host_func(&imported.interface, &imported.func, move |call| {
+            let mut generator = generator.lock().unwrap_or_else(|err| err.into_inner());
+            generator.values(call.result_types()).inspect_err(|err| {
+                let mut flag = unfuzzable.lock().unwrap_or_else(|err| err.into_inner());
+                if flag.is_none() {
+                    *flag = Some(err.message().to_string());
+                }
+            })
+        });
+    }
+
+    let host = builder.build().map_err(|err| err.message().to_string())?;
+    let mut plugin = host
+        .load_binary(name, wasm)
+        .map_err(|err| err.message().to_string())?;
+
+    let mut finding = None;
+
+    for _ in 0..calls {
+        let export = {
+            let mut generator = generator.lock().unwrap_or_else(|err| err.into_inner());
+            let index = match generator.value(&watoots::Type::U8) {
+                Ok(watoots::Val::U8(byte)) => usize::from(byte),
+                _ => 0,
+            };
+            exports[index % exports.len()].clone()
+        };
+
+        let params = plugin
+            .export_params(&export)
+            .map_err(|err| err.message().to_string())?;
+
+        let args = {
+            let mut generator = generator.lock().unwrap_or_else(|err| err.into_inner());
+            match generator.values(&params) {
+                Ok(args) => args,
+                Err(err) => {
+                    let mut flag = unfuzzable.lock().unwrap_or_else(|err| err.into_inner());
+                    if flag.is_none() {
+                        *flag = Some(err.message().to_string());
+                    }
+                    break;
+                }
+            }
+        };
+
+        // Property 1, on this component's own types. A failure here is a
+        // finding like any other, so it is remembered rather than raised: the
+        // session still has to be recorded, or the crash report would have no
+        // trace attached to it.
+        for (ty, value) in params.iter().zip(&args) {
+            if let Err(why) = wave_is_stable(ty, value)
+                && finding.is_none()
+            {
+                finding = Some(format!("{export}: {why}"));
+            }
+        }
+
+        if plugin.call(&export, &args).is_err() {
+            // A trapped component instance refuses re-entry, so anything after
+            // this would be recording the engine's refusal rather than the
+            // plugin's behaviour. The failure itself is in the trace, and
+            // replaying it is part of what is being checked.
+            break;
+        }
+    }
+
+    let mut unfuzzable = unfuzzable
+        .lock()
+        .unwrap_or_else(|err| err.into_inner())
+        .clone();
+
+    // A recorder refuses to hand back a trace it could not write down
+    // faithfully — a resource crossing the boundary is the case it exists for.
+    // That is the same "out of range" answer, arriving from the other side, and
+    // it must not be swallowed into an empty trace that then reports clean.
+    let trace = match recorder.finish() {
+        Ok(trace) => trace,
+        Err(err) => {
+            if unfuzzable.is_none() {
+                unfuzzable = Some(err.message().to_string());
+            }
+            Trace::default()
+        }
+    };
+
+    Ok(Session {
+        trace,
+        unfuzzable,
+        finding,
+    })
+}
+
+fn fuzz(args: &FuzzArgs) -> Result<ExitCode, String> {
+    let wasm = read(&args.component)?;
+    let manifest_toml = match &args.manifest {
+        Some(path) => std::fs::read_to_string(path)
+            .map_err(|err| format!("cannot read {}: {err}", path.display()))?,
+        None => String::new(),
+    };
+    let name: String = args.component.file_stem().map_or_else(
+        || "plugin".to_string(),
+        |stem| stem.to_string_lossy().into(),
+    );
+
+    // Compiles but does not instantiate, so this works before we know whether
+    // the manifest is good enough to load the thing.
+    let probe = Host::builder()
+        .build()
+        .map_err(|err| err.message().to_string())?;
+    let available = probe
+        .export_functions(&wasm)
+        .map_err(|err| err.message().to_string())?;
+
+    let exports: Vec<String> = if args.calls.is_empty() {
+        available.clone()
+    } else {
+        for wanted in &args.calls {
+            if !available.contains(wanted) {
+                return Err(format!(
+                    "{} exports no function {wanted:?}; it exports: {}",
+                    args.component.display(),
+                    available.join(", ")
+                ));
+            }
+        }
+        args.calls.clone()
+    };
+    if exports.is_empty() {
+        return Err(format!(
+            "{} exports no functions to call",
+            args.component.display()
+        ));
+    }
+
+    // Everything the component expects the application to provide. WASI is the
+    // host library's job, not the mock's — the same split replay makes.
+    let serve: Vec<watoots::ImportedFunction> = probe
+        .import_functions(&wasm)
+        .map_err(|err| err.message().to_string())?
+        .into_iter()
+        .filter(|imported| !imported.interface.starts_with("wasi:"))
+        .collect();
+
+    std::fs::create_dir_all(&args.out)
+        .map_err(|err| format!("cannot create {}: {err}", args.out.display()))?;
+
+    eprintln!(
+        "fuzzing {} — {} case(s) from seed {}, {} call(s) each, over {}",
+        args.component.display(),
+        args.cases,
+        args.seed,
+        args.calls_per_case,
+        exports.join(", ")
+    );
+
+    let mut crashes = 0usize;
+    for case in 0..args.cases {
+        let seed = args.seed.wrapping_add(case);
+        let session = run_session(
+            &wasm,
+            &name,
+            &manifest_toml,
+            &exports,
+            &serve,
+            seed,
+            args.calls_per_case,
+        )?;
+
+        if let Some(reason) = session.unfuzzable {
+            // Out of range rather than broken, and the same limit that stops
+            // the world being traced at all. Say so once and stop.
+            return Err(format!(
+                "{} cannot be fuzzed: {reason}",
+                args.component.display()
+            ));
+        }
+
+        if session.trace.events.is_empty() {
+            return Err(format!(
+                "{} recorded no crossings; there is nothing here to check",
+                args.component.display()
+            ));
+        }
+
+        let why = match (session.finding, check_session(&session.trace, &wasm)) {
+            (Some(why), _) | (None, Err(why)) => why,
+            (None, Ok(())) => continue,
+        };
+
+        let path = args.out.join(format!("crash-{crashes:03}.wave"));
+        std::fs::write(&path, text::to_text(&session.trace))
+            .map_err(|err| format!("cannot write {}: {err}", path.display()))?;
+
+        println!("crash {crashes} (case {case}, seed {seed}):\n{why}");
+        println!("  wrote {}", path.display());
+        println!(
+            "  reproduce:  watoots fuzz {} {}--seed {seed} --cases 1",
+            args.component.display(),
+            args.manifest
+                .as_ref()
+                .map_or_else(String::new, |path| format!("-m {} ", path.display()))
+        );
+        println!(
+            "  regression: watoots replay {} --component {} --emit-test tests/crash_{crashes:03}.rs",
+            path.display(),
+            args.component.display()
+        );
+
+        crashes += 1;
+        if args.max_crashes != 0 && crashes >= args.max_crashes {
+            eprintln!(
+                "stopping after {crashes} crash(es); --max-crashes 0 runs the whole campaign"
+            );
+            break;
+        }
+    }
+
+    if crashes == 0 {
+        eprintln!("{} case(s), no findings", args.cases);
+        return Ok(ExitCode::SUCCESS);
+    }
+    Ok(ExitCode::FAILURE)
 }
 
 fn fmt_trace(input: &Path, output: Option<&Path>, as_binary: bool) -> Result<ExitCode, String> {

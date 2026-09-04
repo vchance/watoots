@@ -34,6 +34,7 @@
 #![warn(missing_docs)]
 
 mod error;
+pub mod fuzz;
 mod host;
 pub mod imports;
 pub mod manifest;
@@ -54,3 +55,8 @@ pub use wave::{from_wave, to_wave};
 /// Re-exported so callers can build arguments without depending on wasmtime
 /// directly.
 pub use wasmtime::component::Val;
+
+/// Re-exported for the same reason as [`Val`]: a caller working dynamically —
+/// the CLI, the fuzzer, a host function answering in text — needs the world's
+/// own declaration of a type before it can produce a value of it.
+pub use wasmtime::component::Type;

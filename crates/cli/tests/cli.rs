@@ -360,3 +360,158 @@ fn wit_semver_check_rejects_a_changed_signature() {
         stdout(&output)
     );
 }
+
+// ---------------------------------------------------------------------------
+// `watoots fuzz` — ADR-0008
+// ---------------------------------------------------------------------------
+
+/// Rolls a random number. The argument is ignored: it is there so the generator
+/// has something to generate, and so the trace has an argument to encode.
+///
+/// WAT rather than a compiled guest, so this stays hermetic — `Component::new`
+/// assembles the text itself, which is the same trick the host's own tests use.
+/// `wasi:random` is the point: under the manifest's default determinism it is a
+/// seeded generator and a session reproduces, and with determinism switched off
+/// it is the real thing and a session does not. That makes it the smallest
+/// honest demonstration of what the fuzzer is looking for.
+const ROLLS: &str = r#"
+(component
+  (type (;0;)
+    (instance
+      (type (;0;) (func (result u64)))
+      (export (;0;) "get-random-u64" (func (type 0)))
+    )
+  )
+  (import "wasi:random/random@0.2.9" (instance $r (type 0)))
+  (alias export $r "get-random-u64" (func $rand_fn))
+  (core func $rand_lowered (canon lower (func $rand_fn)))
+  (core module $m
+    (import "r" "get-random-u64" (func $rand (result i64)))
+    (func (export "roll") (param $n i32) (result i64) (call $rand))
+  )
+  (core instance $r_i (export "get-random-u64" (func $rand_lowered)))
+  (core instance $i (instantiate $m (with "r" (instance $r_i))))
+  (func $roll (param "n" u32) (result u64) (canon lift (core func $i "roll")))
+  (export "roll" (func $roll))
+)
+"#;
+
+/// Writes the component and a manifest into a temp dir, and returns both paths
+/// plus somewhere to put crash files.
+fn rolling_plugin(determinism: bool) -> (tempfile::TempDir, String, String, String) {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let component = dir.path().join("rolls.wasm");
+    let manifest = dir.path().join("policy.toml");
+    let out = dir.path().join("findings");
+    std::fs::write(&component, ROLLS).unwrap();
+    std::fs::write(
+        &manifest,
+        if determinism {
+            "[permissions]\nrandom = true\n"
+        } else {
+            "[permissions]\nrandom = true\n\n[determinism]\nenabled = false\n"
+        },
+    )
+    .unwrap();
+    (
+        dir,
+        component.display().to_string(),
+        manifest.display().to_string(),
+        out.display().to_string(),
+    )
+}
+
+#[test]
+fn fuzz_reports_nothing_when_a_session_reproduces() {
+    let (_dir, component, manifest, out) = rolling_plugin(true);
+    let output = watoots(&[
+        "fuzz", &component, "-m", &manifest, "--cases", "8", "--out", &out,
+    ]);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert!(output.status.success(), "{stderr}{}", stdout(&output));
+    assert!(stderr.contains("no findings"), "{stderr}");
+}
+
+#[test]
+fn fuzz_catches_a_session_that_does_not_reproduce() {
+    // Determinism off, so the plugin answers differently on the replay than it
+    // did on the recording. That is exactly the class of bug record/replay is
+    // for, and the fuzzer has to notice it without being told what `roll`
+    // should return.
+    let (_dir, component, manifest, out) = rolling_plugin(false);
+    let output = watoots(&[
+        "fuzz", &component, "-m", &manifest, "--cases", "8", "--out", &out,
+    ]);
+    let text = stdout(&output);
+
+    assert!(!output.status.success(), "{text}");
+    assert!(text.contains("crash 0"), "{text}");
+    assert!(text.contains("diverged"), "{text}");
+
+    // The crash is an artifact, not just a message: a trace file, and the line
+    // that turns it into a Rust regression test.
+    let crash = std::path::Path::new(&out).join("crash-000.wave");
+    assert!(crash.is_file(), "{text}");
+    let recorded = std::fs::read_to_string(&crash).unwrap();
+    assert!(recorded.starts_with("watoots-trace 1\n"), "{recorded}");
+    assert!(recorded.contains("export-call roll"), "{recorded}");
+    assert!(
+        text.contains("watoots replay") && text.contains("--emit-test"),
+        "a crash has to say how to become a test: {text}"
+    );
+
+    // And that file really is replayable input, not just something written out.
+    let replayed = watoots(&[
+        "replay",
+        &crash.display().to_string(),
+        "--component",
+        &component,
+        "--assert",
+    ]);
+    assert!(!replayed.status.success(), "{}", stdout(&replayed));
+}
+
+#[test]
+fn fuzz_reproduces_a_case_from_its_seed() {
+    // A crash report carries `--seed <n> --cases 1`. If that did not reproduce
+    // the report would be useless, so the campaign has to be a function of the
+    // seed and nothing else.
+    let (_dir, component, manifest, out) = rolling_plugin(true);
+    let run = || {
+        let output = watoots(&[
+            "fuzz", &component, "-m", &manifest, "--cases", "1", "--seed", "9137", "--out", &out,
+        ]);
+        assert!(output.status.success());
+        // The trace itself is the thing that has to match, so record one.
+        let trace = std::path::Path::new(&out).join("seed.wave");
+        let recorded = watoots(&[
+            "record",
+            &component,
+            "-m",
+            &manifest,
+            "-c",
+            "roll",
+            "-o",
+            &trace.display().to_string(),
+            "7",
+        ]);
+        assert!(recorded.status.success());
+        std::fs::read_to_string(&trace).unwrap()
+    };
+    assert_eq!(run(), run());
+}
+
+#[test]
+fn fuzz_refuses_an_export_the_component_does_not_have() {
+    let (_dir, component, manifest, out) = rolling_plugin(true);
+    let output = watoots(&[
+        "fuzz", &component, "-m", &manifest, "--call", "nope", "--out", &out,
+    ]);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("no function \"nope\""), "{stderr}");
+    assert!(
+        stderr.contains("roll"),
+        "a refusal should say what there is: {stderr}"
+    );
+}

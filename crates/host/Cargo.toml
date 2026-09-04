@@ -35,3 +35,4 @@ wasmtime-wasi = "48"
 # embeds the component bytes and validates them.
 wat = "1.258"
 tempfile = "3.27.0"
+proptest = "1.11.0"

@@ -57,6 +57,30 @@ There is also `cmake --preset asan` for AddressSanitizer and UBSan.
 LeakSanitizer is Linux-only, so leak checking happens in CI rather than on a
 Mac.
 
+## The property tests
+
+`cargo test --workspace` runs a small fuzzing budget as ordinary tests: values
+are generated from a component's own types, and the oracle is that recording a
+session and replaying it reports faithful. See
+[ADR-0008](docs/adr/0008-fuzzing.md) for why that is the oracle and why this is
+proptest rather than `cargo-fuzz` — the short version is that stable Rust is
+enough, so the properties are in CI from the first commit instead of in a
+campaign somebody remembers to launch.
+
+The defaults are deliberately small. For a longer local run:
+
+```sh
+WATOOTS_PROPTEST_CASES=5000 cargo test --workspace
+watoots fuzz plugin.wasm -m policy.toml --cases 5000 --max-crashes 0
+```
+
+`watoots fuzz` writes a `crash-NNN.wave` per finding and prints the
+`watoots replay --emit-test` line that turns it into a Rust regression test.
+
+A `*.proptest-regressions` file next to a test is a failure proptest found and
+shrank. It is a fixture, not noise: read it in review the way you would read a
+new test case, because that is what it is.
+
 ## The sample plugins
 
 ```sh

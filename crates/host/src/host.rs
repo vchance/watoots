@@ -264,6 +264,26 @@ impl Host {
         Ok(found)
     }
 
+    /// Every function a component exports, by name.
+    ///
+    /// The mirror of [`Host::import_functions`], and the same shape of answer:
+    /// it compiles but does not instantiate, so it is safe to ask about an
+    /// untrusted plugin. Only top-level exports are listed, because those are
+    /// the ones [`Plugin::call`] can reach.
+    ///
+    /// `watoots fuzz` needs this to know what there is to call before it has a
+    /// plugin to call it on.
+    pub fn export_functions(&self, wasm: &[u8]) -> Result<Vec<String>> {
+        let component = self.compile(wasm)?;
+        let engine = &self.inner.engine;
+        Ok(component
+            .component_type()
+            .exports(engine)
+            .filter(|(_, item)| matches!(item.ty, ComponentItem::ComponentFunc(_)))
+            .map(|(name, _)| name.to_string())
+            .collect())
+    }
+
     /// Load a component from disk.
     ///
     /// `${plugin_dir}` expands to the directory the component was loaded from,

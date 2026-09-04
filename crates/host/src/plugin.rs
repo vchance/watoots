@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::Arc;
 
-use wasmtime::component::{Component, Linker, ResourceTable, Val};
+use wasmtime::component::{Component, Linker, ResourceTable, Type, Val};
 use wasmtime::{Engine, Store, StoreLimits, StoreLimitsBuilder};
 use wasmtime_wasi::{FsPerms, WasiCtx, WasiCtxView, WasiView};
 
@@ -283,6 +283,26 @@ impl Plugin {
 
         outcome?;
         Ok(results)
+    }
+
+    /// The parameter types of an exported function, as the component declares
+    /// them.
+    ///
+    /// This is what makes a generated call type-correct by construction rather
+    /// than by luck: `watoots fuzz` builds each argument from the type the
+    /// world says it has, so nothing is spent being rejected by the canonical
+    /// ABI. See `docs/adr/0008-fuzzing.md`.
+    pub fn export_params(&mut self, export: &str) -> Result<Vec<Type>> {
+        let func = self
+            .instance
+            .get_func(&mut self.store, export)
+            .ok_or_else(|| {
+                Error::new(
+                    ErrorKind::NotFound,
+                    format!("{}: no exported function {export:?}", self.name),
+                )
+            })?;
+        Ok(func.ty(&self.store).params().map(|(_, ty)| ty).collect())
     }
 
     /// Call an exported function, taking and returning WAVE text.
