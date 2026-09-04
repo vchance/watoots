@@ -81,6 +81,13 @@ A `*.proptest-regressions` file next to a test is a failure proptest found and
 shrank. It is a fixture, not noise: read it in review the way you would read a
 new test case, because that is what it is.
 
+With one exception. If the fix was to *narrow the generator* — because the
+value turned out to be one the format cannot represent rather than one it
+mishandled — then replaying that seed produces a rejected case and never a
+failure, and the file is a saved seed that cannot reproduce. Delete it and pin
+the contract with a named test instead. `a_value_cannot_contain_a_raw_line_break`
+is the worked example.
+
 ## The sample plugins
 
 ```sh

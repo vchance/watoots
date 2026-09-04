@@ -47,7 +47,7 @@ pub use error::{Error, ErrorKind, Result};
 pub use host::{Host, HostBuilder, HostCall, HostFunc, ImportedFunction, LogRecord, LogSink};
 pub use imports::{GrantReport, ImportDecision, Requirement};
 pub use manifest::{Clocks, FsGrants, Limits, LogLevel, Manifest, Permissions};
-pub use plugin::Plugin;
+pub use plugin::{Plugin, PluginStats};
 pub use registry::Registry;
 pub use trace::{Outcome, TraceEvent, TraceHook};
 pub use wave::{from_wave, to_wave};

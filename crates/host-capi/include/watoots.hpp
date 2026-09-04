@@ -293,6 +293,20 @@ class Plugin {
   /// Whether this holds a plugin.
   explicit operator bool() const noexcept { return static_cast<bool>(handle_); }
 
+  /// What the host has observed about this plugin since it was loaded.
+  ///
+  /// Measured at the boundary, never reported by the guest, which is the
+  /// distinction ADR-0006 draws in declining to build guest-emitted metrics.
+  [[nodiscard]] Result<wt_plugin_stats_t> Stats() const {
+    wt_plugin_stats_t stats{};
+    wt_error_t* error = nullptr;
+    const wt_status status = wt_plugin_stats(handle_.Get(), &stats, &error);
+    if (status != WT_OK) {
+      return unexpected(internal::TakeError(status, error));
+    }
+    return stats;
+  }
+
   /// Call an exported function with WAVE-encoded arguments.
   Result<Value> Call(const std::string& export_name,
                      std::span<const std::string> args) {

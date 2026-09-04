@@ -134,3 +134,35 @@ function would let an application shadow the capability check and make
 `permissions.logging` decorative. This ADR said "the application supplies the
 sink" and did not distinguish supplying a sink from supplying the interface.
 Only the sink is the application's.
+
+## Addendum — 2026-09-04, on building `PluginStats`
+
+**"An accessor over counters that exist" was overstated.** Two of the six
+numbers this ADR listed did not exist and one still does not:
+
+- *Fuel consumed* and *denials* were readable, as claimed — from
+  `Store::get_fuel` and the `GrantReport` the plugin already carries.
+- *Memory high-water* needed real work. `StoreLimits` enforces the ceiling and
+  reports nothing, so peak memory required a `ResourceLimiter` of our own
+  wrapping it. Roughly thirty lines, but not an accessor.
+- *Cache hits* and *load failures* are still not counted anywhere. They are
+  `Host`-level rather than `Plugin`-level and are left out rather than
+  invented; `PluginStats` is about one plugin.
+
+What shipped: `calls`, `fuel_consumed`, `peak_memory_bytes`, `log_messages`,
+`log_bytes`, `imports_declared`, `imports_denied` — on `Plugin::stats`,
+`wt_plugin_stats` and `wt::Plugin::Stats`, because a Rust-only accessor would
+recreate the drift that had to be fixed when the CLI's `inspect` moved ahead of
+the C API's.
+
+Two properties are worth stating because they are the argument of this ADR made
+concrete, and both are pinned by tests:
+
+- **A trapped call is still counted.** The calls an operator most wants
+  accounted for are the ones that failed, so the totals are folded in before
+  the error is returned.
+- **A refused growth does not raise the peak.** The limiter records `desired`
+  only when it says yes, so a plugin cannot inflate its own memory figure by
+  asking for what it will not get. That is what "un-spoofable by the guest"
+  has to mean in practice.
+

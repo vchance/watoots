@@ -93,6 +93,29 @@ typedef void (*wt_log_sink_t)(void *userdata,
                               const char *context,
                               const char *message);
 
+// What the host has observed about a plugin since it was loaded.
+//
+// Plain integers, owned by the caller: there is nothing to free. Every field
+// is measured at the boundary rather than reported by the guest, so a plugin
+// can neither forge nor inflate them. See ADR-0006 for why watoots offers
+// these and not metrics a plugin emits about itself.
+typedef struct wt_plugin_stats_t {
+  // Calls that have completed, successfully or not.
+  uint64_t calls;
+  // Fuel burned across those calls; zero when the manifest meters none.
+  uint64_t fuel_consumed;
+  // Largest linear memory the guest was granted, in bytes.
+  uint64_t peak_memory_bytes;
+  // `wasi:logging` messages emitted.
+  uint64_t log_messages;
+  // Bytes of log message emitted.
+  uint64_t log_bytes;
+  // Imports the component declares.
+  uint64_t imports_declared;
+  // How many of those the manifest did not grant.
+  uint64_t imports_denied;
+} wt_plugin_stats_t;
+
 #ifdef __cplusplus
 extern "C" {
 #endif // __cplusplus
@@ -251,6 +274,11 @@ void wt_plugin_delete(struct wt_plugin_t *plugin);
 
 // The plugin's name. Borrowed; valid until the plugin is deleted.
 const char *wt_plugin_name(const struct wt_plugin_t *plugin);
+
+// Read a plugin's counters into `stats_out`.
+enum wt_status wt_plugin_stats(const struct wt_plugin_t *plugin,
+                               struct wt_plugin_stats_t *stats_out,
+                               struct wt_error_t **error_out);
 
 // Call an exported function with WAVE-encoded arguments.
 //

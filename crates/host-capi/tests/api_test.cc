@@ -403,3 +403,23 @@ TEST(CApi, MovingAPluginDoesNotDoubleFree) {
 }
 
 }  // namespace
+
+TEST(CApi, PluginStatsAreObservedNotReported) {
+  const wt::Host host = BuildHost();
+  const std::string wasm = kSelfContained;
+
+  auto plugin = host.LoadBinary("answer", AsBytes(wasm));
+  ASSERT_TRUE(plugin.has_value()) << plugin.error().Message();
+
+  auto before = plugin->Stats();
+  ASSERT_TRUE(before.has_value()) << before.error().Message();
+  EXPECT_EQ(before->calls, 0U);
+
+  auto result = plugin->Call("answer");
+  ASSERT_TRUE(result.has_value()) << result.error().Message();
+
+  auto after = plugin->Stats();
+  ASSERT_TRUE(after.has_value()) << after.error().Message();
+  EXPECT_EQ(after->calls, 1U);
+  EXPECT_EQ(after->imports_denied, 0U);
+}

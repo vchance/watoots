@@ -799,6 +799,61 @@ pub unsafe extern "C" fn wt_plugin_name(plugin: *const wt_plugin_t) -> *const c_
     unsafe { (*plugin).name.as_ptr() }
 }
 
+/// What the host has observed about a plugin since it was loaded.
+///
+/// Plain integers, owned by the caller: there is nothing to free. Every field
+/// is measured at the boundary rather than reported by the guest, so a plugin
+/// can neither forge nor inflate them. See ADR-0006 for why watoots offers
+/// these and not metrics a plugin emits about itself.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+#[allow(non_camel_case_types)]
+pub struct wt_plugin_stats_t {
+    /// Calls that have completed, successfully or not.
+    pub calls: u64,
+    /// Fuel burned across those calls; zero when the manifest meters none.
+    pub fuel_consumed: u64,
+    /// Largest linear memory the guest was granted, in bytes.
+    pub peak_memory_bytes: u64,
+    /// `wasi:logging` messages emitted.
+    pub log_messages: u64,
+    /// Bytes of log message emitted.
+    pub log_bytes: u64,
+    /// Imports the component declares.
+    pub imports_declared: u64,
+    /// How many of those the manifest did not grant.
+    pub imports_denied: u64,
+}
+
+/// Read a plugin's counters into `stats_out`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wt_plugin_stats(
+    plugin: *const wt_plugin_t,
+    stats_out: *mut wt_plugin_stats_t,
+    error_out: *mut *mut wt_error_t,
+) -> wt_status {
+    guard(error_out, || {
+        if plugin.is_null() || stats_out.is_null() {
+            return Err(Error::invalid_argument(
+                "plugin and stats_out must not be NULL",
+            ));
+        }
+        let stats = unsafe { (*plugin).inner.stats() };
+        unsafe {
+            *stats_out = wt_plugin_stats_t {
+                calls: stats.calls,
+                fuel_consumed: stats.fuel_consumed,
+                peak_memory_bytes: stats.peak_memory_bytes,
+                log_messages: stats.log_messages,
+                log_bytes: stats.log_bytes,
+                imports_declared: stats.imports_declared as u64,
+                imports_denied: stats.imports_denied as u64,
+            };
+        }
+        Ok(())
+    })
+}
+
 /// Call an exported function with WAVE-encoded arguments.
 ///
 /// On success `*result_out` is either NULL, when the function returns nothing,

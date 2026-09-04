@@ -44,8 +44,83 @@ const LOGGING_FUNC: &str = "log";
 struct State {
     wasi: WasiCtx,
     table: ResourceTable,
-    limits: StoreLimits,
+    limits: MeteredLimits,
     log: LogBudget,
+    counters: Counters,
+}
+
+/// `StoreLimits`, plus the high-water mark it passes through.
+///
+/// Wasmtime's `StoreLimits` enforces the ceiling and does not report what was
+/// actually used, so peak memory needs a limiter of our own rather than an
+/// accessor. This is the one number an operator asks for first — "which plugin
+/// is eating my memory" — and the guest cannot lie about it, because it is
+/// observed at the growth request rather than reported by the plugin.
+struct MeteredLimits {
+    inner: StoreLimits,
+    peak_memory: usize,
+}
+
+impl wasmtime::ResourceLimiter for MeteredLimits {
+    fn memory_growing(
+        &mut self,
+        current: usize,
+        desired: usize,
+        maximum: Option<usize>,
+    ) -> wasmtime::Result<bool> {
+        let allowed = self.inner.memory_growing(current, desired, maximum)?;
+        if allowed {
+            self.peak_memory = self.peak_memory.max(desired);
+        }
+        Ok(allowed)
+    }
+
+    fn table_growing(
+        &mut self,
+        current: usize,
+        desired: usize,
+        maximum: Option<usize>,
+    ) -> wasmtime::Result<bool> {
+        self.inner.table_growing(current, desired, maximum)
+    }
+}
+
+/// Totals across a plugin's lifetime, accumulated as each call ends.
+///
+/// The per-call budgets in `LogBudget` are re-armed by [`arm`]; these are not.
+#[derive(Debug, Clone, Copy, Default)]
+struct Counters {
+    calls: u64,
+    fuel_consumed: u64,
+    log_messages: u64,
+    log_bytes: u64,
+}
+
+/// What a host has observed about one plugin.
+///
+/// The half of "metrics" worth having, and the reason ADR-0006 declines to let
+/// a plugin report its own: these numbers are observed at the boundary, so a
+/// guest cannot inflate or forge them, and their cardinality is fixed by this
+/// struct rather than by untrusted input.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PluginStats {
+    /// Calls that have completed, successfully or not.
+    pub calls: u64,
+    /// Fuel burned across those calls. Zero when the manifest sets no fuel
+    /// limit, because nothing is metered then.
+    pub fuel_consumed: u64,
+    /// The largest linear-memory size the guest was granted, in bytes.
+    pub peak_memory_bytes: u64,
+    /// `wasi:logging` messages emitted, and their total size.
+    pub log_messages: u64,
+    /// Bytes of log message emitted.
+    pub log_bytes: u64,
+    /// Imports the component declares.
+    pub imports_declared: usize,
+    /// How many of those the manifest did not grant. Non-zero only where the
+    /// application served them itself, since otherwise the load would have
+    /// failed.
+    pub imports_denied: usize,
 }
 
 /// How much more a plugin may say during the call in progress.
@@ -62,6 +137,11 @@ struct LogBudget {
 }
 
 impl LogBudget {
+    /// Messages and bytes spent during the call in progress.
+    fn used(&self) -> (u64, u64) {
+        (self.messages_used, self.bytes_used)
+    }
+
     fn new(limits: &Limits) -> Self {
         Self {
             bytes_allowed: limits.log_bytes,
@@ -184,8 +264,12 @@ impl Plugin {
         let state = State {
             wasi,
             table: ResourceTable::new(),
-            limits: StoreLimitsBuilder::new().memory_size(memory).build(),
+            limits: MeteredLimits {
+                inner: StoreLimitsBuilder::new().memory_size(memory).build(),
+                peak_memory: 0,
+            },
             log: LogBudget::new(&manifest.limits),
+            counters: Counters::default(),
         };
 
         let mut store = Store::new(engine, state);
@@ -232,6 +316,46 @@ impl Plugin {
         &self.report
     }
 
+    /// What the host has observed about this plugin since it was loaded.
+    ///
+    /// Observed at the boundary rather than reported by the guest, so a plugin
+    /// can neither forge nor inflate these, and the set of numbers is fixed
+    /// here rather than by anything the plugin sends. That is the distinction
+    /// ADR-0006 draws when it declines to build guest-emitted metrics.
+    #[must_use]
+    pub fn stats(&self) -> PluginStats {
+        let state = self.store.data();
+        PluginStats {
+            calls: state.counters.calls,
+            fuel_consumed: state.counters.fuel_consumed,
+            peak_memory_bytes: state.limits.peak_memory as u64,
+            log_messages: state.counters.log_messages,
+            log_bytes: state.counters.log_bytes,
+            imports_declared: self.report.decisions.len(),
+            imports_denied: self.report.denied().count(),
+        }
+    }
+
+    /// Fold the call that just finished into the lifetime totals.
+    ///
+    /// Fuel and the log budget are per call and re-armed by [`arm`], so they
+    /// have to be read before the next call resets them.
+    fn settle(&mut self) {
+        // `get_fuel` errors when the store is not metered, which is exactly the
+        // case where nothing was burned.
+        let remaining = self.store.get_fuel().unwrap_or(0);
+        let burned = self
+            .limits
+            .fuel
+            .map_or(0, |budget| budget.saturating_sub(remaining));
+        let log = self.store.data().log.used();
+        let counters = &mut self.store.data_mut().counters;
+        counters.calls += 1;
+        counters.fuel_consumed += burned;
+        counters.log_messages += log.0;
+        counters.log_bytes += log.1;
+    }
+
     /// Call an exported function by name.
     ///
     /// Untyped on purpose: this is the path the C API and the CLI take, and the
@@ -268,6 +392,11 @@ impl Plugin {
         let outcome = func
             .call(&mut self.store, args, &mut results)
             .map_err(|err| self.classify_call_error(export, &err));
+
+        // Before the early return below: a call that trapped burned fuel and
+        // may have logged, and those are exactly the calls an operator is
+        // trying to account for.
+        self.settle();
 
         if let Some(hook) = &self.trace {
             let reported = match &outcome {
