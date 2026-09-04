@@ -82,8 +82,9 @@ M5 is done except the announcement. Shipped: version 0.1.0 tagged 2026-09-03,
 `docs/MANIFEST.md`, a root `SECURITY.md` (reporting policy) alongside
 `docs/SECURITY.md` (threat model), `CONTRIBUTING.md`, a manifest-first README,
 `tools/demo.sh`, `CHANGELOG.md`, and green CI. The repo is public at
-`github.com/vchance/watoots`; crate metadata points at it. Nothing is published
-to crates.io.
+`github.com/vchance/watoots`; crate metadata points at it. crates.io has only
+the `0.0.0` name placeholders published 2026-08-28 (tag `v0.0.0`, never pushed
+to the remote); 0.1.0 is deliberately not published.
 **Still not done, and deliberately: announcing anywhere, and asking maintainers
 for review.** That is the last M5 item and it is the user's call, not a
 blocker to route around.

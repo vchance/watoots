@@ -1,7 +1,8 @@
 # watoots
 
-> **Work in progress — v0.1.0 is tagged, not published.** Nothing is on
-> crates.io yet, and the API can still change between 0.x releases. What is
+> **Work in progress — v0.1.0 is tagged, not published.** crates.io holds
+> only the `0.0.0` placeholders that reserve the names; 0.1.0 is not there, so
+> build from the tag. The API can still change between 0.x releases. What is
 > here works and is tested in CI: the host, the C API, record/replay, and three
 > sample plugins in three languages over one WIT world. What is missing is
 > anyone else's opinion. Read it, build it, tell me where it is wrong.

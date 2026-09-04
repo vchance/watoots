@@ -26,8 +26,9 @@ here and it will get routed.
 
 **0.1.x** is the supported line. Fixes land on `main` and go out in the next
 0.1.x tag; there is no backport branch, because there is nothing yet to
-backport to. Nothing is published to crates.io, so upgrading means moving the
-tag you build from.
+backport to. The only versions on crates.io are the `0.0.0` placeholders that
+reserve the names — they contain no working code and receive no fixes, so
+upgrading means moving the tag you build from.
 
 ## What is in scope
 
