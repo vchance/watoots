@@ -24,9 +24,10 @@ here and it will get routed.
 
 ## Supported versions
 
-watoots is pre-release: there is no tagged version yet, so `main` is the only
-thing that can receive a fix. Once v0.1 ships, the supported line will be
-stated here.
+**0.1.x** is the supported line. Fixes land on `main` and go out in the next
+0.1.x tag; there is no backport branch, because there is nothing yet to
+backport to. Nothing is published to crates.io, so upgrading means moving the
+tag you build from.
 
 ## What is in scope
 

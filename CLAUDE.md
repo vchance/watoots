@@ -78,11 +78,15 @@ recorder and replay runner; `crates/cli` has `watoots inspect|run|record|replay|
 trace fmt`. `examples/` has one WIT world in Rust, JavaScript and Python, three
 policies, and a C++ host app that runs all three.
 
-M5 so far: version 0.1.0, `docs/MANIFEST.md`, `docs/SECURITY.md`, a rewritten
-README leading with the manifest, `tools/demo.sh`, `CHANGELOG.md`, and CI.
-**Not done, and deliberately: announcing anywhere, and asking maintainers for
-review.** Two things block publishing: no `repository` URL in the crate
-metadata, and no security contact in `docs/SECURITY.md`.
+M5 is done except the announcement. Shipped: version 0.1.0 tagged 2026-09-03,
+`docs/MANIFEST.md`, a root `SECURITY.md` (reporting policy) alongside
+`docs/SECURITY.md` (threat model), `CONTRIBUTING.md`, a manifest-first README,
+`tools/demo.sh`, `CHANGELOG.md`, and green CI. The repo is public at
+`github.com/vchance/watoots`; crate metadata points at it. Nothing is published
+to crates.io.
+**Still not done, and deliberately: announcing anywhere, and asking maintainers
+for review.** That is the last M5 item and it is the user's call, not a
+blocker to route around.
 
 Four things the real guests taught us, worth knowing before debugging a denial:
 a `wasm32-wasip2` Rust guest imports `wasi:clocks/monotonic-clock` and

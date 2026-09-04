@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.1.0] — unreleased
+## [0.1.0] — 2026-09-03
 
 First release. Both halves of the project work end to end.
 
@@ -69,3 +69,5 @@ First release. Both halves of the project work end to end.
 
 See [docs/SECURITY.md](docs/SECURITY.md) for what the sandbox does and does not
 protect against.
+
+[0.1.0]: https://github.com/vchance/watoots/releases/tag/v0.1.0
