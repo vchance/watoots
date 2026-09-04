@@ -47,10 +47,27 @@ fn inspect_without_a_manifest_shows_the_whole_bill() {
     let plugin = sample_plugin().display().to_string();
     let output = watoots(&["inspect", &plugin]);
 
+    // The default view answers "what can it do", not "what does it import":
+    // a capability row rather than an interface name.
+    let text = stdout(&output);
+    assert!(text.contains("capabilities"), "{text}");
+    assert!(text.contains("clock"), "{text}");
+    assert!(text.contains("DENY"), "{text}");
+    // An interface the application is expected to serve is not a denial, and
+    // must not be filed as one.
+    assert!(text.contains("your application must serve"), "{text}");
+    // Denials mean a non-zero exit, so `watoots inspect` works in a gate.
+    assert!(!output.status.success());
+}
+
+#[test]
+fn inspect_imports_lists_the_interfaces_individually() {
+    let plugin = sample_plugin().display().to_string();
+    let output = watoots(&["inspect", &plugin, "--imports"]);
+
     let text = stdout(&output);
     assert!(text.contains("wasi:clocks/monotonic-clock"), "{text}");
     assert!(text.contains("DENY"), "{text}");
-    // Denials mean a non-zero exit, so `watoots inspect` works in a gate.
     assert!(!output.status.success());
 }
 

@@ -45,6 +45,9 @@ struct InspectArgs {
     /// Repeat for each one.
     #[arg(long = "provide", value_name = "INTERFACE")]
     provide: Vec<String>,
+    /// List every import and its decision instead of summarising capabilities.
+    #[arg(long)]
+    imports: bool,
 }
 
 /// What `run` and `record` share.
@@ -156,13 +159,21 @@ fn inspect(args: &InspectArgs) -> Result<ExitCode, String> {
     let report = host
         .inspect(&wasm)
         .map_err(|err| err.message().to_string())?;
-    print!("{}", report.describe());
+
+    if args.imports {
+        print!("{}", report.describe());
+    } else {
+        print!("{}", report.summarize(&host.manifest().permissions));
+    }
 
     if report.is_satisfied() {
         println!("\nevery import is granted");
         Ok(ExitCode::SUCCESS)
     } else {
-        println!("\n{} import(s) are not granted", report.denied().count());
+        println!(
+            "\n{} import(s) are not granted; `--imports` lists them individually",
+            report.denied().count()
+        );
         Ok(ExitCode::FAILURE)
     }
 }

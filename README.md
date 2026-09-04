@@ -42,12 +42,27 @@ intersects what a plugin asks for against what you granted, and refuses anything
 uncovered:
 
 ```console
-$ watoots inspect lint.wasm -m policy.toml
-  ok   wasi:clocks/monotonic-clock@0.2.9  [permissions.clocks = "monotonic"]
-  DENY wasi:sockets/tcp@0.2.9             [permissions.net]
+$ watoots inspect py_lint.wasm -m policy.toml
+capabilities
+  filesystem   DENY   wanted; no filesystem granted
+  network      DENY   wanted; no sockets, no HTTP
+  clock        ok     monotonic only - durations, not dates
+  environment  ok     may read an empty environment
+  random       DENY   wanted; no random granted
+  logging      -      not requested, not granted
 
-1 import(s) are not granted
+your application must serve
+  watoots:example/log@0.1.0
+
+27 import(s): 14 need no grant, 10 not granted
 ```
+
+It answers "what can this plugin do", not "what does it import" — `--imports`
+gives you the raw list. Three distinctions it makes that a list cannot: a
+granted filesystem names the directories; an interface *your application* is
+expected to serve is separated from a permission you failed to grant; and a
+capability granted but never imported is reported, because over-granting shows
+up as an import that is *absent*.
 
 That is a **load** error, not a runtime trap. No guest code has run. You learn a
 plugin wants the network when you install it, not at 3am when it first reaches

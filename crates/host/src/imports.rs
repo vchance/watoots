@@ -8,7 +8,7 @@
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
 
-use crate::manifest::Permissions;
+use crate::manifest::{Clocks, Permissions};
 
 /// A parsed WIT interface name: `namespace:package/interface@version`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -204,6 +204,188 @@ impl GrantReport {
         self.decisions.iter().all(|decision| decision.granted)
     }
 
+    /// The plain-language answer to "what can this plugin actually do?".
+    ///
+    /// `describe` lists imports; this lists *capabilities*, which is the
+    /// question an operator is really asking and the one `docs/SPEC.md` set for
+    /// v0.2 — "reads files under X, no network, uses monotonic clock". The two
+    /// differ in three ways that matter:
+    ///
+    /// - **It resolves against the manifest**, so a granted filesystem shows
+    ///   the directories rather than the word "granted".
+    /// - **It reports what was granted and never asked for.** Over-granting is
+    ///   invisible in an import list, because the evidence is an import that is
+    ///   not there. It is exactly what a reviewer is looking for.
+    /// - **It separates "you must implement this" from "denied".** An interface
+    ///   the application is expected to serve is not a permission problem, and
+    ///   telling an operator to edit their manifest about it wastes their time.
+    #[must_use]
+    pub fn summarize(&self, permissions: &Permissions) -> String {
+        let mut out = String::new();
+        out.push_str("capabilities\n");
+        for row in self.capabilities(permissions) {
+            let _ = writeln!(out, "  {:<12} {:<6} {}", row.name, row.mark, row.detail);
+        }
+
+        let application: Vec<&ImportDecision> = self
+            .decisions
+            .iter()
+            .filter(|decision| {
+                matches!(
+                    decision.requirement,
+                    Requirement::HostProvided | Requirement::Unrecognized
+                ) && !decision.import.starts_with("wasi:")
+            })
+            .collect();
+        if !application.is_empty() {
+            out.push_str("\nyour application must serve\n");
+            for decision in application {
+                let note = if decision.requirement == Requirement::HostProvided {
+                    "  (already provided)"
+                } else {
+                    ""
+                };
+                let _ = writeln!(out, "  {}{note}", decision.import);
+            }
+        }
+
+        let unknown: Vec<&ImportDecision> = self
+            .decisions
+            .iter()
+            .filter(|decision| {
+                decision.requirement == Requirement::Unrecognized
+                    && decision.import.starts_with("wasi:")
+            })
+            .collect();
+        if !unknown.is_empty() {
+            out.push_str("\nWASI interfaces this host does not implement\n");
+            for decision in unknown {
+                let _ = writeln!(out, "  {}", decision.import);
+            }
+        }
+
+        let total = self.decisions.len();
+        let denied = self.decisions.iter().filter(|d| !d.granted).count();
+        let free = self
+            .decisions
+            .iter()
+            .filter(|d| matches!(d.requirement, Requirement::Ambient | Requirement::TypesOnly))
+            .count();
+        let _ = write!(
+            out,
+            "\n{total} import(s): {free} need no grant, {denied} not granted"
+        );
+        out.push('\n');
+
+        // Worth its own line rather than a column somebody has to scan for: a
+        // manifest can satisfy every import and still hand out four
+        // capabilities nothing asked for, and "every import is granted" reads
+        // like an all-clear.
+        let unused = self
+            .capabilities(permissions)
+            .into_iter()
+            .filter(|row| row.granted && !row.requested)
+            .count();
+        if unused > 0 {
+            let _ = writeln!(
+                out,
+                "{unused} capability(ies) granted but never imported; the manifest can be tightened"
+            );
+        }
+        out
+    }
+
+    /// One row per capability, in a fixed order so the shape does not move
+    /// between components. A capability nobody asked for still gets a row:
+    /// "granted, never used" is the finding.
+    #[must_use]
+    pub fn capabilities(&self, permissions: &Permissions) -> Vec<CapabilityRow> {
+        let wants = |kinds: &[Requirement]| {
+            self.decisions
+                .iter()
+                .any(|decision| kinds.contains(&decision.requirement))
+        };
+
+        let clock_detail = match permissions.clocks {
+            Clocks::None => String::from("no clock granted"),
+            Clocks::Monotonic => String::from("monotonic only - durations, not dates"),
+            Clocks::Wall => String::from("monotonic and wall clock"),
+        };
+        let fs_detail = if permissions.fs.is_empty() {
+            String::from("no filesystem granted")
+        } else {
+            let mut detail = String::new();
+            if !permissions.fs.read.is_empty() {
+                let _ = write!(detail, "reads {}", permissions.fs.read.join(", "));
+            }
+            if !permissions.fs.write.is_empty() {
+                if !detail.is_empty() {
+                    detail.push_str("; ");
+                }
+                let _ = write!(detail, "writes {}", permissions.fs.write.join(", "));
+            }
+            detail
+        };
+        let net_detail = match &permissions.net {
+            None => String::from("no sockets, no HTTP"),
+            Some(hosts) if hosts.is_empty() => {
+                String::from("interfaces linked, every connection refused")
+            }
+            Some(hosts) => format!("allowlist: {}", hosts.join(", ")),
+        };
+        let env_detail = match &permissions.env {
+            None => String::from("cannot read the environment"),
+            Some(vars) if vars.is_empty() => String::from("may read an empty environment"),
+            Some(vars) => format!("{} variable(s)", vars.len()),
+        };
+
+        vec![
+            CapabilityRow::new(
+                "filesystem",
+                wants(&[Requirement::Filesystem]),
+                !permissions.fs.is_empty(),
+                fs_detail,
+            ),
+            CapabilityRow::new(
+                "network",
+                wants(&[Requirement::Network]),
+                permissions.net.is_some(),
+                net_detail,
+            ),
+            CapabilityRow::new(
+                "clock",
+                wants(&[Requirement::MonotonicClock, Requirement::WallClock]),
+                permissions.clocks != Clocks::None,
+                clock_detail,
+            ),
+            CapabilityRow::new(
+                "environment",
+                wants(&[Requirement::Environment]),
+                permissions.env.is_some(),
+                env_detail,
+            ),
+            CapabilityRow::new(
+                "random",
+                wants(&[Requirement::Random]),
+                permissions.random,
+                String::from(if permissions.random {
+                    "a seeded generator"
+                } else {
+                    "no random granted"
+                }),
+            ),
+            CapabilityRow::new(
+                "logging",
+                wants(&[Requirement::Logging]),
+                permissions.logging.is_some(),
+                match permissions.logging {
+                    Some(level) => format!("{} and above", level.as_wit_name()),
+                    None => String::from("no logging granted"),
+                },
+            ),
+        ]
+    }
+
     /// A human-readable grant list.
     #[must_use]
     pub fn describe(&self) -> String {
@@ -218,6 +400,44 @@ impl GrantReport {
             );
         }
         out
+    }
+}
+
+/// One capability, as `watoots inspect` renders it.
+///
+/// Four states rather than two, because "asked for and denied" and "granted
+/// and never asked for" are different findings with different fixes.
+#[derive(Debug, Clone)]
+pub struct CapabilityRow {
+    /// What the capability is called in the manifest.
+    pub name: &'static str,
+    /// Whether any import needs it.
+    pub requested: bool,
+    /// Whether the manifest grants it.
+    pub granted: bool,
+    /// `ok`, `DENY`, `UNUSED`, or `-`.
+    pub mark: &'static str,
+    /// What the grant means, in words.
+    pub detail: String,
+}
+
+impl CapabilityRow {
+    fn new(name: &'static str, requested: bool, granted: bool, detail: String) -> Self {
+        let (mark, detail) = match (requested, granted) {
+            (true, true) => ("ok", detail),
+            (true, false) => ("DENY", format!("wanted; {detail}")),
+            // The interesting one. An import list cannot show this, because the
+            // evidence is an import that is absent.
+            (false, true) => ("UNUSED", format!("granted but never imported; {detail}")),
+            (false, false) => ("-", String::from("not requested, not granted")),
+        };
+        Self {
+            name,
+            requested,
+            granted,
+            mark,
+            detail,
+        }
     }
 }
 
@@ -283,6 +503,96 @@ mod tests {
             name,
             has_functions: true,
         }
+    }
+
+    /// The four capability states, on one report.
+    #[test]
+    fn capabilities_separate_denied_from_never_asked_for() {
+        let manifest: Manifest = toml::from_str(
+            r#"
+            [permissions]
+            clocks = "monotonic"
+            random = true
+            "#,
+        )
+        .unwrap();
+        let permissions = &manifest.permissions;
+
+        // Wants a clock (granted) and the environment (not granted). Never
+        // mentions the filesystem; is handed random it never asked for.
+        let imports = [
+            callable("wasi:clocks/monotonic-clock@0.2.9"),
+            callable("wasi:cli/environment@0.2.9"),
+        ];
+        let report = check(imports, permissions, &provided(&[]));
+        let rows = report.capabilities(permissions);
+        let row = |name: &str| {
+            rows.iter()
+                .find(|row| row.name == name)
+                .unwrap_or_else(|| panic!("no {name} row"))
+        };
+
+        assert_eq!(row("clock").mark, "ok");
+        assert_eq!(row("environment").mark, "DENY");
+        assert_eq!(row("filesystem").mark, "-");
+        // The one an import list cannot express: the evidence is an absence.
+        assert_eq!(row("random").mark, "UNUSED");
+    }
+
+    /// A granted filesystem names the directories, which is the whole point of
+    /// summarising against the manifest rather than listing imports.
+    #[test]
+    fn a_granted_filesystem_names_the_directories() {
+        let manifest: Manifest = toml::from_str(
+            r#"
+            [permissions]
+            fs.read  = ["/srv/docs"]
+            fs.write = ["/tmp/cache"]
+            "#,
+        )
+        .unwrap();
+        let imports = [callable("wasi:filesystem/types@0.2.9")];
+        let report = check(imports, &manifest.permissions, &provided(&[]));
+        let summary = report.summarize(&manifest.permissions);
+        assert!(summary.contains("reads /srv/docs"), "{summary}");
+        assert!(summary.contains("writes /tmp/cache"), "{summary}");
+    }
+
+    /// An application interface is not a permission problem, and must not be
+    /// reported as one.
+    #[test]
+    fn an_application_interface_is_not_reported_as_a_denial() {
+        let manifest = Manifest::default();
+        let imports = [callable("watoots:example/log@0.1.0")];
+        let report = check(imports, &manifest.permissions, &provided(&[]));
+        let summary = report.summarize(&manifest.permissions);
+        assert!(summary.contains("your application must serve"), "{summary}");
+        assert!(summary.contains("watoots:example/log@0.1.0"), "{summary}");
+        // No capability row should claim the operator can grant it.
+        for row in report.capabilities(&manifest.permissions) {
+            assert_ne!(row.mark, "DENY", "{} should not be a denial", row.name);
+        }
+    }
+
+    /// Every import satisfied is not the same as a tight manifest.
+    #[test]
+    fn over_granting_is_called_out_even_when_nothing_is_denied() {
+        let manifest: Manifest = toml::from_str(
+            r#"
+            [permissions]
+            random = true
+            net    = []
+            "#,
+        )
+        .unwrap();
+        let imports = [callable("wasi:io/streams@0.2.9")];
+        let report = check(imports, &manifest.permissions, &provided(&[]));
+        assert!(report.is_satisfied());
+        let summary = report.summarize(&manifest.permissions);
+        assert!(
+            summary.contains("2 capability(ies) granted but never imported"),
+            "{summary}"
+        );
     }
 
     #[test]
