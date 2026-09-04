@@ -126,3 +126,27 @@ because getting it backwards silently inverts the answer.
 `semver-check` also turned out to be an opt-in cargo feature of
 `wit-component`, which suits the split above: only `crates/cli` enables it, and
 `crates/host` links the crate without it.
+
+### What `--targets` is actually for
+
+The obvious follow-up — vendor the WASI WIT under `examples/wit/deps/` so the
+sample plugins pass — does not work, and the reason is worth writing down.
+`targets` matches import names exactly, version included, and the three sample
+plugins link three different WASI patch versions:
+
+| plugin | WASI |
+|---|---|
+| `rust_lint.wasm` | 0.2.9 — rustc's `wasm32-wasip2` std vendors `wasi-0.2.9` |
+| `js_lint.wasm` | 0.2.10 — StarlingMonkey's |
+| `py_lint.wasm` | 0.2.4 — CPython's |
+
+One WIT world cannot satisfy all three. Worse, none of those versions is chosen
+by the plugin's author: they come from whichever toolchain built the guest, so a
+vendored copy goes stale the next time rustc bumps its `wasip2` std.
+
+So `--targets` is **for a world you control end to end** — one you author, build
+against, and version together — and not for asking whether a third-party guest
+matches your application's world. The import-intersection check is the tool for
+that second question, and it already handles version skew, because manifest
+grants match on the *unversioned* interface name. Nothing was vendored;
+`docs/MANIFEST.md` says which check answers which question.

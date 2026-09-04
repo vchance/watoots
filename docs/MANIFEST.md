@@ -27,11 +27,18 @@ for against what you granted, and refuses the load if anything is uncovered:
 
 ```
 $ watoots inspect lint.wasm -m policy.toml
-  ok   wasi:clocks/monotonic-clock@0.2.9  [permissions.clocks = "monotonic"]
-  DENY wasi:sockets/tcp@0.2.9             [permissions.net]
+capabilities
+  filesystem   -      not requested, not granted
+  network      DENY   wanted; no sockets, no HTTP
+  clock        ok     monotonic only - durations, not dates
+  environment  ok     may read an empty environment
+  random       -      not requested, not granted
+  logging      -      not requested, not granted
 
 1 import(s) are not granted
 ```
+
+`--imports` gives the raw per-import list behind that summary.
 
 That is a *load* error, not a runtime trap. No guest code has run. You find out
 a plugin wants the network when you install it, rather than the first time it
@@ -202,6 +209,29 @@ follow: read `watoots inspect` before writing a policy, and remember that build
 flags can shrink the bill — `js-lint` is built with ComponentizeJS's
 `--disable http --disable random --disable fetch-event`, which removes three
 grants that would otherwise be required.
+
+## Two different questions: imports, and the world
+
+The intersection check asks **"does this plugin want anything I did not grant?"**
+It matches on the *unversioned* interface name, which is why it works across
+guests built by different toolchains.
+
+`watoots inspect --targets <wit> [--world NAME]` asks the other question:
+**"does this plugin provide what I am about to call?"** It wraps `wasm-tools
+component targets`, and it matches import names *exactly, version included*.
+
+That exactness makes it the wrong tool for checking a third-party guest. The
+three sample plugins in this repository link three different WASI patch
+versions — `rust_lint` 0.2.9, `js_lint` 0.2.10, `py_lint` 0.2.4 — and none of
+those was chosen by the plugin's author. They come from whichever toolchain
+built the guest, so no single world satisfies all three and a world that
+satisfies one goes stale when that toolchain bumps.
+
+Use `--targets` for a world you control end to end: one you author, build
+against, and version together. Use the intersection check for everything else.
+It is also why a world passed to `--targets` must declare the WASI imports the
+toolchain linked, not only the interfaces its author wrote; the error says so
+when it bites.
 
 ## Interfaces imported only for their types
 
