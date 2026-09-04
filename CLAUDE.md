@@ -48,7 +48,8 @@ same content as the published scoping page (read-only reference).
 - Any decision listed under "Open decisions" in the spec gets an ADR in
   `docs/adr/NNNN-title.md` when made. Don't silently pick. ADR-0001 (name), ADR-0002 (license: Apache-2.0 WITH LLVM-exception), and
   ADR-0003 (C++ toolchain), ADR-0004 (WAVE), ADR-0005 (cargo from
-  CMake) and ADR-0006 (`wasi:logging` yes, guest-emitted metrics no) are done.
+  CMake), ADR-0006 (`wasi:logging` yes, guest-emitted metrics no) and
+  ADR-0007 (link `wit-component`, don't shell out) are done.
 - Prefer `wasmtime::component::Val` + WAVE for dynamic calls; `bindgen!` only
   where the Rust host has a static world.
 - Tests live next to code; integration tests under `crates/*/tests/` use the
