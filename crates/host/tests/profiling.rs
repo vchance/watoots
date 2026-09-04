@@ -101,6 +101,26 @@ const LOGS: &str = r#"
 "#;
 
 /// Calls a host function `n` times.
+/// Expensive to instantiate, trivial to call: the core module's `start`
+/// function spins before any export exists. That ratio is the whole point —
+/// leaked instantiation time cannot hide inside the call's own cost.
+const SLOW_START: &str = r#"
+(component
+  (core module $m
+    (func $init (local $i i32)
+      (block $done
+        (loop $again
+          (br_if $done (i32.ge_s (local.get $i) (i32.const 2000000)))
+          (local.set $i (i32.add (local.get $i) (i32.const 1)))
+          (br $again))))
+    (start $init)
+    (func (export "noop")))
+  (core instance $i (instantiate $m))
+  (func $noop (canon lift (core func $i "noop")))
+  (export "noop" (func $noop))
+)
+"#;
+
 const CALLS_OUT: &str = r#"
 (component
   (import "app:demo/sleep" (instance $host
@@ -313,6 +333,38 @@ fn the_buckets_add_up_to_the_wall_time() {
     assert_eq!(
         profile.guest_nanos + profile.host_nanos + profile.marshalling_nanos,
         profile.wall_nanos
+    );
+}
+
+/// Instantiation runs guest code with the call hook already installed. Until
+/// `reset_call` was added it was charged to the first call, which put `guest`
+/// at 365% of `wall` on a single-call run and saturated the marshalling
+/// remainder to zero — the profiler's headline number, always reading nought.
+///
+/// `the_buckets_add_up_to_the_wall_time` missed it because `spin(100_000)` is
+/// heavy enough to swamp a fixed cost. This one makes the call as cheap as
+/// possible, so anything charged to it that it did not spend stands out.
+#[test]
+fn instantiation_is_not_charged_to_the_first_call() {
+    let host = profiled("");
+    let mut plugin = host
+        .load_binary("slow-start", SLOW_START.as_bytes())
+        .unwrap();
+    plugin.call("noop", &[]).unwrap();
+
+    let profile = plugin.profile().unwrap();
+    assert!(
+        profile.guest_nanos + profile.host_nanos <= profile.wall_nanos,
+        "a call cannot spend more time inside the guest and host than it took: \
+         guest {} + host {} > wall {}",
+        profile.guest_nanos,
+        profile.host_nanos,
+        profile.wall_nanos
+    );
+    // And the remainder is a real number rather than a saturated zero.
+    assert_eq!(
+        profile.marshalling_nanos,
+        profile.wall_nanos - profile.guest_nanos - profile.host_nanos
     );
 }
 

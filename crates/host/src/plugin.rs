@@ -334,6 +334,13 @@ impl Plugin {
             )
         })?;
 
+        // Instantiation ran guest code with the call hook already installed.
+        // That time belongs to no call, so drop it rather than let the first
+        // `call` inherit it.
+        if let Some(profile) = store.data_mut().profile.as_mut() {
+            profile.reset_call();
+        }
+
         Ok(Self {
             name: name.to_string(),
             store,

@@ -338,6 +338,17 @@ impl ProfileState {
 
         // Per call, like fuel and the deadline. The lifetime totals above are
         // not.
+        self.reset_call();
+    }
+
+    /// Drop the in-flight windows without folding them into any call.
+    ///
+    /// Instantiation runs guest code — start functions, `cabi_realloc` setup —
+    /// with the call hook already installed, and that time belongs to no call.
+    /// Leaving it in charged the whole instantiation to the first `call` as
+    /// guest time, which made `guest` exceed `wall` (365% of it, on a
+    /// single-call run) and forced the marshalling remainder to zero.
+    pub(crate) fn reset_call(&mut self) {
         self.wasm_depth = 0;
         self.wasm_since = None;
         self.wasm_nanos = 0;
