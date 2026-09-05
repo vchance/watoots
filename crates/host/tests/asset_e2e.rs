@@ -21,7 +21,8 @@
 //!
 //! The Rust guest is built here, from `rustup`'s `wasm32-wasip2` target, so it
 //! is always present. The others need toolchains that do not come from
-//! `rustup` — C++ needs wasi-sdk and `wit-bindgen` — so they are picked up when
+//! `rustup` — C++ needs wasi-sdk and `wit-bindgen`, JavaScript needs npm,
+//! Python needs a venv with componentize-py — so they are picked up when
 //! `tools/build-plugins.sh` has produced them and skipped when it has not. A
 //! guest nobody has built must not fail the suite; a guest that *is* built gets
 //! no discount.
@@ -64,9 +65,14 @@ impl Guest {
     ///
     /// If a shipped policy stops granting what its guest needs, this suite is
     /// where that shows up — which is the only way a shipped policy stays true.
-    /// It is also why the two policies are read separately instead of one being
-    /// reused: `cpp-asset.toml` grants `clocks = "wall"` and `rust-asset.toml`
-    /// does not, because wasi-libc links a clock Rust's `std` does not.
+    /// It is also why every policy is read separately instead of one being
+    /// reused: no two of the four are the same file. `rust-asset.toml` grants
+    /// `clocks = "monotonic"`; `cpp-asset.toml` needs `"wall"`, because
+    /// wasi-libc links a clock Rust's `std` does not; `js-asset.toml` needs
+    /// `"wall"` and, alone among the four, no `env` at all; and `py-asset.toml`
+    /// needs `random` and a `net = []` besides, because CPython seeds its hash
+    /// randomisation and links the socket interfaces unconditionally. Identical
+    /// behaviour, four different bills, written by whoever built the guest.
     fn manifest(&self) -> Manifest {
         Manifest::from_file(&self.policy)
             .unwrap_or_else(|err| panic!("reading {}: {err}", self.policy.display()))
@@ -124,23 +130,79 @@ fn guests() -> &'static [Guest] {
             luts: root.join("examples/plugins/rust-asset/luts"),
         }];
 
-        // wasi-sdk is a 172MB tarball with no Homebrew formula and `wit-bindgen`
-        // is a separate `cargo install`, so this guest is present on a machine
-        // that has run `tools/build-plugins.sh cpp-asset` and absent otherwise.
-        // Absent is not a failure — `cargo test` has to pass on a clean
-        // checkout with only `rustup` — but present is not a discount either.
-        let cpp = root.join("examples/plugins/cpp-asset/cpp_asset.wasm");
-        if cpp.is_file() {
-            built.push(Guest {
-                name: "cpp-asset",
-                wasm: cpp,
-                policy: root.join("examples/policies/cpp-asset.toml"),
-                luts: root.join("examples/plugins/cpp-asset/luts"),
-            });
+        // The other three need toolchains `rustup` does not install — wasi-sdk
+        // is a 172MB tarball with no Homebrew formula, `wit-bindgen` is a
+        // separate `cargo install`, and the last two are an npm tree and a
+        // Python venv. So each is present on a machine that has run
+        // `tools/build-plugins.sh` for it and absent otherwise. Absent is not a
+        // failure — `cargo test` has to pass on a clean checkout with only
+        // `rustup` — but present is not a discount either.
+        //
+        // Adding a guest here is the whole of adding a guest: every `#[test]`
+        // below loops over this list, so a new one is held to the same
+        // arithmetic, the same failure cases and the same shipped-policy check
+        // as the reference without a line being written for it.
+        for (name, wasm, policy, luts) in [
+            (
+                "cpp-asset",
+                "examples/plugins/cpp-asset/cpp_asset.wasm",
+                "examples/policies/cpp-asset.toml",
+                "examples/plugins/cpp-asset/luts",
+            ),
+            (
+                "js-asset",
+                "examples/plugins/js-asset/js_asset.wasm",
+                "examples/policies/js-asset.toml",
+                "examples/plugins/js-asset/luts",
+            ),
+            (
+                "py-asset",
+                "examples/plugins/py-asset/py_asset.wasm",
+                "examples/policies/py-asset.toml",
+                "examples/plugins/py-asset/luts",
+            ),
+        ] {
+            let wasm = root.join(wasm);
+            if wasm.is_file() {
+                built.push(Guest {
+                    name,
+                    wasm,
+                    policy: root.join(policy),
+                    luts: root.join(luts),
+                });
+            }
+        }
+
+        // Compile each guest exactly once, here, under the `OnceLock` that
+        // already serialises this initialiser.
+        //
+        // Not an optimisation for its own sake. A ComponentizeJS component is
+        // ~14 MB and a componentize-py one ~18 MB, and every `#[test]` below
+        // builds a fresh `Host` per guest — so without this the suite compiles
+        // each of them seventeen times over, in seventeen parallel threads,
+        // and takes twelve minutes to say what it can say in one. Warming the
+        // cache under the lock means the tests deserialize instead.
+        //
+        // It also puts the shipped precompile cache on the same path every
+        // conformance case takes, which is worth something on its own: a cache
+        // that returned the wrong component would fail here rather than in
+        // somebody's application.
+        for guest in &built {
+            let _ = host_with(guest.manifest(), Arc::new(Mutex::new(Vec::new()))).load(&guest.wasm);
         }
 
         built
     })
+}
+
+/// Where compiled components are cached between loads and between runs.
+///
+/// `CARGO_TARGET_TMPDIR` is under `target/`, which is already the one directory
+/// in this repository that is both gitignored and trusted — and trust is the
+/// requirement `Host::cache_dir` documents, because an entry is machine code
+/// the engine loads without re-validating.
+fn cache_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("asset-e2e-cache")
 }
 
 /// Build the Rust asset plugin once per test binary and return the artifact.
@@ -184,6 +246,7 @@ fn rust_asset() -> &'static Guest {
 fn host_with(manifest: Manifest, logged: Arc<Mutex<Vec<String>>>) -> Host {
     Host::builder()
         .manifest(manifest)
+        .cache_dir(cache_dir())
         .host_func("watoots:asset/log@0.1.0", "emit", move |call| {
             let args = call.args();
             let level = match &args[0] {
@@ -802,13 +865,23 @@ fn a_corrupt_table_is_reported_rather_than_silently_clipped() {
 
         // Same case as a missing file, different reason — which is exactly what
         // `file-failure` was added to make possible. A caller that only saw
-        // `unreadable` here would go and check the manifest for a file the
-        // manifest already covers. Unlike the open failure above, this reason
-        // is the guest's own prose all the way through, so it is compared
-        // exactly and every guest owes the same sentence.
+        // `unreadable` here would send a host to check a manifest that already
+        // covers the file, so the reason has to distinguish the causes — and it
+        // is the only channel that can, since all three are the same case.
+        //
+        // The *number* is asserted, not the sentence. `failure` in the WIT says
+        // the wording is for people; pinning it made the second guest reproduce
+        // five behaviours of Rust's standard library, and pinning it here would
+        // have charged the third and fourth the same bill in the one place the
+        // withdrawal did not reach.
         let (path, reason) = expect_unreadable(&results);
         assert_eq!(path, scratch.0.display().to_string(), "{}", guest.name);
-        assert_eq!(reason, "expected 256 entries, found 2", "{}", guest.name);
+        assert!(
+            reason.contains('2') && reason.contains("256"),
+            "{}: a two-entry table's reason must say what was expected and what \
+             was found, in whatever words: {reason:?}",
+            guest.name
+        );
 
         // And the other end: a table with an entry too many is refused at the
         // 257th rather than read to the end. A grant is a directory, so "what
@@ -832,9 +905,10 @@ fn a_corrupt_table_is_reported_rather_than_silently_clipped() {
             )
             .unwrap();
         let (_, reason) = expect_unreadable(&results);
-        assert_eq!(
-            reason, "more than 256 entries: a 257th appears on line 257",
-            "{}",
+        assert!(
+            reason.contains("257"),
+            "{}: an over-long table's reason must name where it gave up, in \
+             whatever words: {reason:?}",
             guest.name
         );
 
@@ -855,9 +929,10 @@ fn a_corrupt_table_is_reported_rather_than_silently_clipped() {
             )
             .unwrap();
         let (_, reason) = expect_unreadable(&results);
-        assert_eq!(
-            reason, "line 3 is not three integers in 0..=255: \"2 2 300\"",
-            "{}",
+        assert!(
+            reason.contains('3') && reason.contains("300"),
+            "{}: a bad line's reason must name the line and what was on it, in \
+             whatever words: {reason:?}",
             guest.name
         );
     }
@@ -911,11 +986,10 @@ fn an_absurd_resize_is_refused_instead_of_exhausting_memory() {
         // in `asset.wit` states it so four guests refuse the same extents.
         let (case, payload) = expect_err_text(&results);
         assert_eq!(case, "malformed", "{}", guest.name);
-        assert_eq!(
-            payload,
-            "resize to 60000x60000 would need 10800000000 bytes, \
-             over the 33554432-byte ceiling",
-            "{}",
+        assert!(
+            payload.contains("60000") && payload.contains("33554432"),
+            "{}: the reason must name the extent asked for and the ceiling it \
+             broke, in whatever words: {payload:?}",
             guest.name
         );
 
@@ -935,11 +1009,13 @@ fn an_absurd_resize_is_refused_instead_of_exhausting_memory() {
             .unwrap();
         let (case, payload) = expect_err_text(&just_over);
         assert_eq!(case, "malformed", "{}", guest.name);
-        assert_eq!(
-            payload,
-            "resize to 3345x3344 would need 33557040 bytes, \
-             over the 33554432-byte ceiling",
-            "{}",
+        // The ceiling itself is the WIT's number and must appear verbatim: a
+        // guest that refused at a ceiling of its own invention would pass a
+        // test that only checked the extent.
+        assert!(
+            payload.contains("3345") && payload.contains("33554432"),
+            "{}: the reason must name the extent and the WIT's ceiling, in \
+             whatever words: {payload:?}",
             guest.name
         );
     }
@@ -1123,9 +1199,12 @@ fn every_shipped_policy_grants_exactly_what_its_component_asks_for() {
     // expands to something that exists.
     //
     // The grant is asserted per guest and not compared across them, which is
-    // the point of having two: `cpp-asset.toml` needs `clocks = "wall"` where
+    // the point of having four: `cpp-asset.toml` needs `clocks = "wall"` where
     // `rust-asset.toml` needs only `monotonic`, because wasi-libc links a clock
-    // Rust's `std` does not. Identical behaviour, different bill.
+    // Rust's `std` does not; `py-asset.toml` needs `random` and `net = []` on
+    // top; and `js-asset.toml` is the only one that needs no `env`. Identical
+    // behaviour, four different bills. The `fs.read` line is the one thing
+    // every asset guest owes, so that is what is compared.
     for guest in guests() {
         let manifest = guest.manifest();
         assert_eq!(

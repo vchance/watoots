@@ -98,7 +98,8 @@ is the worked example.
 tools/build-plugins.sh              # everything whose toolchain is present
 tools/build-plugins.sh rust         # or name them:
                                     #   rust, js, py, cpp        the lint world
-                                    #   rust-asset, cpp-asset    the asset world
+                                    #   rust-asset, cpp-asset,   the asset world
+                                    #   js-asset, py-asset
 ```
 
 Only the Rust guests are built in CI, because `rustup` is the only toolchain it
@@ -118,9 +119,15 @@ The script skips what it cannot build and says so.
 `crates/host/tests/asset_e2e.rs` picks up whichever asset guests are present and
 runs the same conformance cases against every one of them — that is where "four
 languages produce the same bytes" is actually enforced. A guest nobody has built
-is skipped rather than failed, so building `cpp-asset` before a change to
+is skipped rather than failed, so building all four before a change to
 `examples/wit/asset` or to any asset guest is how you find out that two guests
 have stopped agreeing.
+
+That suite is cheap with the two Rust-toolchain guests and slow with all four: a
+ComponentizeJS component is ~14 MB and a componentize-py one ~18 MB, and a debug
+`cargo test` compiles each of them once per case. Expect it to take minutes
+rather than seconds once `js-asset` and `py-asset` are on disk. Deleting their
+`.wasm` files puts it back where it was; that is also what CI sees.
 
 `tools/demo.sh` runs the whole story end to end — load a plugin, deny a
 permission, record a bug, replay it — against a real compiled component.

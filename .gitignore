@@ -15,10 +15,12 @@ Cargo.lock.orig
 /examples/plugins/cpp-asset/bindings
 /examples/plugins/cpp-asset/bindings.o
 # componentize-py bindings, regenerated with `componentize-py bindings .`
-/examples/plugins/py-lint/wit_world
-/examples/plugins/py-lint/componentize_py_types.py
-/examples/plugins/py-lint/componentize_py_async_support
-/examples/plugins/py-lint/poll_loop.py
+# and supplied at build time either way; they exist for editors and type
+# checkers, so they are generated rather than committed.
+/examples/plugins/py-*/wit_world
+/examples/plugins/py-*/componentize_py_types.py
+/examples/plugins/py-*/componentize_py_async_support
+/examples/plugins/py-*/poll_loop.py
+/examples/plugins/py-*/componentize_py_runtime.pyi
 __pycache__/
 *.pyc
-/examples/plugins/py-lint/componentize_py_runtime.pyi

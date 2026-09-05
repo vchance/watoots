@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build the sample plugins.
 #
-#   tools/build-plugins.sh [rust|rust-asset|cpp|cpp-asset|js|py]...
+#   tools/build-plugins.sh [rust|rust-asset|cpp|cpp-asset|js|js-asset|py|py-asset]...
 #
 # With no arguments, builds every guest whose toolchain is available and skips
 # the rest with a note. Each needs a different toolchain, which is the point:
@@ -56,6 +56,27 @@ if want js; then
   fi
 fi
 
+if want js-asset; then
+  # The third asset guest. Its own target for the same reason `rust-asset` is
+  # not folded into `rust`: the two prove different things, and CI names the
+  # one it wants.
+  #
+  # `--wit wit` rather than `--wit ../../wit/asset`: this guest compiles against
+  # `examples/plugins/js-asset/wit`, a world that `include`s `asset-plugin` and
+  # adds the two `wasi:filesystem` imports `lut` needs. StarlingMonkey exposes
+  # no file API to JavaScript and a guest may only import what its world
+  # declares, so the filesystem has to be named out loud here where the other
+  # guests inherit it from their runtime. `wit/js-asset.wit` says so at length.
+  # The contract itself is reached through a symlink at `wit/deps/asset`, so
+  # there is one copy of the world rather than two.
+  if command -v npm >/dev/null 2>&1; then
+    echo "==> js-asset"
+    (cd examples/plugins/js-asset && npm install --silent && npm run --silent build)
+  else
+    echo "skip js-asset: npm not found"
+  fi
+fi
+
 if want py; then
   if command -v python3 >/dev/null 2>&1; then
     echo "==> py-lint"
@@ -67,6 +88,23 @@ if want py; then
     cd "$root"
   else
     echo "skip py-lint: python3 not found"
+  fi
+fi
+
+if want py-asset; then
+  # The fourth asset guest, and the only one that needs nothing added to the
+  # world: CPython is linked against wasi-libc, which does the preopen prefix
+  # match inside `open`, so `-d ../../wit/asset` is the contract unmodified.
+  if command -v python3 >/dev/null 2>&1; then
+    echo "==> py-asset"
+    cd "$root/examples/plugins/py-asset"
+    [ -d .venv ] || python3 -m venv .venv
+    ./.venv/bin/pip install --quiet componentize-py
+    ./.venv/bin/componentize-py -d ../../wit/asset -w asset-plugin \
+      componentize app -o py_asset.wasm
+    cd "$root"
+  else
+    echo "skip py-asset: python3 not found"
   fi
 fi
 
