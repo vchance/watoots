@@ -1,0 +1,85 @@
+name: Bug report
+description: Something behaves differently from how it is documented.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **If this is a sandbox escape, a permission granted that the manifest
+        did not grant, or a way to read host memory from a guest — stop, and
+        read [SECURITY.md](https://github.com/vchance/watoots/blob/main/SECURITY.md) instead.** Those go to a
+        private address, not here.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened, and what you expected instead
+    validations:
+      required: true
+
+  - type: textarea
+    id: trace
+    attributes:
+      label: A trace, if the bug involves a plugin
+      description: |
+        This is the one thing that makes a plugin bug reproducible without
+        sending anybody your host application:
+
+        ```sh
+        watoots record plugin.wasm -m policy.toml -c <export> -o bug.wave -- <args>
+        ```
+
+        `bug.wave` is text, so read it before you paste it — it contains every
+        value that crossed the boundary, which may include your data. Trim what
+        you do not want public; a trimmed trace is still useful.
+
+        `watoots replay bug.wave plugin.wasm` should then reproduce it here with
+        no host code at all.
+      render: text
+    validations:
+      required: false
+
+  - type: textarea
+    id: manifest
+    attributes:
+      label: The manifest in force
+      description: >
+        Most surprising denials come from the manifest rather than the plugin,
+        so this is usually the fastest thing to look at. `watoots inspect
+        plugin.wasm -m policy.toml` output helps too.
+      render: toml
+    validations:
+      required: false
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: "`watoots --version`, or the commit you built from."
+      placeholder: "0.2.0"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: guest
+    attributes:
+      label: What built the plugin, if one is involved
+      description: >
+        Guest toolchains link WASI interfaces their authors never asked for,
+        and they disagree about which version — so this narrows a denial fast.
+      options:
+        - Rust (wasm32-wasip2)
+        - JavaScript (ComponentizeJS)
+        - Python (componentize-py)
+        - Something else
+        - No plugin involved
+    validations:
+      required: false
+
+  - type: input
+    id: platform
+    attributes:
+      label: Platform
+      placeholder: "macOS 15 arm64 / Ubuntu 24.04 x86_64"
+    validations:
+      required: false

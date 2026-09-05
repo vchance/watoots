@@ -11,6 +11,9 @@ A change that contradicts it needs the spec changed first.
 For a suspected security issue, do not open an issue: see
 [SECURITY.md](SECURITY.md).
 
+Everyone taking part is expected to follow the
+[Code of Conduct](CODE_OF_CONDUCT.md).
+
 ## What you need
 
 | | |

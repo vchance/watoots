@@ -1,0 +1,29 @@
+name: Something is confusing, wrong, or missing
+description: Documentation, an error message, or an API that reads badly.
+labels: ["docs"]
+body:
+  - type: markdown
+    attributes:
+      value: >
+        `CONTRIBUTING.md` says the most useful contribution to a pre-1.0
+        project is a report that something is wrong or confusing, not
+        necessarily a patch. This is that form.
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What did you read or run, and what did you expect it to mean?
+      description: >
+        An error message that did not explain itself counts. So does a document
+        that answered a question you did not have while leaving yours open.
+    validations:
+      required: true
+
+  - type: input
+    id: where
+    attributes:
+      label: Where
+      description: A file, a URL, or the command you ran.
+      placeholder: "docs/MANIFEST.md, or `watoots inspect --targets`"
+    validations:
+      required: false
