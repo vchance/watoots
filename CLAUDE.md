@@ -29,7 +29,8 @@ same content as the published scoping page (read-only reference).
 - `crates/host-capi/`   cbindgen C API + `include/` C++ RAII header + CMake package
 - `crates/trace/`       trace format (WAVE text + binary), recorder shim, replay runner
 - `crates/cli/`         `watoots` binary: `inspect`, `run`, `record`, `replay`, `trace fmt`
-- `examples/wit/`       the sample plugin world used by all examples and tests
+- `examples/wit/lint/`  the lint world (four guests)
+- `examples/wit/asset/` the asset-pipeline world
 - `examples/plugins/`   Rust, JS (ComponentizeJS), Python (componentize-py) sample plugins
 - `examples/host-cpp/`  minimal C++ host app proving the C API
 - `docs/adr/`           architecture decision records (one file per decision)

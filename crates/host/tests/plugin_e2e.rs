@@ -2,7 +2,7 @@
 //!
 //! Everything else in the suite uses hand-written WAT. This one drives the real
 //! artifact from `examples/plugins/rust-lint`, compiled by wit-bindgen against
-//! the WIT world in `examples/wit` — so it is the test that says the typed
+//! the WIT world in `examples/wit/lint` — so it is the test that says the typed
 //! boundary actually works in both directions: the host serves an import, the
 //! plugin exports records and lists, and neither side agreed on a wire format.
 

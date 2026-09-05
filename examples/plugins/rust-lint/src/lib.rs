@@ -8,12 +8,12 @@
 //! ```
 //!
 //! The point is not the lint rules. It is that this file imports a host
-//! function and exports typed functions over the WIT world in `examples/wit`,
+//! function and exports typed functions over the WIT world in `examples/wit/lint`,
 //! and the host serves the one and calls the other without either side
 //! agreeing on a serialization format.
 
 wit_bindgen::generate!({
-    path: "../../wit",
+    path: "../../wit/lint",
     world: "lint-plugin",
 });
 

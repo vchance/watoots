@@ -10,7 +10,7 @@ plugin that wants to report "the config you gave me is malformed" has no
 channel for it. The host learns that a call failed and nothing about why.
 
 Every application adopting watoots therefore invents a logging interface. Ours
-did: `examples/wit/lint.wit` declares `watoots:example/log` with an `emit`
+did: `examples/wit/lint/lint.wit` declares `watoots:example/log` with an `emit`
 function, and the C++ host implements it. That was fine as a demonstration of
 host functions, but it is the wrong thing to be demonstrating. If every host
 invents its own, no plugin is portable across two of them, and the single most
@@ -98,7 +98,7 @@ subsystem.
   `wasi:logging` call is a host-import crossing, so a replayed bug report
   carries the plugin's own account of what it thought was happening. (See the
   addendum: "with no new machinery" was wrong.)
-- `examples/wit/lint.wit` keeps `watoots:example/log`, which now demonstrates
+- `examples/wit/lint/lint.wit` keeps `watoots:example/log`, which now demonstrates
   what it was always meant to — *an application's own* interface — rather than
   standing in for a missing standard one.
 - `Permissions` grows a field and `Requirement` an arm; both are additive, and

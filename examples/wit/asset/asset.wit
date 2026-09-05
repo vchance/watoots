@@ -1,0 +1,118 @@
+package watoots:asset@0.1.0;
+
+/// The types an asset plugin works in.
+///
+/// Deliberately no file format anywhere: the host decodes PNG and hands over
+/// pixels. That is how a real pipeline is built — you decode once at the edge
+/// rather than making every plugin carry a codec — and it is also the only way
+/// four guest languages can agree byte for byte without four PNG dependencies.
+interface types {
+  /// Decoded pixels, RGB8, row-major.
+  ///
+  /// `pixels` is `width * height * 3` bytes. A plugin that returns anything
+  /// else gets its output rejected by the host rather than trusted, because a
+  /// length that disagrees with the dimensions is exactly the kind of thing an
+  /// untrusted plugin should not be able to make the host act on.
+  record image {
+    width: u32,
+    height: u32,
+    pixels: list<u8>,
+  }
+
+  enum channel {
+    red,
+    green,
+    blue,
+  }
+
+  record gain {
+    channel: channel,
+    /// Multiplier, clamped to 0.0..=4.0 by the host before the call.
+    factor: f32,
+  }
+
+  record extent {
+    width: u32,
+    height: u32,
+  }
+
+  /// One step of a pipeline.
+  ///
+  /// A variant rather than a string plus arguments: the shape of each step's
+  /// parameters is part of the type, so a plugin cannot be handed a `resize`
+  /// with no dimensions, and the host cannot forget to send them.
+  variant operation {
+    /// Rec. 601 luma, replicated across all three channels.
+    grayscale,
+    invert,
+    gain(gain),
+    /// Nearest-neighbour. Ugly on purpose: four languages have to agree on
+    /// every output byte, and interpolation invites disagreement.
+    resize(extent),
+    /// Apply a colour lookup table read from a file, by name.
+    ///
+    /// This is the step that needs a capability. The plugin opens the file
+    /// itself, so `fs.read` has to be granted and scoped — and a manifest that
+    /// does not grant it fails the *load*, before any pixel is touched.
+    lut(string),
+  }
+
+  /// Why a step could not be done.
+  ///
+  /// `result<image, failure>` rather than a trap: "I cannot do this" is an
+  /// answer, not a crash, and a plugin that traps on bad input is a plugin you
+  /// cannot tell apart from one that has a bug.
+  variant failure {
+    /// A step this plugin does not implement. Carries the step's name.
+    unsupported(string),
+    /// The input did not describe an image — usually a pixel buffer whose
+    /// length disagrees with the dimensions.
+    malformed(string),
+    /// A `lut` step named a file the plugin could not read. The manifest is
+    /// the first thing to check.
+    unreadable(string),
+  }
+}
+
+/// What a plugin says about itself, before it is asked to do anything.
+interface manifest {
+  use types.{operation};
+
+  record plugin-info {
+    name: string,
+    /// One entry per step the plugin implements. The host uses this to route
+    /// a pipeline, and to refuse one no loaded plugin can complete.
+    supports: list<operation>,
+  }
+}
+
+/// The one capability this world's *application* offers. Everything else a
+/// plugin can reach comes from WASI and must be granted by the manifest.
+interface log {
+  enum level {
+    debug,
+    info,
+    warning,
+    error,
+  }
+
+  emit: func(level: level, message: string);
+}
+
+world asset-plugin {
+  use types.{image, operation, failure};
+  use manifest.{plugin-info};
+
+  import log;
+
+  /// Name and capabilities. Called before any image is handed over, so a host
+  /// can build a pipeline without trial and error.
+  export describe: func() -> plugin-info;
+
+  /// Run a pipeline over one image.
+  ///
+  /// Steps apply in order. The whole call fails on the first step that cannot
+  /// be done, and the failure names it — a partly-transformed image would be
+  /// worse than none, because nothing downstream could tell.
+  export apply: func(input: image, steps: list<operation>) -> result<image, failure>;
+}

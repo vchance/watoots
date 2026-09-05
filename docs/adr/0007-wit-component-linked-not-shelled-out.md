@@ -106,7 +106,7 @@ a hand-written application world fails against any real guest. A
 `wasm32-wasip2` Rust guest links `wasi:io`, `wasi:cli` and `wasi:clocks`
 through `std` whether or not its author asked for them — the same fact
 `CLAUDE.md` already records about denials, arriving from a new direction.
-`examples/wit/lint.wit` declares `import log;` and nothing else, and the
+`examples/wit/lint/lint.wit` declares `import log;` and nothing else, and the
 component built from it fails `--targets` against its *own* world. Using the
 check therefore means vendoring the WASI WIT package and writing
 `include wasi:cli/imports@0.2.x;`. That is `wasm-tools`' semantics and we keep

@@ -52,7 +52,7 @@ pointer. So:
 - The C API and CLI get a readable, diffable value encoding with no bindgen
   step and almost no code of ours to maintain.
 - A trace of a world using resources needs the M4 side-channel before it can be
-  recorded at all. Worlds without resources — like `examples/wit/lint.wit` —
+  recorded at all. Worlds without resources — like `examples/wit/lint/lint.wit` —
   are fully expressible today.
 - We inherit WAVE's syntax decisions, including how it renders floats and
   strings. That is the point: it is a shared spelling, and diverging would cost

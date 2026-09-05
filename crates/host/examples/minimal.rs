@@ -3,7 +3,7 @@
 //!     cargo run -p watoots --example minimal
 //!
 //! Components here are written in WAT so the example is self-contained. A real
-//! plugin is a `.wasm` built from the WIT world in `examples/wit/lint.wit` and
+//! plugin is a `.wasm` built from the WIT world in `examples/wit/lint/lint.wit` and
 //! loaded with `host.load("lint.wasm")`.
 
 use watoots::{Host, Manifest, Val};

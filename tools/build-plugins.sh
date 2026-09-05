@@ -47,7 +47,7 @@ if want py; then
     cd "$root/examples/plugins/py-lint"
     [ -d .venv ] || python3 -m venv .venv
     ./.venv/bin/pip install --quiet componentize-py
-    ./.venv/bin/componentize-py -d ../../wit -w lint-plugin \
+    ./.venv/bin/componentize-py -d ../../wit/lint -w lint-plugin \
       componentize app -o py_lint.wasm
     cd "$root"
   else
@@ -70,7 +70,7 @@ if want cpp; then
     cd "$root/examples/plugins/cpp-lint"
     # Regenerated every build: the bindings are a function of the WIT, so a
     # stale copy is a silent disagreement with the world everyone else compiled.
-    wit-bindgen c ../../wit --world lint-plugin --out-dir bindings >/dev/null
+    wit-bindgen c ../../wit/lint --world lint-plugin --out-dir bindings >/dev/null
     # The generated bindings are C. Compiling them with clang++ mangles the
     # component-type force-link symbol and the link fails on a name nothing
     # explains, so they get their own C compile.

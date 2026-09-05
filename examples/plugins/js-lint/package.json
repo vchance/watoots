@@ -5,7 +5,7 @@
   "type": "module",
   "description": "Sample watoots plugin in JavaScript, built with ComponentizeJS.",
   "scripts": {
-    "build": "componentize-js --wit ../../wit --world-name lint-plugin --disable http --disable random --disable fetch-event --out js_lint.wasm lint.js"
+    "build": "componentize-js --wit ../../wit/lint --world-name lint-plugin --disable http --disable random --disable fetch-event --out js_lint.wasm lint.js"
   },
   "devDependencies": {
     "@bytecodealliance/componentize-js": "^0.22.0"
