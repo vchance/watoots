@@ -590,3 +590,204 @@ fn profiling_and_recording_are_separate_subcommands() {
     let text = String::from_utf8_lossy(&output.stderr).into_owned();
     assert!(text.contains("unexpected argument"), "{text}");
 }
+
+// ---------------------------------------------------------------------------
+// The asset plugin: the sample that needs a capability.
+// ---------------------------------------------------------------------------
+
+/// Build `examples/plugins/rust-asset` and install it beside its `luts/`.
+///
+/// Returned relative to the repository root, which is the directory `watoots()`
+/// runs in — and it has to be, because `${plugin_dir}` in the shipped policy
+/// expands to the component path *as spelled on the command line*, and watoots
+/// preopens a granted directory under exactly the name it was granted as. A
+/// component named through `target/` would preopen a `luts/` that is not there.
+fn asset_plugin() -> &'static str {
+    static ARTIFACT: OnceLock<()> = OnceLock::new();
+    ARTIFACT.get_or_init(|| {
+        let root = repo_root();
+        let crate_dir = root.join("examples/plugins/rust-asset");
+        let status = Command::new(env!("CARGO"))
+            .args(["build", "--manifest-path"])
+            .arg(crate_dir.join("Cargo.toml"))
+            .args(["--target", "wasm32-wasip2", "--release"])
+            .status()
+            .expect("running cargo to build the asset plugin");
+        assert!(status.success(), "failed to build the asset plugin");
+        std::fs::copy(
+            crate_dir.join("target/wasm32-wasip2/release/rust_asset.wasm"),
+            crate_dir.join("rust_asset.wasm"),
+        )
+        .expect("installing the artifact beside its luts/");
+    });
+    "examples/plugins/rust-asset/rust_asset.wasm"
+}
+
+fn asset_policy() -> &'static str {
+    "examples/policies/rust-asset.toml"
+}
+
+/// A 2x2 image as WAVE: a mid-tone, a saturated pixel, white and black.
+const ASSET_IMAGE: &str =
+    "{width: 2, height: 2, pixels: [10, 20, 30, 200, 100, 50, 255, 255, 255, 0, 0, 0]}";
+
+#[test]
+fn inspect_reports_the_asset_plugin_as_wanting_exactly_one_directory() {
+    let output = watoots(&[
+        "inspect",
+        asset_plugin(),
+        "-m",
+        asset_policy(),
+        "--provide",
+        "watoots:asset/log",
+    ]);
+
+    let text = stdout(&output);
+    // The install-time answer to "what does this thing want": one directory,
+    // named, and nothing else beyond what `std` drags in.
+    assert!(text.contains("reads ${plugin_dir}/luts"), "{text}");
+    assert!(text.contains("network      -"), "{text}");
+    assert!(text.contains("every import is granted"), "{text}");
+    assert!(output.status.success(), "{output:?}");
+}
+
+#[test]
+fn describe_lists_bare_operation_kinds() {
+    // `supports` is `list<operation-kind>`, so this renders as five enum cases
+    // and nothing else. When it was `list<operation>` the same call printed
+    // `gain({channel: red, factor: 1})` — a record of invented values a reader
+    // had to know to ignore, and a shape four guests would have invented four
+    // different ways.
+    let output = watoots(&[
+        "run",
+        asset_plugin(),
+        "-m",
+        asset_policy(),
+        "--answer",
+        "watoots:asset/log@0.1.0#emit=",
+        "-c",
+        "describe",
+    ]);
+
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        stdout(&output).trim(),
+        r#"{name: "rust-asset", supports: [grayscale, invert, gain, resize, lut]}"#
+    );
+}
+
+#[test]
+fn the_asset_plugin_does_not_load_without_the_filesystem_grant() {
+    // The same policy minus one line. `lut` never runs; the component declares
+    // `wasi:filesystem` in its binary, so this is a load error and the CLI
+    // exits non-zero with the interface named.
+    let dir = tempfile::tempdir().unwrap();
+    let policy = dir.path().join("no-fs.toml");
+    let text = std::fs::read_to_string(repo_root().join(asset_policy())).unwrap();
+    let stripped: String = text
+        .lines()
+        .filter(|line| !line.starts_with("fs.read"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    std::fs::write(&policy, stripped).unwrap();
+
+    let output = watoots(&[
+        "run",
+        asset_plugin(),
+        "-m",
+        &policy.display().to_string(),
+        "--answer",
+        "watoots:asset/log@0.1.0#emit=",
+        "-c",
+        "apply",
+        "--",
+        ASSET_IMAGE,
+        "[invert]",
+    ]);
+
+    assert!(!output.status.success(), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("wasi:filesystem"), "{stderr}");
+}
+
+#[test]
+fn the_asset_plugin_reads_its_lookup_table_through_the_grant() {
+    // With the grant, the same plugin opens the table itself and the pipeline
+    // completes. The pixels are the hand-computed ones from
+    // `crates/host/tests/asset_e2e.rs`; this is the command-line spelling of
+    // the same claim, with WAVE on both sides.
+    let output = watoots(&[
+        "run",
+        asset_plugin(),
+        "-m",
+        asset_policy(),
+        "--answer",
+        "watoots:asset/log@0.1.0#emit=",
+        "-c",
+        "apply",
+        "--",
+        ASSET_IMAGE,
+        r#"[grayscale, lut("examples/plugins/rust-asset/luts/sepia.lut")]"#,
+    ]);
+
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        stdout(&output).trim(),
+        "ok({width: 2, height: 2, pixels: [24, 22, 17, 168, 149, 116, 255, 255, 239, 0, 0, 0]})"
+    );
+}
+
+#[test]
+fn a_lut_the_grant_does_not_cover_is_an_answer_and_not_a_crash() {
+    // A path outside the preopened directory. WASI refuses it, the plugin turns
+    // that into `unreadable`, and `run` exits zero because the call succeeded —
+    // the *plugin* said no, which is a different thing from the host saying no.
+    let output = watoots(&[
+        "run",
+        asset_plugin(),
+        "-m",
+        asset_policy(),
+        "--answer",
+        "watoots:asset/log@0.1.0#emit=",
+        "-c",
+        "apply",
+        "--",
+        ASSET_IMAGE,
+        r#"[lut("examples/policies/rust-asset.toml")]"#,
+    ]);
+
+    assert!(output.status.success(), "{output:?}");
+    // `unreadable` carries `file-failure { path, reason }`, so the reason is in
+    // the value the caller already has. Nobody has to go and find a log sink to
+    // learn that the manifest is the thing to look at.
+    let text = stdout(&output);
+    assert!(
+        text.starts_with(r#"err(unreadable({path: "examples/policies/rust-asset.toml", reason: "#),
+        "{text}"
+    );
+    assert!(text.contains("check the manifest"), "{text}");
+}
+
+#[test]
+fn a_malformed_image_comes_back_as_a_failure_rather_than_a_trap() {
+    // 2x2 needs 12 bytes of RGB8; this is 11.
+    let output = watoots(&[
+        "run",
+        asset_plugin(),
+        "-m",
+        asset_policy(),
+        "--answer",
+        "watoots:asset/log@0.1.0#emit=",
+        "-c",
+        "apply",
+        "--",
+        "{width: 2, height: 2, pixels: [10, 20, 30, 200, 100, 50, 255, 255, 255, 0, 0]}",
+        "[invert]",
+    ]);
+
+    assert!(output.status.success(), "{output:?}");
+    let text = stdout(&output);
+    assert!(text.starts_with("err(malformed("), "{text}");
+    assert!(text.contains("12 bytes"), "{text}");
+    assert!(text.contains("got 11"), "{text}");
+}

@@ -1,0 +1,19 @@
+# Its own workspace: this crate is built for wasm32-wasip2, not for the host.
+[workspace]
+
+[package]
+name = "rust-asset"
+version = "0.0.0"
+edition = "2024"
+publish = false
+license = "Apache-2.0 WITH LLVM-exception"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen = "0.61"
+
+[profile.release]
+opt-level = "s"
+strip = true

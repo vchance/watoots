@@ -27,13 +27,38 @@ interface types {
 
   record gain {
     channel: channel,
-    /// Multiplier, clamped to 0.0..=4.0 by the host before the call.
+    /// Multiplier.
+    ///
+    /// A guest clamps this to `0.0..=4.0` and treats NaN as `0.0`. Saying so
+    /// here rather than "the host clamps it" is the difference between a rule
+    /// and a hope: nothing in the type system makes a host do that, NaN is
+    /// representable, and the wrong answer differs by language — Rust's
+    /// `as u8` saturates, C++'s conversion is undefined behaviour.
     factor: f32,
   }
 
   record extent {
     width: u32,
     height: u32,
+  }
+
+  /// Which kind of step, without its parameters.
+  ///
+  /// `describe` needs to say "I can do gain" without inventing a gain to say
+  /// it with. Reusing `operation` there forced a plugin to construct a whole
+  /// record of meaningless values — `gain({channel: red, factor: 1})` — that a
+  /// host had to know to ignore, with nothing in the type saying so. Four
+  /// guests would have invented four different sets of noise.
+  /// Kept in step with `operation` by hand — nothing in WIT derives one from
+  /// the other. A case added to one and not the other compiles on both sides,
+  /// and the result is a plugin advertising a step nobody can send, or refusing
+  /// one it implements.
+  enum operation-kind {
+    grayscale,
+    invert,
+    gain,
+    resize,
+    lut,
   }
 
   /// One step of a pipeline.
@@ -46,14 +71,34 @@ interface types {
     grayscale,
     invert,
     gain(gain),
-    /// Nearest-neighbour. Ugly on purpose: four languages have to agree on
-    /// every output byte, and interpolation invites disagreement.
+    /// Nearest-neighbour, top-left biased: source pixel
+    /// `(dx * src-width / dst-width, dy * src-height / dst-height)`, truncating.
+    /// Ugly on purpose — four languages have to agree on every output byte, and
+    /// interpolation invites disagreement.
+    ///
+    /// A destination whose pixel buffer would exceed **32 MiB** is `malformed`.
+    /// Without a stated bound each guest invents one, and they disagree at the
+    /// edge — and a guest that instead *tries* the allocation fails it, which
+    /// in Rust is an abort and reaches the host as a trap, defeating the point
+    /// of returning `result` at all.
+    ///
+    /// A zero-width or zero-height destination is a zero-pixel image, not an
+    /// error. Sampling a zero-area *source* into a non-empty destination is
+    /// `malformed`, because there is no pixel to copy.
     resize(extent),
-    /// Apply a colour lookup table read from a file, by name.
+    /// Apply a colour lookup table the plugin reads from a file.
     ///
     /// This is the step that needs a capability. The plugin opens the file
     /// itself, so `fs.read` has to be granted and scoped — and a manifest that
     /// does not grant it fails the *load*, before any pixel is touched.
+    ///
+    /// The string is a **path, spelled the way the grant spells it**, not a
+    /// name the plugin can resolve. A guest has no way to look a bare name up:
+    /// this world does not import `wasi:filesystem/preopens`, and a directory
+    /// is preopened under the same string it was granted as. So a grant of
+    /// `${plugin_dir}/luts` expanded to an absolute path wants an absolute
+    /// argument, and one that stayed relative wants a relative one. Nothing in
+    /// the type says this, which is why it says it here.
     lut(string),
   }
 
@@ -62,27 +107,54 @@ interface types {
   /// `result<image, failure>` rather than a trap: "I cannot do this" is an
   /// answer, not a crash, and a plugin that traps on bad input is a plugin you
   /// cannot tell apart from one that has a bug.
+  record file-failure {
+    /// The path, exactly as the `lut` step spelled it.
+    path: string,
+    /// Why, in words meant for a person. The manifest is usually the answer.
+    reason: string,
+  }
+
   variant failure {
-    /// A step this plugin does not implement. Carries the step's name.
-    unsupported(string),
+    /// A step this plugin does not implement.
+    ///
+    /// `operation-kind` rather than a string: two guests would spell the same
+    /// step differently, and a host would have to match prose. It can only ever
+    /// name a case the guest knows and declined — a step whose discriminant its
+    /// bindings do not know fails to lift long before this.
+    unsupported(operation-kind),
     /// The input did not describe an image — usually a pixel buffer whose
     /// length disagrees with the dimensions.
     malformed(string),
-    /// A `lut` step named a file the plugin could not read. The manifest is
-    /// the first thing to check.
-    unreadable(string),
+    /// A `lut` step's file could not be turned into a table — not found, not
+    /// permitted, or not a lookup table.
+    ///
+    /// Carries a reason as well as the path, because those causes want
+    /// different fixes and a bare path cannot tell them apart. Reporting a bad
+    /// table as `malformed` would be worse: that is documented as being about
+    /// the image, and would send a host to look at its pixels.
+    ///
+    /// A guest cannot distinguish the first two. WASI reports a path outside
+    /// every preopened directory as not-found, byte-identical to a missing file
+    /// inside a granted one — correctly, because a sandbox that answered
+    /// "exists, but you may not have it" would leak what it is hiding. So
+    /// "not permitted" arrives as "not found", and the reason can only hint.
+    /// The check is the manifest, which is why the reason says so.
+    ///
+    /// `reason` is prose, deliberately. An enum beside it would be false
+    /// precision over causes the guest cannot actually separate.
+    unreadable(file-failure),
   }
 }
 
 /// What a plugin says about itself, before it is asked to do anything.
 interface manifest {
-  use types.{operation};
+  use types.{operation-kind};
 
   record plugin-info {
     name: string,
     /// One entry per step the plugin implements. The host uses this to route
     /// a pipeline, and to refuse one no loaded plugin can complete.
-    supports: list<operation>,
+    supports: list<operation-kind>,
   }
 }
 
@@ -99,6 +171,14 @@ interface log {
   emit: func(level: level, message: string);
 }
 
+/// A plugin over the asset pipeline.
+///
+/// Several obligations here are doc comments rather than types — `resize`'s
+/// 32 MiB bound, `gain`'s clamp, the rounding in every operation. WIT cannot
+/// express them, so a guest that ignores one still compiles and still passes
+/// any test that does not probe the edge. `crates/host/tests/asset_e2e.rs` is
+/// therefore part of this definition, not merely a test of one guest: it is
+/// where "four languages produce the same bytes" is actually enforced.
 world asset-plugin {
   use types.{image, operation, failure};
   use manifest.{plugin-info};

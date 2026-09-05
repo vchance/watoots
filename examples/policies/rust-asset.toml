@@ -1,0 +1,59 @@
+# Policy for examples/plugins/rust-asset.
+#
+# Derived from `watoots inspect --imports` on the built component, not from
+# reading the source. Five imports come back denied by default, and each line
+# below answers exactly one of them:
+#
+#   wasi:clocks/monotonic-clock   std links it, whether or not anyone asks
+#   wasi:cli/environment          likewise
+#   wasi:filesystem/types         the `lut` step opens a file itself
+#   wasi:filesystem/preopens      ditto - one interface pair, one grant
+#   watoots:asset/log             not a manifest question: the application
+#                                 serves it with `host_func`, which is also
+#                                 what declares it to the grant check
+#
+# Everything else the component imports is either ambient (`wasi:io`,
+# `wasi:cli/std*`) or imported only for its types and has nothing callable in
+# it - `watoots:asset/types` and `watoots:asset/manifest` are there because the
+# world says `use types.{...}`, not because the plugin can do anything with
+# them.
+
+[permissions]
+# The two a wasm32-wasip2 Rust guest cannot avoid. Nothing in the plugin reads
+# a clock or a variable; `std` imports both unconditionally, so a deny-by-
+# default host has to be told about them or no ordinary Rust plugin loads.
+clocks = "monotonic"
+env    = {}
+
+# The one grant this example exists for.
+#
+# `lut` opens the table itself, so the plugin needs the filesystem - and it
+# needs precisely one directory of it. WASI preopens are directories, not
+# globs, so this admits the whole tree under `luts/` and nothing above it: not
+# the plugin's own `.wasm`, not the policies, not the repository.
+#
+# `${plugin_dir}` is the directory the component was loaded from, defined
+# automatically, so the grant does not have to know where the repository was
+# checked out. Drop this line and the *load* fails - before a pixel is touched
+# and before `lut` has ever run - because the import is declared in the binary.
+#
+# What this line says is also what a `lut` step has to be handed. A directory is
+# preopened under the same string it is granted as, and the guest cannot
+# enumerate its preopens to resolve anything shorter - `asset.wit` spells that
+# out under `operation.lut`. So whatever `${plugin_dir}` expands to here is the
+# prefix of the path the caller passes: absolute when the component was loaded
+# by an absolute path, relative when it was not.
+#
+# No `fs.write`: nothing here writes.
+fs.read = ["${plugin_dir}/luts"]
+
+[limits]
+# Bigger than rust-lint's, because this one holds pixels. A 1024x1024 RGB8
+# image is 3 MiB, and `resize` holds the source and the destination at once;
+# the WIT caps a single `resize` destination at 32 MiB, so 64 MiB is room for
+# both plus the LUT.
+memory  = "64MiB"
+# `resize` is the expensive step: one pass per destination pixel, plus the
+# per-pixel work of every other step in the pipeline.
+fuel    = 500_000_000
+timeout = "5s"

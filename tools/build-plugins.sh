@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Build the three sample plugins.
+# Build the sample plugins.
 #
-#   tools/build-plugins.sh [rust|js|py]...
+#   tools/build-plugins.sh [rust|rust-asset|cpp|js|py]...
 #
 # With no arguments, builds every guest whose toolchain is available and skips
 # the rest with a note. Each needs a different toolchain, which is the point:
@@ -29,6 +29,21 @@ if want rust; then
       examples/plugins/rust-lint/rust_lint.wasm
   else
     echo "skip rust-lint: rustup target add wasm32-wasip2"
+  fi
+fi
+
+if want rust-asset; then
+  # A second Rust guest, and the only sample that needs a capability: `lut`
+  # opens its lookup table itself. Its own target, not folded into `rust`,
+  # because the two prove different things and CI names the one it wants.
+  if rustup target list --installed 2>/dev/null | grep -q wasm32-wasip2; then
+    echo "==> rust-asset"
+    cargo build --manifest-path examples/plugins/rust-asset/Cargo.toml \
+      --target wasm32-wasip2 --release
+    cp examples/plugins/rust-asset/target/wasm32-wasip2/release/rust_asset.wasm \
+      examples/plugins/rust-asset/rust_asset.wasm
+  else
+    echo "skip rust-asset: rustup target add wasm32-wasip2"
   fi
 fi
 
