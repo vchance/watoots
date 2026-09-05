@@ -33,9 +33,10 @@ several majors behind. `tools/format.sh` and `tools/tidy.sh` find a 22 on their
 own, fall back to whatever is on `PATH`, and `format.sh` warns when it falls
 back. See [ADR-0003](docs/adr/0003-cpp-toolchain.md).
 
-You do not need `wasm-tools`, `wac`, `cargo-component` or `wit-bindgen-cli`.
-The host's own tests build their components from WAT inline so the suite stays
-hermetic.
+You do not need `wasm-tools`, `wac` or `cargo-component`. The host's own tests
+build their components from WAT inline so the suite stays hermetic, and the
+gates above need no guest toolchain at all — only the sample plugins do, and
+they are optional (see below).
 
 ## The gates
 
@@ -100,7 +101,17 @@ tools/build-plugins.sh rust         # or name them: rust, js, py
 
 Only the Rust guest is built in CI, because it is the only one whose toolchain
 comes from `rustup`. JavaScript needs Node and ComponentizeJS, Python needs
-`componentize-py`; the script skips what it cannot build and says so.
+`componentize-py`, and C++ needs two things:
+
+```sh
+cargo install wit-bindgen-cli
+# wasi-sdk has no Homebrew formula; download the tarball for your platform from
+# https://github.com/WebAssembly/wasi-sdk/releases and extract it. The build
+# script looks in ~/.local/share/wasi-sdk-*, /opt/wasi-sdk and ~/wasi-sdk, or
+# set WASI_SDK_PATH.
+```
+
+The script skips what it cannot build and says so.
 
 `tools/demo.sh` runs the whole story end to end — load a plugin, deny a
 permission, record a bug, replay it — against a real compiled component.

@@ -59,9 +59,14 @@ same content as the published scoping page (read-only reference).
 ## Environment notes (as of 2026-08-28)
 - Rust 1.97.1, cargo 1.97.1, CMake 4.4.3 present. MSRV is 1.95 (Wasmtime 48).
 - `wasm32-wasip2` target **is installed**.
-- `wasm-tools`, `wac`, `wit-bindgen-cli`, `cargo-component` are **not** installed
-  (`cargo install wasm-tools wac-cli wit-bindgen-cli`). Nothing needs them yet:
-  host tests build their components from WAT inline, which keeps them hermetic.
+- `wasm-tools`, `wac` and `cargo-component` are **not** installed. Host tests
+  build their components from WAT inline, which keeps them hermetic.
+- **`wit-bindgen-cli` 0.61.1 and wasi-sdk 34 are installed** for the C++ guest,
+  the latter at `~/.local/share/wasi-sdk-34.0-arm64-macos`. `wasm32-wasip2-clang++`
+  emits a component directly — `wasm-component-ld` ships with the SDK, so there
+  is no `wasm-tools component new` step. The generated bindings are C and must
+  be compiled with `clang`, not `clang++`, or the component-type force-link
+  symbol is mangled and the link fails on a name nothing explains.
 - **LLVM 22 is the pinned major for clang-format and clang-tidy** (ADR-0003).
   `brew install llvm@22`; `tools/format.sh` and `tools/tidy.sh` find it without
   configuration, and `format.sh` warns if it falls back to another version.

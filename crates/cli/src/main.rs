@@ -10,7 +10,8 @@ use std::sync::{Arc, Mutex};
 use clap::{Args, Parser, Subcommand};
 use watoots::fuzz::Generator;
 use watoots::{
-    FunctionKind, FunctionProfile, Host, HostBuilder, Manifest, PluginProfile, Profiling, TraceHook,
+    FunctionKind, FunctionProfile, Host, HostBuilder, Manifest, PluginProfile, PluginStats,
+    Profiling, TraceHook,
 };
 use watoots_trace::{Header, Recorder, Trace, binary, replay, text};
 
@@ -474,7 +475,7 @@ fn profile(args: &ProfileArgs) -> Result<ExitCode, String> {
     }
 
     let profile = plugin.profile().map_err(|err| err.message().to_string())?;
-    print!("{}", render_profile(&profile));
+    print!("{}", render_profile(&profile, &plugin.stats()));
 
     if let Some(path) = &args.firefox {
         plugin
@@ -490,6 +491,16 @@ fn profile(args: &ProfileArgs) -> Result<ExitCode, String> {
 }
 
 /// A duration in nanoseconds, at a scale a human reads without counting zeroes.
+fn bytes(count: u64) -> String {
+    const UNITS: [(u64, &str); 3] = [(1 << 30, "GiB"), (1 << 20, "MiB"), (1 << 10, "KiB")];
+    for (scale, suffix) in UNITS {
+        if count >= scale {
+            return format!("{:.1}{suffix}", count as f64 / scale as f64);
+        }
+    }
+    format!("{count}B")
+}
+
 fn duration(nanos: u64) -> String {
     match nanos {
         n if n < 1_000 => format!("{n}ns"),
@@ -506,7 +517,7 @@ fn percent(part: u64, whole: u64) -> String {
     format!("{:5.1}%", (part as f64 / whole as f64) * 100.0)
 }
 
-fn render_profile(profile: &PluginProfile) -> String {
+fn render_profile(profile: &PluginProfile, stats: &PluginStats) -> String {
     use std::fmt::Write as _;
     let mut out = String::new();
 
@@ -524,6 +535,18 @@ fn render_profile(profile: &PluginProfile) -> String {
         );
     }
     let _ = writeln!(out, "  {:<12} {:>12}", "wall", duration(profile.wall_nanos));
+
+    // The boundary counters, from the same vantage point: measured by the host,
+    // not reported by the guest. Peak memory in particular is the number that
+    // says whether a plugin is holding on to what crosses into it.
+    let _ = writeln!(
+        out,
+        "  {:<12} {:>12}  ({} call(s), {} fuel)",
+        "peak memory",
+        bytes(stats.peak_memory_bytes),
+        stats.calls,
+        stats.fuel_consumed
+    );
     // Said every time rather than in the help, because the number is the one a
     // reader is most likely to over-interpret.
     let _ = writeln!(

@@ -10,6 +10,8 @@ Cargo.lock.orig
 /examples/plugins/*/.venv
 /examples/plugins/*/*.wasm
 # componentize-py bindings, regenerated with `componentize-py bindings .`
+/examples/plugins/cpp-lint/bindings
+/examples/plugins/cpp-lint/bindings.o
 /examples/plugins/py-lint/wit_world
 /examples/plugins/py-lint/componentize_py_types.py
 /examples/plugins/py-lint/componentize_py_async_support

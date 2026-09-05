@@ -1,16 +1,25 @@
 # Examples
 
-One WIT world, three guest languages, one host — and three different policies,
+One WIT world, four guest languages, one host — and four different policies,
 because the languages do not cost the same.
 
 ```
 wit/lint.wit          the world every sample implements
 plugins/rust-lint/    Rust,       via wit-bindgen        ~65 KB
+plugins/cpp-lint/     C++,        via wasi-sdk           ~724 KB
 plugins/js-lint/      JavaScript, via ComponentizeJS     ~12 MB
 plugins/py-lint/      Python,     via componentize-py    ~18 MB
 policies/             one manifest per plugin
 host-cpp/             a C++ host application over the C API
 ```
+
+`cpp-lint` is the one that closes the loop. This project's claim is that C++
+applications have no component-model plugin option today, and a C++ *host* only
+demonstrates half of that. Here C++ is the untrusted side, sandboxed by the same
+manifest as everything else — and `wit-bindgen` emits C, so it is C bindings
+driven from C++, exactly as `watoots.hpp` is a C++ layer over a C API. The
+boundary is C in both directions; the language on each side of it is a local
+choice.
 
 Build the plugins (each needs its own toolchain; missing ones are skipped):
 
@@ -26,10 +35,11 @@ cmake --preset dev && cmake --build --preset dev
     examples/plugins/rust-lint/rust_lint.wasm examples/policies/rust-lint.toml
 ```
 
-All three print the same diagnostics. The host is not recompiled between them
-and contains nothing language-specific — the WIT world is the entire contract.
+All four print byte-identical diagnostics. The host is not recompiled between
+them and contains nothing language-specific — the WIT world is the entire
+contract.
 
-## What the three policies show
+## What the four policies show
 
 The interesting output is the grant list the host prints before loading
 anything. It is derived from the component's own declared imports, so it is
@@ -59,6 +69,12 @@ Two consequences worth internalising:
   links while leaving no host reachable — wasmtime-wasi refuses every
   connection. Denying the import outright would refuse CPython altogether;
   pretending an allowlist works would be worse.
+
+`cpp-lint.toml` needs `clocks = "wall"` where `rust-lint.toml` needs only
+`monotonic`. Nothing in `lint.cc` asks for the time; wasi-libc links the wall
+clock during startup. Four toolchains, four different bills, and none of them
+written by the plugin's author — which is the argument for reading `watoots
+inspect` rather than guessing.
 
 ComponentizeJS can drop some of its defaults: `js-lint` is built with
 `--disable http --disable random --disable fetch-event`, which removes three

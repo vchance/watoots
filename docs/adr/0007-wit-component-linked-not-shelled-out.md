@@ -139,6 +139,7 @@ plugins link three different WASI patch versions:
 | `rust_lint.wasm` | 0.2.9 — rustc's `wasm32-wasip2` std vendors `wasi-0.2.9` |
 | `js_lint.wasm` | 0.2.10 — StarlingMonkey's |
 | `py_lint.wasm` | 0.2.4 — CPython's |
+| `cpp_lint.wasm` | 0.2.12 — wasi-sdk 34's wasi-libc (added later, and it made the point again) |
 
 One WIT world cannot satisfy all three. Worse, none of those versions is chosen
 by the plugin's author: they come from whichever toolchain built the guest, so a

@@ -1,0 +1,19 @@
+# What the C++ sample plugin needs.
+#
+# Compare with rust-lint.toml. Both plugins do the same work over the same
+# world, and the C++ one needs a strictly larger grant: wasi-libc links the
+# *wall* clock, not just the monotonic one, so `clocks = "monotonic"` refuses
+# the load. Nothing in lint.cc asks for the time.
+#
+# This is the same lesson the JavaScript and Python policies teach, arriving
+# from a fourth toolchain: the bill is written by whoever built the guest, and
+# the only reliable way to read it is `watoots inspect`.
+
+[permissions]
+clocks = "wall"         # wasi-libc links wall-clock unconditionally
+env    = {}             # and the environment, via the C runtime's startup
+
+[limits]
+memory  = "64MiB"
+fuel    = 200_000_000
+timeout = "5s"

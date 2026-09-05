@@ -55,6 +55,36 @@ if want py; then
   fi
 fi
 
+if want cpp; then
+  # wasi-sdk is a 172MB tarball with no Homebrew formula, so it is found rather
+  # than required: set WASI_SDK_PATH, or drop it in one of the usual places.
+  sdk=${WASI_SDK_PATH:-}
+  if [ -z "$sdk" ]; then
+    for candidate in "$HOME"/.local/share/wasi-sdk-* /opt/wasi-sdk "$HOME"/wasi-sdk; do
+      [ -x "$candidate/bin/wasm32-wasip2-clang++" ] && sdk=$candidate && break
+    done
+  fi
+  if [ -n "$sdk" ] && [ -x "$sdk/bin/wasm32-wasip2-clang++" ] &&
+    command -v wit-bindgen >/dev/null 2>&1; then
+    echo "==> cpp-lint"
+    cd "$root/examples/plugins/cpp-lint"
+    # Regenerated every build: the bindings are a function of the WIT, so a
+    # stale copy is a silent disagreement with the world everyone else compiled.
+    wit-bindgen c ../../wit --world lint-plugin --out-dir bindings >/dev/null
+    # The generated bindings are C. Compiling them with clang++ mangles the
+    # component-type force-link symbol and the link fails on a name nothing
+    # explains, so they get their own C compile.
+    "$sdk/bin/wasm32-wasip2-clang" -std=c11 -O2 -I. -c bindings/lint_plugin.c -o bindings.o
+    "$sdk/bin/wasm32-wasip2-clang++" -std=c++20 -O2 -fno-exceptions -fno-rtti -I. \
+      -o cpp_lint.wasm lint.cc bindings.o bindings/lint_plugin_component_type.o
+    cd "$root"
+  elif [ -z "$sdk" ]; then
+    echo "skip cpp-lint: no wasi-sdk (set WASI_SDK_PATH; see CONTRIBUTING.md)"
+  else
+    echo "skip cpp-lint: wit-bindgen not found (cargo install wit-bindgen-cli)"
+  fi
+fi
+
 echo
 echo "built components:"
 ls -1 examples/plugins/*/*.wasm 2>/dev/null || echo "  (none)"
