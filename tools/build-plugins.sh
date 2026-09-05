@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build the sample plugins.
 #
-#   tools/build-plugins.sh [rust|rust-asset|cpp|js|py]...
+#   tools/build-plugins.sh [rust|rust-asset|cpp|cpp-asset|js|py]...
 #
 # With no arguments, builds every guest whose toolchain is available and skips
 # the rest with a note. Each needs a different toolchain, which is the point:
@@ -70,17 +70,30 @@ if want py; then
   fi
 fi
 
-if want cpp; then
+if want cpp || want cpp-asset; then
   # wasi-sdk is a 172MB tarball with no Homebrew formula, so it is found rather
   # than required: set WASI_SDK_PATH, or drop it in one of the usual places.
+  # Found once and shared, because both C++ guests need the same two tools and
+  # a second copy of this search is a second thing to keep in step.
   sdk=${WASI_SDK_PATH:-}
   if [ -z "$sdk" ]; then
     for candidate in "$HOME"/.local/share/wasi-sdk-* /opt/wasi-sdk "$HOME"/wasi-sdk; do
       [ -x "$candidate/bin/wasm32-wasip2-clang++" ] && sdk=$candidate && break
     done
   fi
-  if [ -n "$sdk" ] && [ -x "$sdk/bin/wasm32-wasip2-clang++" ] &&
-    command -v wit-bindgen >/dev/null 2>&1; then
+  cpp_ready=no
+  cpp_skip="no wasi-sdk (set WASI_SDK_PATH; see CONTRIBUTING.md)"
+  if [ -n "$sdk" ] && [ -x "$sdk/bin/wasm32-wasip2-clang++" ]; then
+    if command -v wit-bindgen >/dev/null 2>&1; then
+      cpp_ready=yes
+    else
+      cpp_skip="wit-bindgen not found (cargo install wit-bindgen-cli)"
+    fi
+  fi
+fi
+
+if want cpp; then
+  if [ "$cpp_ready" = yes ]; then
     echo "==> cpp-lint"
     cd "$root/examples/plugins/cpp-lint"
     # Regenerated every build: the bindings are a function of the WIT, so a
@@ -93,10 +106,31 @@ if want cpp; then
     "$sdk/bin/wasm32-wasip2-clang++" -std=c++20 -O2 -fno-exceptions -fno-rtti -I. \
       -o cpp_lint.wasm lint.cc bindings.o bindings/lint_plugin_component_type.o
     cd "$root"
-  elif [ -z "$sdk" ]; then
-    echo "skip cpp-lint: no wasi-sdk (set WASI_SDK_PATH; see CONTRIBUTING.md)"
   else
-    echo "skip cpp-lint: wit-bindgen not found (cargo install wit-bindgen-cli)"
+    echo "skip cpp-lint: $cpp_skip"
+  fi
+fi
+
+if want cpp-asset; then
+  # The second C++ guest, and the one that has to agree with rust-asset on
+  # every output byte. Its own target for the same reason `rust-asset` is not
+  # folded into `rust`: the two prove different things.
+  if [ "$cpp_ready" = yes ]; then
+    echo "==> cpp-asset"
+    cd "$root/examples/plugins/cpp-asset"
+    wit-bindgen c ../../wit/asset --world asset-plugin --out-dir bindings >/dev/null
+    # C bindings with clang, C++ with clang++ -- see the note above cpp-lint.
+    "$sdk/bin/wasm32-wasip2-clang" -std=c11 -O2 -I. -c bindings/asset_plugin.c -o bindings.o
+    # `-ffp-contract=off` on top of cpp-lint's flags. `gain` is a multiply and
+    # an add, which is exactly the shape a compiler is allowed to fuse; wasm has
+    # no fma instruction so it cannot happen here, and the flag says so out loud
+    # rather than relying on the target to keep the guests in agreement.
+    "$sdk/bin/wasm32-wasip2-clang++" -std=c++20 -O2 -fno-exceptions -fno-rtti \
+      -ffp-contract=off -I. \
+      -o cpp_asset.wasm asset.cc bindings.o bindings/asset_plugin_component_type.o
+    cd "$root"
+  else
+    echo "skip cpp-asset: $cpp_skip"
   fi
 fi
 

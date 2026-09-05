@@ -49,7 +49,18 @@ lint_plugin_string_t Own(std::string_view text) {
 void Emit(watoots_example_log_severity_t level, std::string_view message) {
   lint_plugin_string_t owned = Own(message);
   watoots_example_log_emit(level, &owned);
-  // `emit` takes the string by value in WIT, so the host owns it now.
+  // The argument to an *import* stays the caller's. There is no post-return on
+  // this side of the boundary — the host lifted a copy out of our memory and
+  // has no way to hand this buffer back — so not freeing it leaks, once per
+  // log line. It measured as 128KiB growing to 1.0MiB over 20000 calls, which
+  // is small enough to look like nothing and unbounded all the same.
+  //
+  // Ownership runs in four directions across this file's boundary and only one
+  // of them is written anywhere: export parameters are the callee's to free,
+  // export returns are freed by `cabi_post_lint` with `free` so they must come
+  // from `malloc`, import arguments are the caller's, and import results would
+  // be ours. Rust and JavaScript guests meet none of these rules.
+  lint_plugin_string_free(&owned);
 }
 
 std::string_view Borrow(const lint_plugin_string_t& text) {

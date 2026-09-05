@@ -9,9 +9,12 @@ Cargo.lock.orig
 /examples/plugins/*/node_modules
 /examples/plugins/*/.venv
 /examples/plugins/*/*.wasm
-# componentize-py bindings, regenerated with `componentize-py bindings .`
+# wit-bindgen output and its object file, regenerated on every C++ guest build
 /examples/plugins/cpp-lint/bindings
 /examples/plugins/cpp-lint/bindings.o
+/examples/plugins/cpp-asset/bindings
+/examples/plugins/cpp-asset/bindings.o
+# componentize-py bindings, regenerated with `componentize-py bindings .`
 /examples/plugins/py-lint/wit_world
 /examples/plugins/py-lint/componentize_py_types.py
 /examples/plugins/py-lint/componentize_py_async_support

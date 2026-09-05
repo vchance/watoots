@@ -1,0 +1,64 @@
+# Policy for examples/plugins/cpp-asset.
+#
+# Derived from `watoots inspect --imports` on the built component, not from
+# reading the source or from copying rust-asset.toml. Six imports come back
+# denied by default:
+#
+#   wasi:cli/environment          the C runtime's startup reads it
+#   wasi:clocks/monotonic-clock   wasi-libc links both clocks, whether or not
+#   wasi:clocks/wall-clock        anyone asks - see below
+#   wasi:filesystem/types         the `lut` step opens a file itself
+#   wasi:filesystem/preopens      ditto - one interface pair, one grant
+#   watoots:asset/log             not a manifest question: the application
+#                                 serves it with `host_func`, which is also
+#                                 what declares it to the grant check
+#
+# Everything else the component imports is either ambient (`wasi:io`,
+# `wasi:cli/std*`) or imported only for its types and has nothing callable in
+# it - `watoots:asset/types` and `watoots:asset/manifest` are there because the
+# world says `use types.{...}`.
+
+[permissions]
+# The line that differs from rust-asset.toml, and the whole reason this file is
+# not a copy of it.
+#
+# `asset.cc` does not read a clock. `rust_asset.wasm` does not either, and gets
+# away with `clocks = "monotonic"`; wasi-libc links the *wall* clock as well, so
+# the same grant refuses this component's load. `"wall"` implies `"monotonic"`,
+# which is why one line answers two denials.
+#
+# The same lesson cpp-lint.toml teaches, arriving on a plugin that had a Rust
+# twin to compare against: two guests can compute identical bytes and still
+# present different bills, because the bill is written by whoever built them.
+clocks = "wall"
+env    = {}             # and the environment, via the C runtime's startup
+
+# The one grant this example exists for.
+#
+# `lut` opens the table itself - here through wasi-libc's `fopen`, which does
+# the preopen matching inside libc - so the plugin needs the filesystem, and it
+# needs precisely one directory of it. WASI preopens are directories, not globs,
+# so this admits the whole tree under `luts/` and nothing above it.
+#
+# `${plugin_dir}` is the directory the component was loaded from, so the grant
+# does not have to know where the repository was checked out. Drop this line and
+# the *load* fails - before a pixel is touched and before `lut` has ever run -
+# because the import is declared in the binary.
+#
+# What this line says is also what a `lut` step has to be handed: a directory is
+# preopened under the same string it is granted as, and the guest cannot
+# enumerate its preopens to resolve anything shorter. `asset.wit` spells that
+# out under `operation.lut`.
+#
+# No `fs.write`: nothing here writes.
+fs.read = ["${plugin_dir}/luts"]
+
+[limits]
+# The same numbers as rust-asset.toml, and for the same reasons: a 1024x1024
+# RGB8 image is 3 MiB, `resize` holds the source and the destination at once,
+# and the WIT caps a single `resize` destination at 32 MiB. Keeping them equal
+# is deliberate - a conformance suite that ran the two guests under different
+# limits would not be comparing the same thing.
+memory  = "64MiB"
+fuel    = 500_000_000
+timeout = "5s"

@@ -96,12 +96,14 @@ is the worked example.
 
 ```sh
 tools/build-plugins.sh              # everything whose toolchain is present
-tools/build-plugins.sh rust         # or name them: rust, js, py
+tools/build-plugins.sh rust         # or name them:
+                                    #   rust, js, py, cpp        the lint world
+                                    #   rust-asset, cpp-asset    the asset world
 ```
 
-Only the Rust guest is built in CI, because it is the only one whose toolchain
-comes from `rustup`. JavaScript needs Node and ComponentizeJS, Python needs
-`componentize-py`, and C++ needs two things:
+Only the Rust guests are built in CI, because `rustup` is the only toolchain it
+has. JavaScript needs Node and ComponentizeJS, Python needs `componentize-py`,
+and C++ needs two things:
 
 ```sh
 cargo install wit-bindgen-cli
@@ -112,6 +114,13 @@ cargo install wit-bindgen-cli
 ```
 
 The script skips what it cannot build and says so.
+
+`crates/host/tests/asset_e2e.rs` picks up whichever asset guests are present and
+runs the same conformance cases against every one of them — that is where "four
+languages produce the same bytes" is actually enforced. A guest nobody has built
+is skipped rather than failed, so building `cpp-asset` before a change to
+`examples/wit/asset` or to any asset guest is how you find out that two guests
+have stopped agreeing.
 
 `tools/demo.sh` runs the whole story end to end — load a plugin, deny a
 permission, record a bug, replay it — against a real compiled component.

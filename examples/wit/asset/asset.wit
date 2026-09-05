@@ -104,6 +104,22 @@ interface types {
 
   /// Why a step could not be done.
   ///
+  /// **The strings here are for people, not for hosts.** A host branches on the
+  /// case; it must not match on the prose, and two guests wording the same
+  /// failure differently are both conforming.
+  ///
+  /// That is a decision, not an omission. Making the wording normative sounds
+  /// harmless until you implement it: matching one reference guest's messages
+  /// meant reproducing five separate behaviours of *its standard library* —
+  /// its debug string escaping, its integer parser's error text, its line
+  /// splitting, its UTF-8 error wording, and its `io::Error` rendering. None of
+  /// that is in this file, none of it is about images, and asking a guest whose
+  /// runtime is CPython or a JavaScript engine to reproduce it would be asking
+  /// it to impersonate a language it is not written in.
+  ///
+  /// What every guest *does* owe byte for byte is the pixels, and the case it
+  /// returns.
+  ///
   /// `result<image, failure>` rather than a trap: "I cannot do this" is an
   /// answer, not a crash, and a plugin that traps on bad input is a plugin you
   /// cannot tell apart from one that has a bug.
