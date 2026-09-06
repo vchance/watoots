@@ -20,8 +20,11 @@ same content as the published scoping page (read-only reference).
   across the boundary, error codes + message strings).
 - Default-deny everything: no network, no filesystem, no wall clock unless
   the manifest grants it.
-- We complement Wasmtime's engine-level `rr` feature; we never record guest
-  memory or engine state. We do not reimplement `wasm-tools component
+- We complement Wasmtime's `rr` feature, which records at the *same* level we
+  do — wasmtime#11284's goal is "to purely capture guest-host boundary
+  crossings". What it names as a non-goal is a human-readable trace format,
+  "an independent tool over the low-level trace". That is us. We never record
+  guest memory or engine state. We do not reimplement `wasm-tools component
   semver-check` or `targets` — call/wrap them.
 
 ## Layout

@@ -83,7 +83,12 @@ pub enum Requirement {
     TypesOnly,
     /// `wasi:filesystem` — needs some `fs.read` or `fs.write` grant.
     Filesystem,
-    /// `wasi:sockets` — needs a non-empty `net` allowlist.
+    /// `wasi:sockets` and `wasi:http` — need `net` to be present at all.
+    ///
+    /// Presence, not a non-empty allowlist: `net = []` grants the interfaces
+    /// with nothing reachable, which is what a CPython or JavaScript guest
+    /// needs. A non-empty allowlist is refused at host-build time because
+    /// nothing enforces it — see `docs/SECURITY.md`.
     Network,
     /// `wasi:clocks/monotonic-clock`.
     MonotonicClock,
