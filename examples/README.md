@@ -2,7 +2,8 @@
 
 Two WIT worlds. The first is one world in four guest languages, with four
 different policies, because the languages do not cost the same. The second is
-one language and a plugin that actually uses a capability.
+the same four languages again, over a plugin that actually uses a capability —
+and a host application that owns a codec so no plugin has to.
 
 ```
 wit/lint/lint.wit     the world every lint sample implements
@@ -12,10 +13,14 @@ plugins/js-lint/      JavaScript, via ComponentizeJS     ~12 MB
 plugins/py-lint/      Python,     via componentize-py    ~18 MB
 
 wit/asset/asset.wit   an image-pipeline world
-plugins/rust-asset/   Rust; the one sample that opens a file itself
+plugins/rust-asset/   Rust        \  four guests again, and each one opens a
+plugins/cpp-asset/    C++          \ file itself: `lut` is the step that needs
+plugins/js-asset/     JavaScript   / a capability, and the manifest is what
+plugins/py-asset/     Python      /  decides whether it gets one
 
 policies/             one manifest per plugin
 host-cpp/             a C++ host application over the C API
+host-cpp-asset/       a second one, for the asset world, that owns the codec
 ```
 
 `cpp-lint` is the one that closes the loop. This project's claim is that C++
@@ -157,3 +162,103 @@ exact arithmetic — fixed-point Rec. 601 luma, `floor(x + 0.5)` rounding,
 truncating nearest-neighbour — because three more guest languages are meant to
 implement this world byte for byte, and `crates/host/tests/asset_e2e.rs` asserts
 values computed by hand from those rules rather than captured from a run.
+
+## The second host: the application owns the codec
+
+`host-cpp` drives the lint world; `host-cpp-asset` drives this one. Two binaries
+rather than one with a switch, because they demonstrate different things.
+
+```sh
+cmake --preset dev && cmake --build --preset dev
+
+./build/dev/examples/host-cpp-asset/host_cpp_asset \
+    examples/plugins/rust-asset/rust_asset.wasm \
+    examples/policies/rust-asset.toml \
+    examples/host-cpp-asset/input.png /tmp/out.png \
+    resize:32x32,grayscale,lut:examples/plugins/rust-asset/luts/sepia.lut
+```
+
+The same command runs any of the four guests — with **that guest's** policy,
+which is the whole point of the table above:
+
+```sh
+./build/dev/examples/host-cpp-asset/host_cpp_asset \
+    examples/plugins/py-asset/py_asset.wasm \
+    examples/policies/py-asset.toml \
+    examples/host-cpp-asset/input.png /tmp/out-py.png \
+    resize:32x32,grayscale,lut:examples/plugins/py-asset/luts/sepia.lut
+```
+
+All four write a byte-identical PNG. `ctest --preset dev -R host_cpp_asset` runs
+whichever have been built.
+
+`input.png` is 128×128 and synthetic, generated from three rules so it can be
+regenerated rather than trusted: `r = x * 255 / 127`, `g = y * 255 / 127`, and
+`b` a 16-pixel checkerboard of 0 and 255. The gradients make `gain` and
+`grayscale` visible; the hard checker edges are what `resize`'s
+nearest-neighbour rule is easiest to check against.
+
+**No file format appears in `asset.wit`, and that is the design.** The host
+decodes the PNG to RGB8 with `stb_image`, hands over pixels, and encodes the
+answer with `stb_image_write`. Four guest languages therefore agree byte for
+byte without four PNG dependencies, and an untrusted plugin never parses a file
+format. stb is fetched by `FetchContent` at a pinned commit exactly as
+googletest is, and pulled in `SYSTEM`, which is also what keeps its headers out
+of `tools/tidy.sh` while `main.cc` stays in.
+
+**`describe` runs first, and the pipeline is routed on it.** Nothing else in the
+repository uses `plugin-info`, and this is what it is for: a step the plugin does
+not advertise is refused by name, before a single pixel is marshalled.
+
+### What the WAVE round trip costs
+
+Images cross the C API as **WAVE text**. `wt_plugin_call` takes
+`const char* const*`; there is no binary path, and adding one is a separate
+decision, not something an example gets to make. The honest accounting, from one
+run of a 960×960 image through `grayscale, lut` on the Rust guest, built with
+`--preset release`:
+
+```
+WAVE argument: 12105635 bytes of text for 2764800 bytes of pixels, built in 13.1 ms
+apply():
+  answered with 13136333 bytes of WAVE in 176.7 ms
+  parsed it in 12.3 ms
+
+where the time went (watoots profile)
+  wall         51.8 ms
+  guest        2.7 ms (5%)
+  host calls   0.3 ms (0%)
+  marshalling  48.7 ms (93%) -- the pixels, as WAVE text, in both directions
+```
+
+Three numbers to take from that.
+
+**Text costs about 4.4× the pixels.** 2.6 MiB of image is 11.5 MiB of argument
+and 12.5 MiB of answer. Building it with naive concatenation is slow enough to
+notice, so `WaveImage` reserves five characters per byte and appends from a
+256-entry table of pre-rendered decimals; that is the difference between 13 ms
+and a good deal worse.
+
+**`watoots profile` says 93% marshalling — and still does not see most of it.**
+The profile's `wall` is 51.8 ms against the 176.7 ms the application measured
+around the same call. `Plugin::call_wave` converts WAVE text to `Val` *before*
+the profiled window and back *after* it, so the ~125 ms difference is the text
+conversion itself, invisible to the profiler. What the profiler does attribute
+to `marshalling` is the canonical ABI's copying, which is real and is 93% of
+what it can see. Both numbers are honest; neither is the whole bill.
+
+**There is a hard ceiling, and it is lower than a photograph.** A returned
+`list<u8>` is lifted into `Vec<Val>`, and wasmtime charges its per-hostcall data
+budget — 128 MiB by default — at `size_of::<Val>()` = 48 bytes *per element*.
+So the largest image `apply` can return is 2,796,202 bytes: 965×965 RGB8 works,
+966×966 traps with
+
+```
+too much data is being copied between the host and the guest:
+fuel allocated for hostcalls has been exhausted
+```
+
+A 1024×1024 image goes *in* fine — only guest-to-host data is metered — and
+cannot come back. That is a property of the dynamic `Val` path, which is the
+only path the C API offers; it is not `limits.fuel`, and raising that does not
+help.

@@ -35,7 +35,7 @@ Checks: >
 #   use-trailing-return-type      contradicts Google style.
 
 WarningsAsErrors: '*'
-HeaderFilterRegex: '.*/(crates/host-capi/(include|src|tests)|examples/host-cpp)/.*'
+HeaderFilterRegex: '.*/(crates/host-capi/(include|src|tests)|examples/host-cpp(-asset)?)/.*'
 FormatStyle: file
 
 CheckOptions:

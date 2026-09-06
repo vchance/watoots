@@ -58,7 +58,12 @@ fi
 "${configure[@]}" >/dev/null
 
 runner="$bin_dir/run-clang-tidy"
-sources='(crates/host-capi/(include|src|tests)|examples/host-cpp)/.*\.(c|cc|h|hpp)$'
+# Both example hosts are in scope. `examples/host-cpp-asset/stb_impl.cc` is
+# linted like everything else and passes trivially: it is two macros and two
+# includes, and CMake pulls stb in with SYSTEM, so every diagnostic those
+# headers would raise is suppressed at its own -isystem location rather than by
+# a NOLINT here.
+sources='(crates/host-capi/(include|src|tests)|examples/host-cpp(-asset)?)/.*\.(c|cc|h|hpp)$'
 
 if [ -x "$runner" ]; then
   exec "$runner" -p "$build_dir" -clang-tidy-binary "$tidy" -quiet "$sources"
@@ -67,5 +72,6 @@ fi
 files=()
 while IFS= read -r f; do files+=("$f"); done < <(
   git ls-files --cached --others --exclude-standard \
-    'crates/host-capi/*.c' 'crates/host-capi/*.cc' 'examples/host-cpp/*.cc')
+    'crates/host-capi/*.c' 'crates/host-capi/*.cc' 'examples/host-cpp/*.cc' \
+    'examples/host-cpp-asset/*.cc')
 exec "$tidy" -p "$build_dir" "${files[@]}"

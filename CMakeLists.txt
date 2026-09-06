@@ -68,6 +68,7 @@ add_subdirectory(crates/host-capi)
 
 if(WATOOTS_BUILD_CAPI)
   add_subdirectory(examples/host-cpp)
+  add_subdirectory(examples/host-cpp-asset)
 endif()
 
 if(WATOOTS_BUILD_TESTS)
