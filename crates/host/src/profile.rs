@@ -36,6 +36,7 @@ struct Totals {
     wall_nanos: u64,
     guest_nanos: u64,
     host_nanos: u64,
+    wave_nanos: u64,
 }
 
 impl Totals {
@@ -46,6 +47,13 @@ impl Totals {
         self.host_nanos = self.host_nanos.saturating_add(host);
     }
 
+    /// Add the WAVE text conversion around a call that has already been folded
+    /// in. It lengthens the wall time as well, so the buckets still sum.
+    fn add_wave(&mut self, wave: u64) {
+        self.wall_nanos = self.wall_nanos.saturating_add(wave);
+        self.wave_nanos = self.wave_nanos.saturating_add(wave);
+    }
+
     /// What is left of the wall time once the two measured buckets are taken
     /// out. See [`PluginProfile::marshalling_nanos`] for why this is not a
     /// measurement.
@@ -53,6 +61,7 @@ impl Totals {
         self.wall_nanos
             .saturating_sub(self.guest_nanos)
             .saturating_sub(self.host_nanos)
+            .saturating_sub(self.wave_nanos)
     }
 }
 
@@ -82,6 +91,9 @@ pub struct FunctionProfile {
     pub host_nanos: u64,
     /// The remainder. See [`PluginProfile::marshalling_nanos`].
     pub marshalling_nanos: u64,
+    /// Of that, WAVE text conversion. Zero for an import, and zero for an
+    /// export a host called with values rather than text.
+    pub wave_nanos: u64,
 }
 
 /// Where a plugin's time went since it was loaded.
@@ -92,9 +104,9 @@ pub struct FunctionProfile {
 ///
 /// # What the buckets do and do not cover
 ///
-/// `guest_nanos` and `host_nanos` are *measured*, from the exact transitions
-/// wasmtime reports. `marshalling_nanos` is **derived**: it is
-/// `wall_nanos - guest_nanos - host_nanos` and nothing observes it directly.
+/// `guest_nanos`, `host_nanos` and `wave_nanos` are *measured*.
+/// `marshalling_nanos` is **derived**: it is `wall_nanos` less the other three,
+/// and nothing observes it directly.
 /// The canonical ABI's lift and lower do land there, which is the question it
 /// exists to answer — "is my time going into copying?" — but so does every
 /// other cost of getting into and out of a call, watoots' own dispatch
@@ -123,6 +135,16 @@ pub struct PluginProfile {
     /// What is left: the canonical ABI's lift and lower, plus watoots' own
     /// dispatch. A remainder, not a measurement — see the type documentation.
     pub marshalling_nanos: u64,
+    /// Of that, time turning WAVE text into values and back.
+    ///
+    /// Only [`crate::Plugin::call_wave`] spends this, so it is zero for a host
+    /// calling [`crate::Plugin::call`] with `Val`s it already has. It is a
+    /// separate bucket because it is a separate decision: marshalling is what
+    /// the component model costs and cannot be avoided, while this is what the
+    /// *untyped* path costs and would vanish under `bindgen!` or a binary C
+    /// API. Folding the two together said "your time is going into copying"
+    /// when it was going into parsing text.
+    pub wave_nanos: u64,
     /// Per-function attribution, exports first, each group sorted by name.
     pub functions: Vec<FunctionProfile>,
 }
@@ -324,6 +346,23 @@ impl ProfileState {
         delta
     }
 
+    /// Add the WAVE conversion around the call that just finished.
+    ///
+    /// Called after `finish_call`, because it is time spent outside the window
+    /// `Plugin::call` measures — which is exactly why it used to be invisible:
+    /// `call_wave` parses before that window opens and renders after it closes,
+    /// so a profile of a 177ms call reported 52ms and blamed marshalling for
+    /// the difference.
+    pub(crate) fn add_wave(&mut self, export: &str, nanos: u64) {
+        self.total.add_wave(nanos);
+        // And onto the export's own row. It is that call's cost, and a report
+        // whose one export says 11ms above a total of 36ms invites the reader
+        // to go looking for a second caller that does not exist.
+        if let Some(row) = self.exports.get_mut(export) {
+            row.add_wave(nanos);
+        }
+    }
+
     /// Fold the call that just finished into the totals.
     pub(crate) fn finish_call(&mut self, export: &str, wall: Duration) {
         let wall = nanos(wall);
@@ -372,6 +411,7 @@ impl ProfileState {
                 guest_nanos: totals.guest_nanos,
                 host_nanos: totals.host_nanos,
                 marshalling_nanos: totals.marshalling(),
+                wave_nanos: totals.wave_nanos,
             });
         }
         for ((interface, func), totals) in &self.imports {
@@ -384,6 +424,7 @@ impl ProfileState {
                 guest_nanos: 0,
                 host_nanos: totals.host_nanos,
                 marshalling_nanos: 0,
+                wave_nanos: 0,
             });
         }
 
@@ -393,6 +434,7 @@ impl ProfileState {
             guest_nanos: self.total.guest_nanos,
             host_nanos: self.total.host_nanos,
             marshalling_nanos: self.total.marshalling(),
+            wave_nanos: self.total.wave_nanos,
             functions,
         }
     }

@@ -960,6 +960,13 @@ pub struct wt_plugin_profile_t {
     pub host_nanos: u64,
     /// What is left. A remainder, not a measurement.
     pub marshalling_nanos: u64,
+    /// Of that, time turning WAVE text into values and back.
+    ///
+    /// Every call through this C API pays it — `wt_plugin_call` takes text, so
+    /// there is no other path. Separate from `marshalling_nanos` because it is
+    /// a separate decision: marshalling is what the component model costs, this
+    /// is what the untyped path costs.
+    pub wave_nanos: u64,
     /// How many rows [`wt_plugin_profile_function`] will serve.
     pub function_count: u64,
 }
@@ -993,6 +1000,8 @@ pub struct wt_function_profile_t {
     pub host_nanos: u64,
     /// The remainder. Zero for an import.
     pub marshalling_nanos: u64,
+    /// Of that, WAVE text conversion. Zero for an import.
+    pub wave_nanos: u64,
 }
 
 impl Default for wt_function_profile_t {
@@ -1006,6 +1015,7 @@ impl Default for wt_function_profile_t {
             guest_nanos: 0,
             host_nanos: 0,
             marshalling_nanos: 0,
+            wave_nanos: 0,
         }
     }
 }
@@ -1029,6 +1039,7 @@ fn row_from(profile: &FunctionProfile) -> Result<ProfileRow, Error> {
             guest_nanos: profile.guest_nanos,
             host_nanos: profile.host_nanos,
             marshalling_nanos: profile.marshalling_nanos,
+            wave_nanos: profile.wave_nanos,
         },
     })
 }
@@ -1070,6 +1081,7 @@ pub unsafe extern "C" fn wt_plugin_profile(
                 guest_nanos: profile.guest_nanos,
                 host_nanos: profile.host_nanos,
                 marshalling_nanos: profile.marshalling_nanos,
+                wave_nanos: profile.wave_nanos,
                 function_count: handle.profile_rows.len() as u64,
             };
         }

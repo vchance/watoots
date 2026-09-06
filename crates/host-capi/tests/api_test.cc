@@ -468,12 +468,17 @@ TEST(CApi, ProfileSplitsTimeAtTheBoundary) {
   ASSERT_TRUE(profile.has_value()) << profile.error().Message();
   EXPECT_EQ(profile->calls, 1U);
   EXPECT_GT(profile->wall_nanos, 0U);
-  // Marshalling is defined as the remainder, so the three always add up to the
-  // wall time. That is the definition rather than a measurement, and this pins
-  // the definition.
-  EXPECT_EQ(
-      profile->guest_nanos + profile->host_nanos + profile->marshalling_nanos,
-      profile->wall_nanos);
+  // Marshalling is defined as the remainder, so the buckets always add up to
+  // the wall time. That is the definition rather than a measurement, and this
+  // pins it. There are four: `wave_nanos` joined them when the profiler was
+  // found to be measuring only the call and not the text conversion around it,
+  // and this assertion is what noticed the arithmetic had changed.
+  EXPECT_EQ(profile->guest_nanos + profile->host_nanos +
+                profile->marshalling_nanos + profile->wave_nanos,
+            profile->wall_nanos);
+  // And every call through this API pays that conversion, because
+  // `wt_plugin_call` takes text and there is no other path.
+  EXPECT_GT(profile->wave_nanos, 0U);
 
   ASSERT_EQ(profile->functions.size(), 1U);
   const wt::FunctionProfile& row = profile->functions.front();

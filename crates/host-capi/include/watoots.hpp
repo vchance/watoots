@@ -294,6 +294,8 @@ struct FunctionProfile {
   uint64_t guest_nanos = 0;
   uint64_t host_nanos = 0;
   uint64_t marshalling_nanos = 0;
+  /// Of that, WAVE text conversion. Zero for an import.
+  uint64_t wave_nanos = 0;
 };
 
 /// Where a plugin's time has gone, split at the host/guest boundary.
@@ -309,6 +311,8 @@ struct PluginProfile {
   uint64_t guest_nanos = 0;
   uint64_t host_nanos = 0;
   uint64_t marshalling_nanos = 0;
+  /// Of that, WAVE text conversion. Every call through this API pays it.
+  uint64_t wave_nanos = 0;
   /// Exports first, then imports, each group sorted by name. Only the host
   /// functions watoots installed itself appear, so these do not add up to
   /// `host_nanos` -- the `wasi:` interfaces are in the bucket and not in the
@@ -367,6 +371,7 @@ class Plugin {
     profile.guest_nanos = totals.guest_nanos;
     profile.host_nanos = totals.host_nanos;
     profile.marshalling_nanos = totals.marshalling_nanos;
+    profile.wave_nanos = totals.wave_nanos;
     profile.functions.reserve(totals.function_count);
 
     for (uint64_t index = 0; index < totals.function_count; ++index) {
@@ -384,6 +389,7 @@ class Plugin {
           .guest_nanos = row.guest_nanos,
           .host_nanos = row.host_nanos,
           .marshalling_nanos = row.marshalling_nanos,
+          .wave_nanos = row.wave_nanos,
       });
     }
     return profile;

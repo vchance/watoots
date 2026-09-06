@@ -147,6 +147,13 @@ typedef struct wt_plugin_profile_t {
   uint64_t host_nanos;
   // What is left. A remainder, not a measurement.
   uint64_t marshalling_nanos;
+  // Of that, time turning WAVE text into values and back.
+  //
+  // Every call through this C API pays it — `wt_plugin_call` takes text, so
+  // there is no other path. Separate from `marshalling_nanos` because it is
+  // a separate decision: marshalling is what the component model costs, this
+  // is what the untyped path costs.
+  uint64_t wave_nanos;
   // How many rows [`wt_plugin_profile_function`] will serve.
   uint64_t function_count;
 } wt_plugin_profile_t;
@@ -177,6 +184,8 @@ typedef struct wt_function_profile_t {
   uint64_t host_nanos;
   // The remainder. Zero for an import.
   uint64_t marshalling_nanos;
+  // Of that, WAVE text conversion. Zero for an import.
+  uint64_t wave_nanos;
 } wt_function_profile_t;
 
 #ifdef __cplusplus

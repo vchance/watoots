@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use wasmtime::component::{Component, Linker, ResourceTable, Type, Val};
 use wasmtime::{Engine, GuestProfiler, Store, StoreLimits, StoreLimitsBuilder, UpdateDeadline};
@@ -597,16 +597,29 @@ impl Plugin {
             ));
         }
 
+        // Timed separately from the call itself. `Plugin::call` starts its
+        // clock inside itself, so parsing here and rendering below both fall
+        // outside it — which made a 177ms call report 52ms and charge the
+        // difference to marshalling, a bucket that had nothing to do with it.
+        let parsing = self.profiling.then(Instant::now);
         let values = args
             .iter()
             .zip(&params)
             .map(|(text, ty)| crate::wave::from_wave(ty, text))
             .collect::<Result<Vec<_>>>()?;
+        let parsed = parsing.map(|at| at.elapsed());
 
-        self.call(export, &values)?
-            .iter()
-            .map(crate::wave::to_wave)
-            .collect()
+        let results = self.call(export, &values)?;
+
+        let rendering = self.profiling.then(Instant::now);
+        let text: Result<Vec<String>> = results.iter().map(crate::wave::to_wave).collect();
+        if let Some(parsed) = parsed {
+            let spent = parsed + rendering.map_or(Duration::ZERO, |at| at.elapsed());
+            if let Some(profile) = self.store.data_mut().profile.as_mut() {
+                profile.add_wave(export, u64::try_from(spent.as_nanos()).unwrap_or(u64::MAX));
+            }
+        }
+        text
     }
 
     /// Separate "the plugin misbehaved" from "the plugin hit a ceiling", since

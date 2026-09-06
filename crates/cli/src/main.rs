@@ -526,6 +526,7 @@ fn render_profile(profile: &PluginProfile, stats: &PluginStats) -> String {
         ("guest", profile.guest_nanos),
         ("host call", profile.host_nanos),
         ("marshalling", profile.marshalling_nanos),
+        ("wave text", profile.wave_nanos),
     ] {
         let _ = writeln!(
             out,
@@ -588,11 +589,12 @@ fn render_row(row: &FunctionProfile) -> String {
     };
     match row.kind {
         FunctionKind::Export => format!(
-            "export  {name:<44} {:>6} call(s)  wall {:>12}  guest {:>12}  host {:>12}",
+            "export  {name:<44} {:>6} call(s)  wall {:>12}  guest {:>12}  host {:>12}  wave {:>12}",
             row.calls,
             duration(row.wall_nanos),
             duration(row.guest_nanos),
-            duration(row.host_nanos)
+            duration(row.host_nanos),
+            duration(row.wave_nanos)
         ),
         FunctionKind::Import => format!(
             "import  {name:<44} {:>6} call(s)  host {:>12}",
