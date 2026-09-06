@@ -107,6 +107,29 @@ pub enum Requirement {
 }
 
 impl Requirement {
+    /// Stable spelling, e.g. `"monotonic-clock"`.
+    ///
+    /// Not the manifest key: [`grant_key`](Requirement::grant_key) answers
+    /// "what would I edit", this answers "what is it". An audit line and the C
+    /// surface both need the second one, and neither can carry a `Debug`
+    /// rendering.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Ambient => "ambient",
+            Self::TypesOnly => "types-only",
+            Self::Filesystem => "filesystem",
+            Self::Network => "network",
+            Self::MonotonicClock => "monotonic-clock",
+            Self::WallClock => "wall-clock",
+            Self::Random => "random",
+            Self::Environment => "environment",
+            Self::Logging => "logging",
+            Self::HostProvided => "host-provided",
+            Self::Unrecognized => "unrecognized",
+        }
+    }
+
     /// The manifest key an operator would edit to grant this.
     #[must_use]
     pub fn grant_key(self) -> &'static str {

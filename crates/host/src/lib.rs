@@ -33,6 +33,7 @@
 
 #![warn(missing_docs)]
 
+pub mod audit;
 mod error;
 pub mod fuzz;
 mod host;
@@ -44,6 +45,7 @@ mod registry;
 pub mod trace;
 pub mod wave;
 
+pub use audit::{AuditEvent, AuditHook, Ceiling, Verdict};
 pub use error::{Error, ErrorKind, Result};
 pub use host::{Host, HostBuilder, HostCall, HostFunc, ImportedFunction, LogRecord, LogSink};
 pub use imports::{GrantReport, ImportDecision, Requirement};

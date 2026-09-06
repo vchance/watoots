@@ -43,6 +43,27 @@ them as data — never as a format string — and remember that whatever you for
 them to inherits the exposure. `limits.log_bytes` and `limits.log_messages` bound
 the volume; they say nothing about the content.
 
+**An audit trail you did not install.** watoots keeps no record of what it
+decided unless the embedding application registers an audit hook —
+`HostBuilder::audit_hook`, `wt_host_builder_audit_hook`,
+`wt::HostBuilder::AuditHook`. With no hook there is no file, no default sink and
+no ring buffer anywhere: a refused load, a log line dropped by the level
+ceiling, a spent `[limits]` ceiling and a refused reload are reported to the
+caller that asked and are then gone. That is deliberate — a library that writes
+to stderr uninvited is badly behaved, and the destination is the application's
+choice — but it means an incident can only be reconstructed from decisions
+somebody arranged to keep *before* it. Install one. `watoots run --audit` and
+its sibling subcommands do it for you at the command line. See
+[ADR-0011](adr/0011-audit-trail.md).
+
+Two things the trail is not. It carries **names and verdicts only**, never
+argument values or log message bodies, which is what makes an audit line safe to
+paste into an issue when a trace is not — so it will tell you that a plugin was
+not allowed to say something, and never what it was going to say. And it is
+**observed, not reported**: every event originates on the host side of the
+boundary at the point the decision is made, so a guest can cause an event and
+can neither suppress nor forge one.
+
 **A trustworthy cache directory.** `cache_dir` holds precompiled machine code
 that the engine loads without re-validating. Write access to it is equivalent to
 code execution in the host process. There is deliberately no default location —

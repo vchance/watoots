@@ -91,3 +91,53 @@ A guest can cause an event and can neither suppress nor forge one.
 - Suppressed log lines become visible for the first time. That is the point —
   "the plugin said nothing" and "the plugin was not allowed to say it" have
   been indistinguishable, and they mean opposite things.
+
+## Addendum — 2026-09-06, on implementation
+
+Five notes from building this. Left here rather than edited into the text
+above, following ADR-0006: what a decision got wrong is worth more than a tidy
+record of it.
+
+**The list of ceilings was short by two, and one of them is the important
+one.** This ADR named `limits.log_bytes`, `limits.transfer` and fuel.
+`limits.timeout` was missed and sits in the same `match` as fuel, so leaving it
+out would have been arbitrary. `limits.memory` was missed and is the case that
+most needed an event: a refused growth is not an error at all — the store
+limiter says no, `memory.grow` answers `-1`, and the call carries on — so
+"this plugin hit its memory ceiling" reached *nobody*, not even the caller.
+That is the same argument this ADR makes for suppressed log lines, applied to a
+ceiling, and it only became visible once the emit sites were written out. Six
+variants shipped.
+
+**A reload can be refused twice over, so the success event moved.** Every load
+comes through one function, reload included, which is what stops a second path
+being built without the grant check. But a reload is refused in two places: for
+an ungranted import, inside that function and knowing which import; and later
+for a state handoff that does not line up, after the replacement has already
+been compiled and granted. So the shared path emits only the *refusals*, and
+`Plugin::reload` emits the success itself, after the replacement has actually
+taken over. Emitting it where the replacement was built would have recorded
+reloads that then did not happen.
+
+**Off in the library, and a flag in the CLI.** "The CLI turns it on" was
+softened to `watoots run --audit` and its siblings. Every load-time event the
+trail carries is already the CLI's own output — `inspect` prints the grant list,
+a denial prints the deciding import — so default-on would mostly duplicate it,
+while the genuinely new events are per-call and land on stderr, which every
+existing script already reads. What the ADR was actually protecting is that the
+*destination* is not the application's to choose at a command line, and the CLI
+does choose it: stderr, because stdout carries the call's return value.
+
+**The trail cannot see WASI's own runtime refusals, and that is the real gap.**
+`net = []` grants the socket interfaces and `wasmtime-wasi` then refuses every
+connection; a filesystem call outside a preopen is refused the same way. Those
+are refusals in exactly this ADR's sense, and they happen inside
+`wasmtime-wasi`, which has no seam to hang a hook on. The trail therefore
+answers "what was this plugin *granted*" completely and "what was it *refused*"
+only for the decisions watoots makes itself. Worth stating plainly rather than
+letting a reader infer that an empty trail means an unhindered plugin.
+
+**Load-time events are emitted on reload too.** "Each import's verdict at load"
+reads as one moment; a reload re-runs the whole check, so the verdicts come
+again. Suppressing them would have made a reload the one place a capability
+decision is not written down.

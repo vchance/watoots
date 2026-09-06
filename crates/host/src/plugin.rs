@@ -10,7 +10,10 @@ use wasmtime::component::{Component, Linker, ResourceTable, Type, Val};
 use wasmtime::{Engine, GuestProfiler, Store, StoreLimits, StoreLimitsBuilder, UpdateDeadline};
 use wasmtime_wasi::{FsPerms, WasiCtx, WasiCtxView, WasiView};
 
-use crate::host::{HostFunc, LogRecord, LogSink, epoch_ticks, plugin_dir_var, read_component};
+use crate::audit::{AuditEvent, AuditHook, Ceiling};
+use crate::host::{
+    HostFunc, LoadKind, LogRecord, LogSink, epoch_ticks, plugin_dir_var, read_component, sha256_hex,
+};
 use crate::imports::GrantReport;
 use crate::manifest::{Limits, LogLevel, Manifest};
 use crate::profile::{Deadline, PluginProfile, ProfileState, Profiling};
@@ -82,6 +85,18 @@ struct State {
 struct MeteredLimits {
     inner: StoreLimits,
     peak_memory: usize,
+    /// The audit hook and the name to report under, or `None` when nobody is
+    /// listening — which is also why the name is not stored unconditionally.
+    audit: Option<AuditFor>,
+}
+
+/// An audit hook plus the plugin name to report it under.
+///
+/// The hook is handed a `&str`, and the places that emit inside a store — the
+/// limiter, the logging shim — do not otherwise have the plugin's name to hand.
+struct AuditFor {
+    hook: Arc<dyn AuditHook>,
+    plugin: String,
 }
 
 impl wasmtime::ResourceLimiter for MeteredLimits {
@@ -94,6 +109,15 @@ impl wasmtime::ResourceLimiter for MeteredLimits {
         let allowed = self.inner.memory_growing(current, desired, maximum)?;
         if allowed {
             self.peak_memory = self.peak_memory.max(desired);
+        } else if let Some(audit) = &self.audit {
+            // The only ceiling a plugin never sees as an error: a refused
+            // growth makes `memory.grow` return -1, so without this the fact
+            // that a plugin hit `limits.memory` reaches nobody at all. The
+            // refusal itself is the limiter's, unchanged.
+            audit.hook.on_event(&AuditEvent::CeilingSpent {
+                plugin: &audit.plugin,
+                limit: Ceiling::Memory,
+            });
         }
         Ok(allowed)
     }
@@ -227,27 +251,38 @@ impl LogBudget {
         self.messages_used = 0;
     }
 
-    /// Charge one message, or say why it does not fit.
+    /// Charge one message, or say which ceiling it does not fit under.
     ///
     /// Charged before the level ceiling filters, deliberately: what this bounds
     /// is the work the *host* does lifting a string out of guest memory, and
     /// that has already happened by the time we can read the level. Charging
     /// only what survives the filter would let `logging = "critical"` be a
     /// licence to push unbounded bytes across the boundary at `trace`.
-    fn charge(&mut self, bytes: u64) -> std::result::Result<(), String> {
+    ///
+    /// The failure names the [`Ceiling`] as well as explaining itself, because
+    /// the audit trail reports which limit was spent and the message is the
+    /// wrong thing to recover that from.
+    fn charge(&mut self, bytes: u64) -> std::result::Result<(), (Ceiling, String)> {
         self.messages_used = self.messages_used.saturating_add(1);
         self.bytes_used = self.bytes_used.saturating_add(bytes);
 
         if self.messages_used > self.messages_allowed {
-            return Err(format!(
-                "log message limit exceeded: {} message(s) in one call, limits.log_messages is {}",
-                self.messages_used, self.messages_allowed
+            return Err((
+                Ceiling::LogMessages,
+                format!(
+                    "log message limit exceeded: {} message(s) in one call, \
+                     limits.log_messages is {}",
+                    self.messages_used, self.messages_allowed
+                ),
             ));
         }
         if self.bytes_used > self.bytes_allowed {
-            return Err(format!(
-                "log volume limit exceeded: {} byte(s) in one call, limits.log_bytes is {}",
-                self.bytes_used, self.bytes_allowed
+            return Err((
+                Ceiling::LogBytes,
+                format!(
+                    "log volume limit exceeded: {} byte(s) in one call, limits.log_bytes is {}",
+                    self.bytes_used, self.bytes_allowed
+                ),
             ));
         }
         Ok(())
@@ -285,6 +320,7 @@ pub(crate) struct Wiring<'a> {
     pub manifest: &'a Manifest,
     pub host_funcs: &'a BTreeMap<String, BTreeMap<String, HostFunc>>,
     pub trace: Option<&'a Arc<dyn TraceHook>>,
+    pub audit: Option<&'a Arc<dyn AuditHook>>,
     pub log_sink: Option<&'a LogSink>,
     pub profiling: Option<Profiling>,
 }
@@ -300,6 +336,10 @@ pub struct Plugin {
     limits: Limits,
     report: GrantReport,
     trace: Option<Arc<dyn TraceHook>>,
+    /// Mirrors the host's. Kept here so the two decisions reached *after* a
+    /// plugin exists — a ceiling spent during a call, a reload refused — can be
+    /// reported from where they are made.
+    audit: Option<Arc<dyn AuditHook>>,
     /// Mirrors `State::profile.is_some()`, so the hot path in [`Plugin::call`]
     /// costs one bool rather than a store borrow.
     profiling: bool,
@@ -377,6 +417,10 @@ impl Plugin {
             limits: MeteredLimits {
                 inner: StoreLimitsBuilder::new().memory_size(memory).build(),
                 peak_memory: 0,
+                audit: wiring.audit.map(|hook| AuditFor {
+                    hook: Arc::clone(hook),
+                    plugin: name.to_string(),
+                }),
             },
             log: LogBudget::new(&manifest.limits),
             counters: Counters::default(),
@@ -427,6 +471,7 @@ impl Plugin {
             limits: manifest.limits.clone(),
             report,
             trace: wiring.trace.map(Arc::clone),
+            audit: wiring.audit.map(Arc::clone),
             profiling,
             host: host.clone(),
             vars,
@@ -543,22 +588,40 @@ impl Plugin {
     /// fallible, which is what keeps "the old instance survives" a property of
     /// the shape rather than of remembering to be careful.
     fn reload_with(&mut self, wasm: &[u8], vars: BTreeMap<String, String>) -> Result<ReloadReport> {
+        // Hashed here as well as inside `instantiate_plugin`, and only when a
+        // hook is installed: the reload's own verdict is reached after that
+        // function has returned, and "which bytes am I running now" is the whole
+        // point of recording a reload.
+        let digest = self
+            .audit
+            .as_ref()
+            .map_or_else(String::new, |_| sha256_hex(wasm));
+
         // 1. Build the replacement, through the same function `Host::load`
         //    uses: the same compile, the same import intersection, the same
         //    refusal. Reload has no load path of its own to forget a check in,
         //    and a check added to loading is a check reload gains for free.
         //
         //    First, deliberately: a reload refused for asking too much has then
-        //    not so much as called into the running plugin.
-        let mut fresh = self.host.instantiate_plugin(&self.name, wasm, vars)?;
+        //    not so much as called into the running plugin. That refusal is
+        //    reported from in there, where the deciding import is known.
+        let mut fresh = self
+            .host
+            .instantiate_plugin(&self.name, wasm, vars, LoadKind::Reload)?;
 
         // 2. Ask the outgoing instance for its state, if it has any to give.
-        let saved = self.save_state()?;
+        let saved = match self.save_state() {
+            Ok(saved) => saved,
+            Err(err) => return Err(self.audit_reload_refused(&digest, err)),
+        };
 
         // 3. Hand it to the replacement, if the replacement takes it.
         let state_restored = match &saved {
             None => false,
-            Some(state) => fresh.restore_state(state)?,
+            Some(state) => match fresh.restore_state(state) {
+                Ok(restored) => restored,
+                Err(err) => return Err(self.audit_reload_refused(&digest, err)),
+            },
         };
 
         // 4. Nothing after this line can fail.
@@ -566,11 +629,37 @@ impl Plugin {
         let reloads = fresh.store.data().counters.reloads;
         *self = fresh;
 
+        // Said here rather than where the replacement was built, because until
+        // this point the reload could still have been sent back.
+        if let Some(hook) = &self.audit {
+            hook.on_event(&AuditEvent::Reloaded {
+                plugin: &self.name,
+                sha256: &digest,
+                reloads,
+            });
+        }
+
         Ok(ReloadReport {
             state_saved: saved.is_some(),
             state_restored,
             reloads,
         })
+    }
+
+    /// Report a reload refused *after* the replacement had already been built
+    /// and granted — a trap in `save-state`, or a state type that does not line
+    /// up. No import decided these, so none is named.
+    fn audit_reload_refused(&self, sha256: &str, err: Error) -> Error {
+        if let Some(hook) = &self.audit {
+            hook.on_event(&AuditEvent::ReloadRefused {
+                plugin: &self.name,
+                sha256,
+                import: None,
+                requirement: None,
+                reason: err.message(),
+            });
+        }
+        err
     }
 
     /// Call `save-state`, or report that there is none to call.
@@ -939,18 +1028,31 @@ impl Plugin {
     /// than raise an error, so a memory ceiling is only ever reported here via
     /// a trap; there is nothing extra to match on.
     fn classify_call_error(&self, export: &str, err: &wasmtime::Error) -> Error {
-        let kind = if err.downcast_ref::<LogVolumeExceeded>().is_some()
-            || exhausted_transfer_budget(err)
-        {
-            ErrorKind::LimitExceeded
+        // The same match answers both questions, so the audit trail cannot come
+        // to a different conclusion about a ceiling than the error does. The log
+        // budgets are the exception: the shim has already reported which of the
+        // two was spent, and it is the only thing that knows.
+        let (kind, ceiling) = if err.downcast_ref::<LogVolumeExceeded>().is_some() {
+            (ErrorKind::LimitExceeded, None)
+        } else if exhausted_transfer_budget(err) {
+            (ErrorKind::LimitExceeded, Some(Ceiling::Transfer))
         } else {
             match err.downcast_ref::<wasmtime::Trap>() {
-                Some(wasmtime::Trap::OutOfFuel | wasmtime::Trap::Interrupt) => {
-                    ErrorKind::LimitExceeded
+                Some(wasmtime::Trap::OutOfFuel) => (ErrorKind::LimitExceeded, Some(Ceiling::Fuel)),
+                Some(wasmtime::Trap::Interrupt) => {
+                    (ErrorKind::LimitExceeded, Some(Ceiling::Timeout))
                 }
-                _ => ErrorKind::Trap,
+                _ => (ErrorKind::Trap, None),
             }
         };
+
+        if let (Some(hook), Some(limit)) = (&self.audit, ceiling) {
+            hook.on_event(&AuditEvent::CeilingSpent {
+                plugin: &self.name,
+                limit,
+            });
+        }
+
         Error::new(
             kind,
             format!("{}: {export}: {}\n{err}", self.name, err.root_cause()),
@@ -993,6 +1095,7 @@ fn install_logging(linker: &mut Linker<State>, plugin: &str, wiring: &Wiring<'_>
     for interface in [LOGGING_VERSIONED, LOGGING_UNVERSIONED] {
         let sink = wiring.log_sink.map(Arc::clone);
         let trace = wiring.trace.map(Arc::clone);
+        let audit = wiring.audit.map(Arc::clone);
         let owned_plugin = plugin.to_string();
 
         let mut instance = linker.instance(interface).map_err(|err| {
@@ -1026,6 +1129,7 @@ fn install_logging(linker: &mut Linker<State>, plugin: &str, wiring: &Wiring<'_>
                     store.data_mut(),
                     ceiling,
                     sink.as_ref(),
+                    audit.as_ref(),
                     &owned_plugin,
                     params,
                 );
@@ -1065,10 +1169,17 @@ fn install_logging(linker: &mut Linker<State>, plugin: &str, wiring: &Wiring<'_>
 }
 
 /// Charge one `log` call against the budget, filter it, and hand it on.
+///
+/// Every branch out of here is an audit event, and none of them carries the
+/// message. That is the constraint ADR-0011 is built around: "the plugin said
+/// nothing" and "the plugin was not allowed to say it" mean opposite things and
+/// have until now been indistinguishable — but a line kept for an incident must
+/// be one you can paste into an issue, and the guest's text is not.
 fn deliver_log(
     state: &mut State,
     ceiling: LogLevel,
     sink: Option<&LogSink>,
+    audit: Option<&Arc<dyn AuditHook>>,
     plugin: &str,
     params: &[Val],
 ) -> Result<()> {
@@ -1085,21 +1196,43 @@ fn deliver_log(
     };
 
     let bytes = (context.len() as u64).saturating_add(message.len() as u64);
-    state
-        .log
-        .charge(bytes)
-        .map_err(|why| Error::new(ErrorKind::LimitExceeded, format!("{plugin}: {why}")))?;
+    state.log.charge(bytes).map_err(|(limit, why)| {
+        if let Some(hook) = audit {
+            hook.on_event(&AuditEvent::CeilingSpent { plugin, limit });
+        }
+        Error::new(ErrorKind::LimitExceeded, format!("{plugin}: {why}"))
+    })?;
 
     let Some(level) = LogLevel::from_wit_name(level) else {
         // A case this build does not know cannot be compared against the
         // ceiling, so it cannot be shown to satisfy it. Drop rather than
         // deliver: the manifest's ceiling has to hold across a revision of a
         // Phase 1 proposal that adds a case.
+        if let Some(hook) = audit {
+            hook.on_event(&AuditEvent::LogSuppressed {
+                plugin,
+                level: None,
+                ceiling,
+            });
+        }
         return Ok(());
     };
 
     if level < ceiling {
+        if let Some(hook) = audit {
+            hook.on_event(&AuditEvent::LogSuppressed {
+                plugin,
+                level: Some(level),
+                ceiling,
+            });
+        }
         return Ok(());
+    }
+
+    // Admitted by the manifest, which is the decision. Whether it then reaches
+    // anybody is a separate question: a grant with no sink links and discards.
+    if let Some(hook) = audit {
+        hook.on_event(&AuditEvent::LogAdmitted { plugin, level });
     }
 
     if let Some(sink) = sink {

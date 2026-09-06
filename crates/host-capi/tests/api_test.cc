@@ -4,6 +4,7 @@
 // Rust staticlib, so it is the test that says the boundary actually works
 // rather than merely compiles.
 
+#include <algorithm>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -707,4 +708,152 @@ TEST(CApi, AZeroSampleIntervalIsRejected) {
   auto refused = builder.ProfileGuestSamples(0);
   ASSERT_FALSE(refused.has_value());
   EXPECT_EQ(refused.error().Code(), WT_ERR_INVALID_ARGUMENT);
+}
+
+// ---------------------------------------------------------------------------
+// The audit trail (ADR-0011)
+// ---------------------------------------------------------------------------
+
+TEST(CApi, AnAuditHookSeesADenialAndNamesTheImport) {
+  std::vector<wt::AuditEvent> trail;
+
+  wt::HostBuilder builder;
+  ASSERT_TRUE(builder.ManifestFromString("").has_value());
+  ASSERT_TRUE(builder
+                  .AuditHook([&trail](const wt::AuditEvent& event) {
+                    trail.push_back(event);
+                  })
+                  .has_value());
+  auto host = builder.Build();
+  ASSERT_TRUE(host.has_value()) << host.error().Message();
+
+  const std::string wasm = kWantsNetwork;
+  auto plugin = host->LoadBinary("net", AsBytes(wasm));
+  ASSERT_FALSE(plugin.has_value());
+
+  // The verdict, then the refusal it explains.
+  ASSERT_EQ(trail.size(), 2U);
+  const wt::AuditEvent& verdict = trail.front();
+  EXPECT_EQ(verdict.kind, WT_AUDIT_IMPORT);
+  EXPECT_EQ(verdict.verdict, WT_AUDIT_DENIED);
+  EXPECT_EQ(verdict.import_name, "wasi:sockets/tcp@0.2.6");
+  EXPECT_EQ(verdict.requirement, "network");
+
+  // The event someone reads after an incident: not "a load was refused" but
+  // which import refused it, and the key an operator would edit.
+  const wt::AuditEvent& refusal = trail.back();
+  EXPECT_EQ(refusal.kind, WT_AUDIT_LOAD_REFUSED);
+  EXPECT_EQ(refusal.plugin, "net");
+  EXPECT_EQ(refusal.import_name, "wasi:sockets/tcp@0.2.6");
+  EXPECT_EQ(refusal.grant_key, "permissions.net");
+  EXPECT_EQ(refusal.sha256.size(), 64U);
+  EXPECT_NE(refusal.line.find("import=wasi:sockets/tcp@0.2.6"),
+            std::string::npos)
+      << refusal.line;
+}
+
+TEST(CApi, ASuppressedLogLineIsRecordedWithoutItsMessage) {
+  std::vector<wt::AuditEvent> trail;
+
+  wt::HostBuilder builder;
+  ASSERT_TRUE(
+      builder.ManifestFromString("[permissions]\nlogging = \"critical\"\n")
+          .has_value());
+  ASSERT_TRUE(builder
+                  .AuditHook([&trail](const wt::AuditEvent& event) {
+                    trail.push_back(event);
+                  })
+                  .has_value());
+  ASSERT_TRUE(builder
+                  .LogSink([](wt_log_level, std::string_view,
+                              std::string_view) { FAIL(); })
+                  .has_value());
+  auto host = builder.Build();
+  ASSERT_TRUE(host.has_value()) << host.error().Message();
+
+  const std::string wasm = kLogsOnce;
+  auto plugin = host->LoadBinary("talker", AsBytes(wasm));
+  ASSERT_TRUE(plugin.has_value()) << plugin.error().Message();
+  auto result = plugin->Call("run");
+  ASSERT_TRUE(result.has_value()) << result.error().Message();
+
+  const auto suppressed =
+      std::ranges::find_if(trail, [](const wt::AuditEvent& event) {
+        return event.kind == WT_AUDIT_LOG_SUPPRESSED;
+      });
+  ASSERT_NE(suppressed, trail.end());
+  EXPECT_TRUE(suppressed->level_known);
+  EXPECT_EQ(suppressed->level, WT_LOG_WARN);
+  EXPECT_EQ(suppressed->ceiling_level, WT_LOG_CRITICAL);
+
+  // The constraint the whole hook is built around. `kLogsOnce` logs the context
+  // "boot" and the message "config is malformed"; an audit record has to be
+  // safe to keep and to paste into an issue, so neither may be anywhere in it.
+  for (const wt::AuditEvent& event : trail) {
+    for (const std::string& field :
+         {event.line, event.plugin, event.sha256, event.import_name,
+          event.requirement, event.grant_key, event.reason, event.limit_key}) {
+      EXPECT_EQ(field.find("config is malformed"), std::string::npos) << field;
+      EXPECT_EQ(field.find("boot"), std::string::npos) << field;
+    }
+  }
+}
+
+TEST(CApi, AuditNamesAreStableAndMatchTheRenderedLine) {
+  EXPECT_STREQ(wt_audit_kind_name(WT_AUDIT_LOG_SUPPRESSED), "log-suppressed");
+  EXPECT_STREQ(wt_audit_verdict_name(WT_AUDIT_HOST_PROVIDED), "host-provided");
+  EXPECT_STREQ(wt_ceiling_name(WT_CEILING_LOG_BYTES), "limits.log_bytes");
+
+  std::vector<wt::AuditEvent> trail;
+  wt::HostBuilder builder;
+  ASSERT_TRUE(builder.ManifestFromString("").has_value());
+  ASSERT_TRUE(builder
+                  .AuditHook([&trail](const wt::AuditEvent& event) {
+                    trail.push_back(event);
+                  })
+                  .has_value());
+  auto host = builder.Build();
+  ASSERT_TRUE(host.has_value()) << host.error().Message();
+
+  const std::string wasm = kSelfContained;
+  auto plugin = host->LoadBinary("answer", AsBytes(wasm));
+  ASSERT_TRUE(plugin.has_value()) << plugin.error().Message();
+
+  ASSERT_EQ(trail.size(), 1U);
+  const wt::AuditEvent& loaded = trail.front();
+  EXPECT_EQ(loaded.kind, WT_AUDIT_LOADED);
+  EXPECT_EQ(loaded.imports, 0U);
+  // A log written from the structured fields and one written from the line have
+  // to agree about what happened.
+  EXPECT_EQ(loaded.line.rfind(wt_audit_kind_name(loaded.kind), 0), 0U)
+      << loaded.line;
+}
+
+TEST(CApi, ANullAuditHookIsRejected) {
+  wt_error_t* error = nullptr;
+  const wt_status status =
+      wt_host_builder_audit_hook(nullptr, nullptr, nullptr, &error);
+  EXPECT_EQ(status, WT_ERR_INVALID_ARGUMENT);
+  wt_error_delete(error);
+}
+
+TEST(CApi, NoAuditHookMeansNoAuditTrailAndNoBehaviourChange) {
+  // The claim `docs/SECURITY.md` makes out loud: an application that installs
+  // no hook gets no audit trail. What it must not get is different behaviour.
+  wt::HostBuilder builder;
+  ASSERT_TRUE(builder.ManifestFromString("").has_value());
+  auto host = builder.Build();
+  ASSERT_TRUE(host.has_value()) << host.error().Message();
+
+  const std::string wasm = kSelfContained;
+  auto plugin = host->LoadBinary("answer", AsBytes(wasm));
+  ASSERT_TRUE(plugin.has_value()) << plugin.error().Message();
+  auto result = plugin->Call("answer");
+  ASSERT_TRUE(result.has_value()) << result.error().Message();
+  // value_or rather than value, for the reason given in
+  // LoadsAndCallsAComponent: the fatal assert is not proof of engagement to
+  // bugprone-unchecked-optional-access.
+  const std::optional<std::string>& returned = *result;
+  ASSERT_TRUE(returned.has_value());
+  EXPECT_EQ(returned.value_or(""), "42");
 }

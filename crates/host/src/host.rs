@@ -14,7 +14,8 @@ use wasmtime::component::types::ComponentItem;
 use wasmtime::component::{Component, Type, Val};
 use wasmtime::{Config, Engine};
 
-use crate::imports::{self, GrantReport};
+use crate::audit::{AuditEvent, AuditHook, Verdict};
+use crate::imports::{self, GrantReport, ImportDecision};
 use crate::manifest::{LogLevel, Manifest};
 use crate::plugin::{Plugin, Wiring};
 use crate::profile::Profiling;
@@ -142,10 +143,26 @@ struct HostInner {
     vars: BTreeMap<String, String>,
     cache_dir: Option<PathBuf>,
     trace: Option<Arc<dyn TraceHook>>,
+    audit: Option<Arc<dyn AuditHook>>,
     log_sink: Option<LogSink>,
     profiling: Option<Profiling>,
     /// Kept alive for as long as the host is; dropping it stops the thread.
     _ticker: Option<EpochTicker>,
+}
+
+/// Whether bytes are arriving as a new plugin or as a replacement for one.
+///
+/// [`Host::instantiate_plugin`] is the single path from bytes to a running
+/// plugin, so a reload comes through it too — and the two are different
+/// decisions to an auditor. This is the only thing that distinguishes them; it
+/// changes nothing about what is checked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LoadKind {
+    /// A plugin that was not running before.
+    Load,
+    /// New bytes for a plugin that is. The success event is emitted by
+    /// [`Plugin::reload`], once the replacement has actually taken over.
+    Reload,
 }
 
 impl Host {
@@ -309,7 +326,7 @@ impl Host {
             || path.display().to_string(),
             |s| s.to_string_lossy().into(),
         );
-        self.instantiate_plugin(&name, &wasm, plugin_dir_var(path))
+        self.instantiate_plugin(&name, &wasm, plugin_dir_var(path), LoadKind::Load)
     }
 
     /// Load a component already in memory.
@@ -317,7 +334,7 @@ impl Host {
     /// `${plugin_dir}` is not defined for this path — there is no directory to
     /// point it at — so a manifest using it must be loaded with [`Host::load`].
     pub fn load_binary(&self, name: &str, wasm: &[u8]) -> Result<Plugin> {
-        self.instantiate_plugin(name, wasm, BTreeMap::new())
+        self.instantiate_plugin(name, wasm, BTreeMap::new(), LoadKind::Load)
     }
 
     /// Compile, check against the manifest, and instantiate.
@@ -328,18 +345,72 @@ impl Host {
     /// `extra_vars` are the per-load substitutions — `${plugin_dir}` today —
     /// layered on top of the builder's; a plugin keeps them so a reload
     /// resolves its manifest exactly as the original load did.
+    ///
+    /// This is also where the audit trail's load-time half is emitted. Every
+    /// event here *reports* a verdict this function had already reached; none of
+    /// them is reached in order to be reported. Nothing is computed at all
+    /// unless a hook is installed, the component's digest included.
     pub(crate) fn instantiate_plugin(
         &self,
         name: &str,
         wasm: &[u8],
         extra_vars: BTreeMap<String, String>,
+        kind: LoadKind,
     ) -> Result<Plugin> {
-        let component = self.compile(wasm)?;
+        let audit = self.inner.audit.as_ref();
+        // "From what bytes" is the question a plugin's name cannot answer, and
+        // the one an incident opens with. Hashed only when someone is listening:
+        // a pass over the component is not free, and a host with no hook must
+        // not pay for a trail it will never read.
+        let digest = audit.map_or_else(String::new, |_| sha256_hex(wasm));
+
+        // Every failure path below goes through here, so a refusal cannot be
+        // added without an event. `import` is `Some` only for the one refusal
+        // that has a deciding import — which is the event someone reads after
+        // an incident, so it carries the name rather than only the message.
+        let refused = |import: Option<&ImportDecision>, err: Error| -> Error {
+            if let Some(hook) = audit {
+                let (import_name, requirement) = import.map_or((None, None), |decision| {
+                    (Some(decision.import.as_str()), Some(decision.requirement))
+                });
+                hook.on_event(&match kind {
+                    LoadKind::Load => AuditEvent::LoadRefused {
+                        plugin: name,
+                        sha256: &digest,
+                        import: import_name,
+                        requirement,
+                        reason: err.message(),
+                    },
+                    LoadKind::Reload => AuditEvent::ReloadRefused {
+                        plugin: name,
+                        sha256: &digest,
+                        import: import_name,
+                        requirement,
+                        reason: err.message(),
+                    },
+                });
+            }
+            err
+        };
+
+        let component = self.compile(wasm).map_err(|err| refused(None, err))?;
 
         let report = self.report_for(&component);
+        // Before the verdict, so a refusal arrives already explained.
+        if let Some(hook) = audit {
+            for decision in &report.decisions {
+                hook.on_event(&AuditEvent::ImportDecided {
+                    plugin: name,
+                    import: &decision.import,
+                    requirement: decision.requirement,
+                    verdict: Verdict::of(decision),
+                });
+            }
+        }
+
         if !report.is_satisfied() {
             let denied: Vec<&str> = report.denied().map(|d| d.import.as_str()).collect();
-            return Err(Error::new(
+            let err = Error::new(
                 ErrorKind::PermissionDenied,
                 format!(
                     "{name}: {} import(s) not granted by the manifest: {}\n{}",
@@ -347,7 +418,8 @@ impl Host {
                     denied.join(", "),
                     report.describe()
                 ),
-            ));
+            );
+            return Err(refused(report.denied().next(), err));
         }
 
         let mut vars = self.inner.vars.clone();
@@ -358,16 +430,33 @@ impl Host {
         );
 
         let mut manifest = self.inner.manifest.clone();
-        manifest.substitute(&vars)?;
+        manifest
+            .substitute(&vars)
+            .map_err(|err| refused(None, err))?;
 
         let wiring = Wiring {
             manifest: &manifest,
             host_funcs: &self.inner.host_funcs,
             trace: self.inner.trace.as_ref(),
+            audit,
             log_sink: self.inner.log_sink.as_ref(),
             profiling: self.inner.profiling,
         };
-        Plugin::instantiate(name, self, &component, &wiring, report, extra_vars)
+        let imports = report.decisions.len();
+        let plugin = Plugin::instantiate(name, self, &component, &wiring, report, extra_vars)
+            .map_err(|err| refused(None, err))?;
+
+        // A reload has not happened yet: the replacement still has to take the
+        // outgoing instance's state, and can still be sent back. `Plugin::reload`
+        // says so once it has actually taken over.
+        if let (Some(hook), LoadKind::Load) = (audit, kind) {
+            hook.on_event(&AuditEvent::Loaded {
+                plugin: name,
+                sha256: &digest,
+                imports,
+            });
+        }
+        Ok(plugin)
     }
 
     /// Compile a component, going through the precompile cache when one is set.
@@ -460,6 +549,7 @@ impl fmt::Debug for Host {
             .field("vars", &self.inner.vars)
             .field("cache_dir", &self.inner.cache_dir)
             .field("tracing", &self.inner.trace.is_some())
+            .field("auditing", &self.inner.audit.is_some())
             .field("log_sink", &self.inner.log_sink.is_some())
             .field("profiling", &self.inner.profiling)
             .finish_non_exhaustive()
@@ -484,6 +574,7 @@ pub struct HostBuilder {
     vars: BTreeMap<String, String>,
     cache_dir: Option<PathBuf>,
     trace: Option<Arc<dyn TraceHook>>,
+    audit: Option<Arc<dyn AuditHook>>,
     log_sink: Option<LogSink>,
     profiling: Option<Profiling>,
 }
@@ -568,6 +659,28 @@ impl HostBuilder {
     #[must_use]
     pub fn trace_hook(mut self, hook: Arc<dyn TraceHook>) -> Self {
         self.trace = Some(hook);
+        self
+    }
+
+    /// Observe every authorisation decision: what a plugin was permitted to do,
+    /// and what it was refused.
+    ///
+    /// The sibling of [`HostBuilder::trace_hook`] and deliberately not the same
+    /// hook. A trace answers *what happened* and carries the argument values to
+    /// prove it; this answers *what was allowed* and carries names and verdicts
+    /// only, which is what makes an audit line safe to keep and to paste into an
+    /// issue. See [`AuditEvent`](crate::AuditEvent) and ADR-0011.
+    ///
+    /// **Off unless you call this.** An application with no hook installed gets
+    /// no audit trail — not a default one written somewhere. A library that
+    /// wrote to stderr uninvited would be badly behaved, and your logging system
+    /// is better than the one we would ship.
+    ///
+    /// Setting a hook twice replaces the first; there is one, and watoots does
+    /// no fan-out.
+    #[must_use]
+    pub fn audit_hook(mut self, hook: Arc<dyn AuditHook>) -> Self {
+        self.audit = Some(hook);
         self
     }
 
@@ -696,6 +809,7 @@ impl HostBuilder {
                 vars: self.vars,
                 cache_dir: self.cache_dir,
                 trace: self.trace,
+                audit: self.audit,
                 log_sink: self.log_sink,
                 profiling: self.profiling,
                 _ticker: ticker,
@@ -769,6 +883,17 @@ impl Hasher for Sha256Hasher {
         let digest = self.0.clone().finalize();
         u64::from_le_bytes(digest[..8].try_into().expect("sha256 is 32 bytes"))
     }
+}
+
+/// SHA-256 of a component, lowercase hex.
+///
+/// The same digest `watoots_trace::Trace::hash_component` writes into a trace
+/// header, so an audit line and a recording name the same bytes the same way.
+/// Only ever called when an audit hook is installed.
+pub(crate) fn sha256_hex(wasm: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(wasm);
+    hex(&hasher.finalize())
 }
 
 fn hex(bytes: &[u8]) -> String {

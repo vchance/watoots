@@ -29,8 +29,8 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::ptr;
 
 use watoots::{
-    Error, ErrorKind, FunctionKind, FunctionProfile, Host, HostBuilder, HostCall, LogLevel,
-    LogRecord, Manifest, Plugin, Val,
+    AuditEvent, AuditHook, Ceiling, Error, ErrorKind, FunctionKind, FunctionProfile, Host,
+    HostBuilder, HostCall, LogLevel, LogRecord, Manifest, Plugin, Requirement, Val, Verdict,
 };
 
 /// Status codes. Zero is success.
@@ -90,6 +90,173 @@ impl From<LogLevel> for wt_log_level {
         }
     }
 }
+
+/// Which authorisation decision an audit event describes.
+///
+/// The values are stable. A new decision is appended rather than inserted, for
+/// the same reason [`wt_status`]'s are fixed: a C host switching on this must
+/// not have its arms silently re-point.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum wt_audit_kind {
+    /// A plugin was compiled, granted and instantiated.
+    WT_AUDIT_LOADED = 0,
+    /// A load was refused; the plugin never ran.
+    WT_AUDIT_LOAD_REFUSED = 1,
+    /// One import's verdict, as the grant check resolved it.
+    WT_AUDIT_IMPORT = 2,
+    /// A plugin's code was replaced.
+    WT_AUDIT_RELOADED = 3,
+    /// A reload was refused; the plugin is still running its old code.
+    WT_AUDIT_RELOAD_REFUSED = 4,
+    /// A `wasi:logging` line passed the manifest's level ceiling.
+    WT_AUDIT_LOG_ADMITTED = 5,
+    /// A `wasi:logging` line was dropped by it.
+    WT_AUDIT_LOG_SUPPRESSED = 6,
+    /// A `[limits]` ceiling was spent.
+    WT_AUDIT_CEILING_SPENT = 7,
+}
+
+/// How one import resolved at load.
+///
+/// Three of the four read as "allowed", and only `WT_AUDIT_GRANTED` is a
+/// capability the manifest handed out.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum wt_audit_verdict {
+    /// The manifest covers it, or it is WASI plumbing that needs no grant.
+    WT_AUDIT_GRANTED = 0,
+    /// The manifest does not, so the load is refused.
+    WT_AUDIT_DENIED = 1,
+    /// The application declared it serves this interface itself.
+    WT_AUDIT_HOST_PROVIDED = 2,
+    /// Imported only for its types: nothing there is callable.
+    WT_AUDIT_TYPES_ONLY = 3,
+}
+
+impl From<Verdict> for wt_audit_verdict {
+    fn from(verdict: Verdict) -> Self {
+        match verdict {
+            Verdict::Granted => Self::WT_AUDIT_GRANTED,
+            Verdict::Denied => Self::WT_AUDIT_DENIED,
+            Verdict::HostProvided => Self::WT_AUDIT_HOST_PROVIDED,
+            Verdict::TypesOnly => Self::WT_AUDIT_TYPES_ONLY,
+        }
+    }
+}
+
+/// Which `[limits]` ceiling was spent.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum wt_ceiling {
+    /// `limits.fuel`.
+    WT_CEILING_FUEL = 0,
+    /// `limits.timeout`.
+    WT_CEILING_TIMEOUT = 1,
+    /// `limits.memory`. The only one a plugin never sees as an error: a refused
+    /// growth makes `memory.grow` answer -1 and the call carries on.
+    WT_CEILING_MEMORY = 2,
+    /// `limits.transfer`.
+    WT_CEILING_TRANSFER = 3,
+    /// `limits.log_bytes`.
+    WT_CEILING_LOG_BYTES = 4,
+    /// `limits.log_messages`.
+    WT_CEILING_LOG_MESSAGES = 5,
+}
+
+impl From<Ceiling> for wt_ceiling {
+    fn from(ceiling: Ceiling) -> Self {
+        match ceiling {
+            Ceiling::Fuel => Self::WT_CEILING_FUEL,
+            Ceiling::Timeout => Self::WT_CEILING_TIMEOUT,
+            Ceiling::Memory => Self::WT_CEILING_MEMORY,
+            Ceiling::Transfer => Self::WT_CEILING_TRANSFER,
+            Ceiling::LogBytes => Self::WT_CEILING_LOG_BYTES,
+            Ceiling::LogMessages => Self::WT_CEILING_LOG_MESSAGES,
+        }
+    }
+}
+
+/// One authorisation decision, as structured fields.
+///
+/// Every string is NUL-terminated and **borrowed for the duration of the
+/// callback** — copy what you keep. A field that does not apply to this event's
+/// `kind` is NULL for a string, and unspecified for a number or an enum: read
+/// the `kind` first. The field list below says which kinds set what.
+///
+/// **No field here carries an argument value or a log message body.** That is
+/// the whole reason this is not a `wt_trace_event_t`: an audit line has to be
+/// safe to keep and to paste into an issue, and a trace is the thing that is
+/// not. See ADR-0011.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+#[allow(non_camel_case_types)]
+pub struct wt_audit_event_t {
+    /// Which decision this is. Read it before anything else.
+    pub kind: wt_audit_kind,
+    /// The plugin the decision is about. Never NULL.
+    pub plugin: *const c_char,
+    /// SHA-256 of the component bytes, lowercase hex. Set for the load and
+    /// reload kinds, NULL otherwise. The same digest a recorded trace names its
+    /// component by.
+    pub sha256: *const c_char,
+    /// The import this decision is about, exactly as the component declares it.
+    /// Always set for `WT_AUDIT_IMPORT`; set on a refusal when an import decided
+    /// it, and NULL on a refusal that no import decided.
+    pub import: *const c_char,
+    /// What that import needs, e.g. `"network"`. NULL when `import` is.
+    pub requirement: *const c_char,
+    /// The manifest key an operator would edit for it, e.g.
+    /// `"permissions.net"`. NULL when `import` is.
+    pub grant_key: *const c_char,
+    /// Why a load or reload was refused. NULL for every other kind. May contain
+    /// newlines; the rendered line passed alongside carries only the first.
+    pub reason: *const c_char,
+    /// The manifest key of the ceiling that was spent, e.g. `"limits.fuel"`.
+    /// NULL unless `kind` is `WT_AUDIT_CEILING_SPENT`.
+    pub limit_key: *const c_char,
+    /// How the import resolved. `WT_AUDIT_IMPORT` only.
+    pub verdict: wt_audit_verdict,
+    /// Which ceiling. `WT_AUDIT_CEILING_SPENT` only.
+    pub ceiling: wt_ceiling,
+    /// The level the plugin logged at. The log kinds only, and only when
+    /// `level_known`.
+    pub level: wt_log_level,
+    /// False when the guest named a `level` case this build does not define,
+    /// which is dropped rather than delivered so a manifest's ceiling holds
+    /// across a revision of the proposal. The log kinds only.
+    pub level_known: bool,
+    /// The manifest's level ceiling, which is what dropped the line.
+    /// `WT_AUDIT_LOG_SUPPRESSED` only.
+    pub ceiling_level: wt_log_level,
+    /// How many imports the component declares. `WT_AUDIT_LOADED` only.
+    pub imports: u64,
+    /// Reloads this plugin has survived, this one included.
+    /// `WT_AUDIT_RELOADED` only.
+    pub reloads: u64,
+}
+
+/// Observes every authorisation decision the host makes.
+///
+/// `line` is the whole event rendered as one line — what a C host forwards to
+/// its own logger without unpacking anything. `event` is the same decision as
+/// structured fields, for a host that wants to match on it. Both are borrowed
+/// for the duration of the call, and so is everything `event` points at.
+///
+/// **Nothing is installed by default.** An application that never calls
+/// [`wt_host_builder_audit_hook`] gets no audit trail; see `docs/SECURITY.md`.
+///
+/// Returns nothing: a decision has already been made by the time it is
+/// reported, and there is nothing here for a hook to veto. It must be safe to
+/// use from any thread and must not throw — watoots does not serialise calls
+/// into it, and unwinding across the boundary is undefined behaviour.
+pub type wt_audit_hook_t = Option<
+    unsafe extern "C" fn(
+        userdata: *mut c_void,
+        line: *const c_char,
+        event: *const wt_audit_event_t,
+    ),
+>;
 
 /// An error: a status code and a message.
 pub struct wt_error_t {
@@ -250,6 +417,51 @@ pub extern "C" fn wt_log_level_name(level: wt_log_level) -> *const c_char {
         wt_log_level::WT_LOG_WARN => c"warn",
         wt_log_level::WT_LOG_ERROR => c"error",
         wt_log_level::WT_LOG_CRITICAL => c"critical",
+    }
+    .as_ptr()
+}
+
+/// Stable spelling of an audit decision, e.g. `"log-suppressed"`. Never NULL.
+///
+/// The same word that leads the rendered line, so a log written from the
+/// structured fields and one written from the line agree.
+#[unsafe(no_mangle)]
+pub extern "C" fn wt_audit_kind_name(kind: wt_audit_kind) -> *const c_char {
+    match kind {
+        wt_audit_kind::WT_AUDIT_LOADED => c"loaded",
+        wt_audit_kind::WT_AUDIT_LOAD_REFUSED => c"load-refused",
+        wt_audit_kind::WT_AUDIT_IMPORT => c"import",
+        wt_audit_kind::WT_AUDIT_RELOADED => c"reloaded",
+        wt_audit_kind::WT_AUDIT_RELOAD_REFUSED => c"reload-refused",
+        wt_audit_kind::WT_AUDIT_LOG_ADMITTED => c"log-admitted",
+        wt_audit_kind::WT_AUDIT_LOG_SUPPRESSED => c"log-suppressed",
+        wt_audit_kind::WT_AUDIT_CEILING_SPENT => c"ceiling-spent",
+    }
+    .as_ptr()
+}
+
+/// Stable spelling of an import verdict, e.g. `"host-provided"`. Never NULL.
+#[unsafe(no_mangle)]
+pub extern "C" fn wt_audit_verdict_name(verdict: wt_audit_verdict) -> *const c_char {
+    match verdict {
+        wt_audit_verdict::WT_AUDIT_GRANTED => c"granted",
+        wt_audit_verdict::WT_AUDIT_DENIED => c"denied",
+        wt_audit_verdict::WT_AUDIT_HOST_PROVIDED => c"host-provided",
+        wt_audit_verdict::WT_AUDIT_TYPES_ONLY => c"types-only",
+    }
+    .as_ptr()
+}
+
+/// The manifest key a ceiling is set by, e.g. `"limits.fuel"`. Never NULL.
+#[unsafe(no_mangle)]
+pub extern "C" fn wt_ceiling_name(ceiling: wt_ceiling) -> *const c_char {
+    match ceiling {
+        wt_ceiling::WT_CEILING_FUEL => c"limits.fuel",
+        wt_ceiling::WT_CEILING_TIMEOUT => c"limits.timeout",
+        wt_ceiling::WT_CEILING_MEMORY => c"limits.memory",
+        wt_ceiling::WT_CEILING_TRANSFER => c"limits.transfer",
+        wt_ceiling::WT_CEILING_LOG_BYTES => c"limits.log_bytes",
+        wt_ceiling::WT_CEILING_LOG_MESSAGES => c"limits.log_messages",
     }
     .as_ptr()
 }
@@ -529,6 +741,220 @@ fn dispatch_log(sink: &Sink, record: &LogRecord<'_>) {
             record.level().into(),
             context.as_ptr(),
             message.as_ptr(),
+        );
+    }
+}
+
+/// A C audit hook plus its userdata, promised to be thread-safe.
+struct Auditor {
+    func: wt_audit_hook_t,
+    userdata: *mut c_void,
+}
+
+// SAFETY: identical to `Sink` above, and for the same reason — a decision is
+// reported inline where it is made, from whatever thread made the call.
+unsafe impl Send for Auditor {}
+unsafe impl Sync for Auditor {}
+
+/// Observe every authorisation decision: what a plugin was permitted to do, and
+/// what it was refused.
+///
+/// The sibling of a trace recorder and deliberately not the same hook. A trace
+/// answers *what happened* and carries the argument values to prove it; this
+/// answers *what was allowed*, and carries names and verdicts only — which is
+/// what makes an audit line safe to keep and to paste into an issue. A
+/// suppressed log line is reported as a suppression at a level; the line itself
+/// is not in it. See ADR-0011.
+///
+/// The callback gets both a rendered line and the structured fields, because
+/// forwarding one to your logger and matching on the other are different jobs
+/// and neither should have to reconstruct the other.
+///
+/// **Off unless you call this.** An application that installs no hook gets no
+/// audit trail — not a default one written somewhere. Calling this twice
+/// replaces the first hook; there is one, and watoots does no fan-out.
+///
+/// `userdata` must outlive the host built from this builder.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wt_host_builder_audit_hook(
+    builder: *mut wt_host_builder_t,
+    hook: wt_audit_hook_t,
+    userdata: *mut c_void,
+    error_out: *mut *mut wt_error_t,
+) -> wt_status {
+    guard(error_out, || {
+        if hook.is_none() {
+            return Err(Error::invalid_argument("hook must not be NULL"));
+        }
+        let auditor = Auditor {
+            func: hook,
+            userdata,
+        };
+
+        unsafe {
+            with_builder(builder, move |b| {
+                Ok(b.audit_hook(std::sync::Arc::new(auditor) as std::sync::Arc<dyn AuditHook>))
+            })
+        }
+    })
+}
+
+impl AuditHook for Auditor {
+    fn on_event(&self, event: &AuditEvent<'_>) {
+        dispatch_audit(self, event);
+    }
+}
+
+/// Copy a borrowed `&str` into a C string, replacing it wholesale if it holds a
+/// NUL byte.
+///
+/// Truncating at the NUL would be the quiet failure: a C string that stops
+/// early reads as the whole value. Every string in an audit event is a name the
+/// host or the component's own type section produced, so this should never fire
+/// — which is exactly why it must not fail silently if it does.
+fn audit_string(text: &str) -> CString {
+    CString::new(text).unwrap_or_else(|_| c"<contained a NUL byte>".to_owned())
+}
+
+/// Bridge one authorisation decision out to C.
+///
+/// Everything handed over is owned by this stack frame and borrowed by the
+/// callback, which is what lets the C side see names without a free per event.
+#[allow(clippy::too_many_lines)]
+fn dispatch_audit(auditor: &Auditor, event: &AuditEvent<'_>) {
+    // The rendered line first, because it is what most hosts will forward, and
+    // because building it cannot depend on the borrows below.
+    let line = audit_string(&event.to_string());
+    let plugin = audit_string(event.plugin());
+
+    // Owned storage for the optional strings. Each stays alive until the
+    // callback returns; `fields` only points at them.
+    let mut sha256: Option<CString> = None;
+    let mut import: Option<CString> = None;
+    let mut requirement: Option<CString> = None;
+    let mut grant_key: Option<CString> = None;
+    let mut reason: Option<CString> = None;
+    let mut limit_key: Option<CString> = None;
+
+    let mut fields = wt_audit_event_t {
+        kind: wt_audit_kind::WT_AUDIT_LOADED,
+        plugin: plugin.as_ptr(),
+        sha256: ptr::null(),
+        import: ptr::null(),
+        requirement: ptr::null(),
+        grant_key: ptr::null(),
+        reason: ptr::null(),
+        limit_key: ptr::null(),
+        verdict: wt_audit_verdict::WT_AUDIT_GRANTED,
+        ceiling: wt_ceiling::WT_CEILING_FUEL,
+        level: wt_log_level::WT_LOG_TRACE,
+        level_known: false,
+        ceiling_level: wt_log_level::WT_LOG_TRACE,
+        imports: 0,
+        reloads: 0,
+    };
+
+    // One arm per variant rather than a `_`: a decision added to the Rust enum
+    // must not reach C as a silently mislabelled one.
+    let set_requirement = |req: Option<Requirement>| -> (Option<CString>, Option<CString>) {
+        match req {
+            None => (None, None),
+            Some(req) => (
+                Some(audit_string(req.name())),
+                Some(audit_string(req.grant_key())),
+            ),
+        }
+    };
+
+    match event {
+        AuditEvent::Loaded {
+            sha256: digest,
+            imports: count,
+            ..
+        } => {
+            fields.kind = wt_audit_kind::WT_AUDIT_LOADED;
+            sha256 = Some(audit_string(digest));
+            fields.imports = *count as u64;
+        }
+        AuditEvent::LoadRefused {
+            sha256: digest,
+            import: which,
+            requirement: req,
+            reason: why,
+            ..
+        }
+        | AuditEvent::ReloadRefused {
+            sha256: digest,
+            import: which,
+            requirement: req,
+            reason: why,
+            ..
+        } => {
+            fields.kind = if matches!(event, AuditEvent::LoadRefused { .. }) {
+                wt_audit_kind::WT_AUDIT_LOAD_REFUSED
+            } else {
+                wt_audit_kind::WT_AUDIT_RELOAD_REFUSED
+            };
+            sha256 = Some(audit_string(digest));
+            import = which.map(audit_string);
+            (requirement, grant_key) = set_requirement(*req);
+            reason = Some(audit_string(why));
+        }
+        AuditEvent::ImportDecided {
+            import: which,
+            requirement: req,
+            verdict,
+            ..
+        } => {
+            fields.kind = wt_audit_kind::WT_AUDIT_IMPORT;
+            import = Some(audit_string(which));
+            (requirement, grant_key) = set_requirement(Some(*req));
+            fields.verdict = (*verdict).into();
+        }
+        AuditEvent::Reloaded {
+            sha256: digest,
+            reloads,
+            ..
+        } => {
+            fields.kind = wt_audit_kind::WT_AUDIT_RELOADED;
+            sha256 = Some(audit_string(digest));
+            fields.reloads = *reloads;
+        }
+        AuditEvent::LogAdmitted { level, .. } => {
+            fields.kind = wt_audit_kind::WT_AUDIT_LOG_ADMITTED;
+            fields.level = (*level).into();
+            fields.level_known = true;
+        }
+        AuditEvent::LogSuppressed { level, ceiling, .. } => {
+            fields.kind = wt_audit_kind::WT_AUDIT_LOG_SUPPRESSED;
+            if let Some(level) = level {
+                fields.level = (*level).into();
+                fields.level_known = true;
+            }
+            fields.ceiling_level = (*ceiling).into();
+        }
+        AuditEvent::CeilingSpent { limit, .. } => {
+            fields.kind = wt_audit_kind::WT_AUDIT_CEILING_SPENT;
+            fields.ceiling = (*limit).into();
+            limit_key = Some(audit_string(limit.manifest_key()));
+        }
+    }
+
+    fields.sha256 = sha256.as_ref().map_or(ptr::null(), |s| s.as_ptr());
+    fields.import = import.as_ref().map_or(ptr::null(), |s| s.as_ptr());
+    fields.requirement = requirement.as_ref().map_or(ptr::null(), |s| s.as_ptr());
+    fields.grant_key = grant_key.as_ref().map_or(ptr::null(), |s| s.as_ptr());
+    fields.reason = reason.as_ref().map_or(ptr::null(), |s| s.as_ptr());
+    fields.limit_key = limit_key.as_ref().map_or(ptr::null(), |s| s.as_ptr());
+
+    // SAFETY: every pointer in `fields` points at storage owned by this frame
+    // and outliving the call, and the hook is non-null because it was checked
+    // at registration.
+    unsafe {
+        (auditor.func.expect("checked at registration"))(
+            auditor.userdata,
+            line.as_ptr(),
+            &raw const fields,
         );
     }
 }

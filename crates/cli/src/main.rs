@@ -10,8 +10,8 @@ use std::sync::{Arc, Mutex};
 use clap::{Args, Parser, Subcommand};
 use watoots::fuzz::Generator;
 use watoots::{
-    FunctionKind, FunctionProfile, Host, HostBuilder, Manifest, PluginProfile, PluginStats,
-    Profiling, TraceHook,
+    AuditEvent, AuditHook, FunctionKind, FunctionProfile, Host, HostBuilder, Manifest,
+    PluginProfile, PluginStats, Profiling, TraceHook,
 };
 use watoots_trace::{Header, Recorder, Trace, binary, replay, text};
 
@@ -110,6 +110,14 @@ struct Invocation {
     /// Exported function to call.
     #[arg(short, long)]
     call: String,
+    /// Write every authorisation decision to stderr: each import's verdict, the
+    /// load, log lines the manifest's level ceiling dropped, and any `[limits]`
+    /// ceiling spent.
+    ///
+    /// stderr rather than stdout, because stdout carries the call's return
+    /// value and `watoots run ... > out` has to keep working.
+    #[arg(long)]
+    audit: bool,
     /// Arguments, as WAVE text: `'"notes.md"'`, `42`, `{line: 1}`.
     #[arg(trailing_var_arg = true)]
     args: Vec<String>,
@@ -387,6 +395,20 @@ fn parse_answers(raw: &[String]) -> Result<Vec<Answer>, String> {
         .collect()
 }
 
+/// `--audit`: every authorisation decision, one per line, on stderr.
+///
+/// The CLI is where the destination is not the application's to choose, so it
+/// chooses one — and it is stderr for the same reason the log sink's is: stdout
+/// carries the call's return value, and a `watoots run ... > out` has to keep
+/// working.
+struct StderrAudit;
+
+impl AuditHook for StderrAudit {
+    fn on_event(&self, event: &AuditEvent<'_>) {
+        eprintln!("audit: {event}");
+    }
+}
+
 /// Build a host that serves whatever the caller said to answer with.
 fn build_host(
     invocation: &Invocation,
@@ -440,6 +462,9 @@ fn build_host(
 
     if let Some(hook) = hook {
         builder = builder.trace_hook(hook);
+    }
+    if invocation.audit {
+        builder = builder.audit_hook(Arc::new(StderrAudit) as Arc<dyn AuditHook>);
     }
     builder.build().map_err(|err| err.message().to_string())
 }

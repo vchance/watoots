@@ -279,6 +279,55 @@ using HostFunction =
 using LogFunction = std::function<void(
     wt_log_level level, std::string_view context, std::string_view message)>;
 
+/// One authorisation decision, with its strings owned.
+///
+/// The C event borrows every string for the duration of the callback; this
+/// copies them, so a host can queue a decision and write it out later. Read
+/// `kind` first: a field that does not apply to it is empty or unspecified, and
+/// the comments on `wt_audit_event_t` say which kinds set what.
+///
+/// **Nothing here is an argument value or a log message body.** A suppressed
+/// line is reported as a suppression at a level; the line is not in it. That is
+/// what makes an audit record safe to keep and to paste into an issue, and it
+/// is why this is not the trace hook. See ADR-0011.
+struct AuditEvent {
+  wt_audit_kind kind = WT_AUDIT_LOADED;
+  /// The whole decision rendered as one line, ready to forward to a logger.
+  std::string line;
+  std::string plugin;
+  /// SHA-256 of the component bytes, for the load and reload kinds.
+  std::string sha256;
+  /// The import this is about, or the one that decided a refusal. Named
+  /// `import_name` because `import` is a contextual keyword in C++20 modules.
+  std::string import_name;
+  /// What that import needs, e.g. `"network"`.
+  std::string requirement;
+  /// The manifest key an operator would edit, e.g. `"permissions.net"`.
+  std::string grant_key;
+  /// Why a load or reload was refused. May span several lines; `line` keeps
+  /// only the first.
+  std::string reason;
+  /// The manifest key of the ceiling that was spent.
+  std::string limit_key;
+  wt_audit_verdict verdict = WT_AUDIT_GRANTED;
+  wt_ceiling ceiling = WT_CEILING_FUEL;
+  wt_log_level level = WT_LOG_TRACE;
+  /// False when the guest named a `level` case this build does not define.
+  bool level_known = false;
+  wt_log_level ceiling_level = WT_LOG_TRACE;
+  uint64_t imports = 0;
+  uint64_t reloads = 0;
+};
+
+/// Observes every authorisation decision the host makes.
+///
+/// Off unless you install one: an application with no hook gets no audit trail.
+///
+/// Must not throw: it is invoked from C, where unwinding is undefined
+/// behaviour. It may be entered from any thread — a `wasi:logging` verdict is
+/// reached inside the guest's own call.
+using AuditFunction = std::function<void(const AuditEvent& event)>;
+
 /// One per-WIT-function row of a profile, with its names owned.
 ///
 /// The C row borrows its strings from the plugin and is invalidated by the
@@ -580,15 +629,18 @@ class Host {
  private:
   friend class HostBuilder;
   Host(wt_host_t* raw, std::vector<std::unique_ptr<HostFunction>> functions,
-       std::unique_ptr<LogFunction> log_sink)
+       std::unique_ptr<LogFunction> log_sink,
+       std::unique_ptr<AuditFunction> audit_hook)
       : handle_(raw),
         functions_(std::move(functions)),
-        log_sink_(std::move(log_sink)) {}
+        log_sink_(std::move(log_sink)),
+        audit_hook_(std::move(audit_hook)) {}
 
   internal::OwnedHandle<wt_host_t, internal::HostDeleter> handle_;
   // The C API holds raw pointers to these, so they must outlive the host.
   std::vector<std::unique_ptr<HostFunction>> functions_;
   std::unique_ptr<LogFunction> log_sink_;
+  std::unique_ptr<AuditFunction> audit_hook_;
 };
 
 /// Adapts a `HostFunction` to the C callback signature.
@@ -627,6 +679,41 @@ extern "C" inline void WatootsLogSinkTrampoline(  // NOLINT
   auto* sink = static_cast<LogFunction*>(userdata);
   (*sink)(level, context == nullptr ? "" : context,
           message == nullptr ? "" : message);
+}
+
+/// Adapts an `AuditFunction` to the C hook signature. See above for why this is
+/// `extern "C"`.
+extern "C" inline void WatootsAuditHookTrampoline(  // NOLINT
+    void* userdata, const char* line, const wt_audit_event_t* event) {
+  auto* hook = static_cast<AuditFunction*>(userdata);
+  if (event == nullptr) {
+    return;
+  }
+
+  // Every string is borrowed for the duration of this call, so each one is
+  // copied here rather than handed on.
+  auto owned = [](const char* text) -> std::string {
+    return text == nullptr ? std::string{} : std::string(text);
+  };
+
+  AuditEvent decision;
+  decision.kind = event->kind;
+  decision.line = owned(line);
+  decision.plugin = owned(event->plugin);
+  decision.sha256 = owned(event->sha256);
+  decision.import_name = owned(event->import);
+  decision.requirement = owned(event->requirement);
+  decision.grant_key = owned(event->grant_key);
+  decision.reason = owned(event->reason);
+  decision.limit_key = owned(event->limit_key);
+  decision.verdict = event->verdict;
+  decision.ceiling = event->ceiling;
+  decision.level = event->level;
+  decision.level_known = event->level_known;
+  decision.ceiling_level = event->ceiling_level;
+  decision.imports = event->imports;
+  decision.reloads = event->reloads;
+  (*hook)(decision);
 }
 
 /// Builds a [`Host`].
@@ -699,6 +786,29 @@ class HostBuilder {
     return {};
   }
 
+  /// Observe every authorisation decision: what a plugin was permitted to do,
+  /// and what it was refused.
+  ///
+  /// The sibling of a trace recorder and deliberately not the same hook. A
+  /// trace answers *what happened* and carries the argument values to prove it;
+  /// this answers *what was allowed*, and carries names and verdicts only. A
+  /// suppressed log line is reported as a suppression at a level; the line
+  /// itself is not in it, which is what makes an audit record safe to keep.
+  ///
+  /// **Off unless you call this.** An application with no hook installed gets
+  /// no audit trail. Calling this twice replaces the first hook.
+  Result<void> AuditHook(AuditFunction implementation) {
+    auto owned = std::make_unique<AuditFunction>(std::move(implementation));
+    wt_error_t* error = nullptr;
+    const wt_status status = wt_host_builder_audit_hook(
+        handle_.Get(), WatootsAuditHookTrampoline, owned.get(), &error);
+    if (status != WT_OK) {
+      return unexpected(internal::TakeError(status, error));
+    }
+    audit_hook_ = std::move(owned);
+    return {};
+  }
+
   /// Split every plugin's time into guest, host-call and marshalling.
   ///
   /// Opt-in: a call hook then fires on every host/guest transition. Read the
@@ -740,13 +850,16 @@ class HostBuilder {
     }
     auto functions = std::move(functions_);
     auto log_sink = std::move(log_sink_);
+    auto audit_hook = std::move(audit_hook_);
     // Spent, and definitively so. The C layer already refuses a second build,
     // but that invariant lives across the FFI boundary where neither the
     // compiler nor the static analyser can see it -- so leave the vector empty
     // rather than merely moved-from.
     functions_.clear();
     log_sink_.reset();
-    return Host(host, std::move(functions), std::move(log_sink));
+    audit_hook_.reset();
+    return Host(host, std::move(functions), std::move(log_sink),
+                std::move(audit_hook));
   }
 
  private:
@@ -765,6 +878,7 @@ class HostBuilder {
   internal::OwnedHandle<wt_host_builder_t, internal::BuilderDeleter> handle_;
   std::vector<std::unique_ptr<HostFunction>> functions_;
   std::unique_ptr<LogFunction> log_sink_;
+  std::unique_ptr<AuditFunction> audit_hook_;
 };
 
 }  // namespace wt

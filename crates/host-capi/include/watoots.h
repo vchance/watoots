@@ -46,6 +46,62 @@ typedef enum wt_log_level {
   WT_LOG_CRITICAL = 5,
 } wt_log_level;
 
+// Which authorisation decision an audit event describes.
+//
+// The values are stable. A new decision is appended rather than inserted, for
+// the same reason [`wt_status`]'s are fixed: a C host switching on this must
+// not have its arms silently re-point.
+typedef enum wt_audit_kind {
+  // A plugin was compiled, granted and instantiated.
+  WT_AUDIT_LOADED = 0,
+  // A load was refused; the plugin never ran.
+  WT_AUDIT_LOAD_REFUSED = 1,
+  // One import's verdict, as the grant check resolved it.
+  WT_AUDIT_IMPORT = 2,
+  // A plugin's code was replaced.
+  WT_AUDIT_RELOADED = 3,
+  // A reload was refused; the plugin is still running its old code.
+  WT_AUDIT_RELOAD_REFUSED = 4,
+  // A `wasi:logging` line passed the manifest's level ceiling.
+  WT_AUDIT_LOG_ADMITTED = 5,
+  // A `wasi:logging` line was dropped by it.
+  WT_AUDIT_LOG_SUPPRESSED = 6,
+  // A `[limits]` ceiling was spent.
+  WT_AUDIT_CEILING_SPENT = 7,
+} wt_audit_kind;
+
+// How one import resolved at load.
+//
+// Three of the four read as "allowed", and only `WT_AUDIT_GRANTED` is a
+// capability the manifest handed out.
+typedef enum wt_audit_verdict {
+  // The manifest covers it, or it is WASI plumbing that needs no grant.
+  WT_AUDIT_GRANTED = 0,
+  // The manifest does not, so the load is refused.
+  WT_AUDIT_DENIED = 1,
+  // The application declared it serves this interface itself.
+  WT_AUDIT_HOST_PROVIDED = 2,
+  // Imported only for its types: nothing there is callable.
+  WT_AUDIT_TYPES_ONLY = 3,
+} wt_audit_verdict;
+
+// Which `[limits]` ceiling was spent.
+typedef enum wt_ceiling {
+  // `limits.fuel`.
+  WT_CEILING_FUEL = 0,
+  // `limits.timeout`.
+  WT_CEILING_TIMEOUT = 1,
+  // `limits.memory`. The only one a plugin never sees as an error: a refused
+  // growth makes `memory.grow` answer -1 and the call carries on.
+  WT_CEILING_MEMORY = 2,
+  // `limits.transfer`.
+  WT_CEILING_TRANSFER = 3,
+  // `limits.log_bytes`.
+  WT_CEILING_LOG_BYTES = 4,
+  // `limits.log_messages`.
+  WT_CEILING_LOG_MESSAGES = 5,
+} wt_ceiling;
+
 // Whether a profile row describes an export or an import.
 typedef enum wt_function_kind {
   // A function the component exports, entered through [`wt_plugin_call`].
@@ -100,6 +156,80 @@ typedef void (*wt_log_sink_t)(void *userdata,
                               enum wt_log_level level,
                               const char *context,
                               const char *message);
+
+// One authorisation decision, as structured fields.
+//
+// Every string is NUL-terminated and **borrowed for the duration of the
+// callback** — copy what you keep. A field that does not apply to this event's
+// `kind` is NULL for a string, and unspecified for a number or an enum: read
+// the `kind` first. The field list below says which kinds set what.
+//
+// **No field here carries an argument value or a log message body.** That is
+// the whole reason this is not a `wt_trace_event_t`: an audit line has to be
+// safe to keep and to paste into an issue, and a trace is the thing that is
+// not. See ADR-0011.
+typedef struct wt_audit_event_t {
+  // Which decision this is. Read it before anything else.
+  enum wt_audit_kind kind;
+  // The plugin the decision is about. Never NULL.
+  const char *plugin;
+  // SHA-256 of the component bytes, lowercase hex. Set for the load and
+  // reload kinds, NULL otherwise. The same digest a recorded trace names its
+  // component by.
+  const char *sha256;
+  // The import this decision is about, exactly as the component declares it.
+  // Always set for `WT_AUDIT_IMPORT`; set on a refusal when an import decided
+  // it, and NULL on a refusal that no import decided.
+  const char *import;
+  // What that import needs, e.g. `"network"`. NULL when `import` is.
+  const char *requirement;
+  // The manifest key an operator would edit for it, e.g.
+  // `"permissions.net"`. NULL when `import` is.
+  const char *grant_key;
+  // Why a load or reload was refused. NULL for every other kind. May contain
+  // newlines; the rendered line passed alongside carries only the first.
+  const char *reason;
+  // The manifest key of the ceiling that was spent, e.g. `"limits.fuel"`.
+  // NULL unless `kind` is `WT_AUDIT_CEILING_SPENT`.
+  const char *limit_key;
+  // How the import resolved. `WT_AUDIT_IMPORT` only.
+  enum wt_audit_verdict verdict;
+  // Which ceiling. `WT_AUDIT_CEILING_SPENT` only.
+  enum wt_ceiling ceiling;
+  // The level the plugin logged at. The log kinds only, and only when
+  // `level_known`.
+  enum wt_log_level level;
+  // False when the guest named a `level` case this build does not define,
+  // which is dropped rather than delivered so a manifest's ceiling holds
+  // across a revision of the proposal. The log kinds only.
+  bool level_known;
+  // The manifest's level ceiling, which is what dropped the line.
+  // `WT_AUDIT_LOG_SUPPRESSED` only.
+  enum wt_log_level ceiling_level;
+  // How many imports the component declares. `WT_AUDIT_LOADED` only.
+  uint64_t imports;
+  // Reloads this plugin has survived, this one included.
+  // `WT_AUDIT_RELOADED` only.
+  uint64_t reloads;
+} wt_audit_event_t;
+
+// Observes every authorisation decision the host makes.
+//
+// `line` is the whole event rendered as one line — what a C host forwards to
+// its own logger without unpacking anything. `event` is the same decision as
+// structured fields, for a host that wants to match on it. Both are borrowed
+// for the duration of the call, and so is everything `event` points at.
+//
+// **Nothing is installed by default.** An application that never calls
+// [`wt_host_builder_audit_hook`] gets no audit trail; see `docs/SECURITY.md`.
+//
+// Returns nothing: a decision has already been made by the time it is
+// reported, and there is nothing here for a hook to veto. It must be safe to
+// use from any thread and must not throw — watoots does not serialise calls
+// into it, and unwinding across the boundary is undefined behaviour.
+typedef void (*wt_audit_hook_t)(void *userdata,
+                                const char *line,
+                                const struct wt_audit_event_t *event);
 
 // What the host has observed about a plugin since it was loaded.
 //
@@ -227,6 +357,18 @@ const char *wt_status_name(enum wt_status status);
 // The `wasi:logging` spelling of a level, e.g. `"warn"`. Never NULL.
 const char *wt_log_level_name(enum wt_log_level level);
 
+// Stable spelling of an audit decision, e.g. `"log-suppressed"`. Never NULL.
+//
+// The same word that leads the rendered line, so a log written from the
+// structured fields and one written from the line agree.
+const char *wt_audit_kind_name(enum wt_audit_kind kind);
+
+// Stable spelling of an import verdict, e.g. `"host-provided"`. Never NULL.
+const char *wt_audit_verdict_name(enum wt_audit_verdict verdict);
+
+// The manifest key a ceiling is set by, e.g. `"limits.fuel"`. Never NULL.
+const char *wt_ceiling_name(enum wt_ceiling ceiling);
+
 // Copy a C string into one watoots owns, for returning from a host function.
 //
 // Returns NULL if `text` is NULL or contains a NUL byte.
@@ -302,6 +444,30 @@ enum wt_status wt_host_builder_log_sink(struct wt_host_builder_t *builder,
                                         wt_log_sink_t sink,
                                         void *userdata,
                                         struct wt_error_t **error_out);
+
+// Observe every authorisation decision: what a plugin was permitted to do, and
+// what it was refused.
+//
+// The sibling of a trace recorder and deliberately not the same hook. A trace
+// answers *what happened* and carries the argument values to prove it; this
+// answers *what was allowed*, and carries names and verdicts only — which is
+// what makes an audit line safe to keep and to paste into an issue. A
+// suppressed log line is reported as a suppression at a level; the line itself
+// is not in it. See ADR-0011.
+//
+// The callback gets both a rendered line and the structured fields, because
+// forwarding one to your logger and matching on the other are different jobs
+// and neither should have to reconstruct the other.
+//
+// **Off unless you call this.** An application that installs no hook gets no
+// audit trail — not a default one written somewhere. Calling this twice
+// replaces the first hook; there is one, and watoots does no fan-out.
+//
+// `userdata` must outlive the host built from this builder.
+enum wt_status wt_host_builder_audit_hook(struct wt_host_builder_t *builder,
+                                          wt_audit_hook_t hook,
+                                          void *userdata,
+                                          struct wt_error_t **error_out);
 
 // Split every plugin's time into guest, host-call and marshalling.
 //
