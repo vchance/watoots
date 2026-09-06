@@ -791,3 +791,106 @@ fn a_malformed_image_comes_back_as_a_failure_rather_than_a_trap() {
     assert!(text.contains("12 bytes"), "{text}");
     assert!(text.contains("got 11"), "{text}");
 }
+
+// ---------------------------------------------------------------------------
+// `watoots reload` (ADR-0010)
+// ---------------------------------------------------------------------------
+
+/// A counter with both state hooks, and a second build whose `get` adds a
+/// thousand — so one number says which build is running and what it started
+/// from. WAT rather than a built guest: this command's subject is the swap,
+/// not the toolchain.
+const COUNTER_V1: &str = r#"
+(component
+  (core module $m
+    (global $n (mut i32) (i32.const 0))
+    (func (export "get") (result i32) (global.get $n))
+    (func (export "bump") (param i32)
+      (global.set $n (i32.add (global.get $n) (local.get 0))))
+    (func (export "save") (result i32) (global.get $n))
+    (func (export "restore") (param i32) (global.set $n (local.get 0))))
+  (core instance $i (instantiate $m))
+  (func $get (result u32) (canon lift (core func $i "get")))
+  (func $bump (param "n" u32) (canon lift (core func $i "bump")))
+  (func $save (result u32) (canon lift (core func $i "save")))
+  (func $restore (param "state" u32) (canon lift (core func $i "restore")))
+  (export "get" (func $get))
+  (export "bump" (func $bump))
+  (export "save-state" (func $save))
+  (export "restore-state" (func $restore))
+)
+"#;
+
+const COUNTER_V2: &str = r#"
+(component
+  (core module $m
+    (global $n (mut i32) (i32.const 0))
+    (func (export "bump") (param i32) (result i32)
+      (global.set $n (i32.add (global.get $n) (local.get 0)))
+      (i32.add (global.get $n) (i32.const 1000)))
+    (func (export "save") (result i32) (global.get $n))
+    (func (export "restore") (param i32) (global.set $n (local.get 0))))
+  (core instance $i (instantiate $m))
+  (func $bump (param "n" u32) (result u32) (canon lift (core func $i "bump")))
+  (func $save (result u32) (canon lift (core func $i "save")))
+  (func $restore (param "state" u32) (canon lift (core func $i "restore")))
+  (export "bump" (func $bump))
+  (export "save-state" (func $save))
+  (export "restore-state" (func $restore))
+)
+"#;
+
+const COUNTER_WANTS_NETWORK: &str = r#"
+(component
+  (import "wasi:sockets/tcp@0.2.6" (instance (export "connect" (func))))
+  (core module $m
+    (global $n (mut i32) (i32.const 0))
+    (func (export "bump") (param i32) (result i32)
+      (global.set $n (i32.add (global.get $n) (local.get 0)))
+      (global.get $n)))
+  (core instance $i (instantiate $m))
+  (func $bump (param "n" u32) (result u32) (canon lift (core func $i "bump")))
+  (export "bump" (func $bump))
+)
+"#;
+
+/// Two components on disk, ready to be swapped between.
+fn counter_dir(replacement: &str) -> (tempfile::TempDir, String, String) {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let first = dir.path().join("counter.wat");
+    let second = dir.path().join("counter-next.wat");
+    std::fs::write(&first, COUNTER_V1).expect("writing the first build");
+    std::fs::write(&second, replacement).expect("writing the replacement");
+    let (a, b) = (first.display().to_string(), second.display().to_string());
+    (dir, a, b)
+}
+
+#[test]
+fn reload_calls_swaps_and_calls_again() {
+    let (_dir, first, second) = counter_dir(COUNTER_V2);
+    let output = watoots(&["reload", &first, "--to", &second, "-c", "bump", "--", "7"]);
+    assert!(output.status.success(), "{output:?}");
+
+    // `bump` returns nothing in the first build and `n + 1000` in the second,
+    // so stdout is one line and 1014 says both that the new code is running and
+    // that it started from the state the old one handed over.
+    let text = stdout(&output);
+    assert_eq!(text.trim(), "1014", "{text}");
+
+    let log = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert!(log.contains("reload 1"), "{log}");
+    assert!(log.contains("state: carried"), "{log}");
+}
+
+#[test]
+fn reload_re_runs_the_grant_check_against_the_new_bytes() {
+    // The command exists for this: `inspect` can say the replacement asks for
+    // sockets, but only a reload says so at the moment it would take over.
+    let (_dir, first, second) = counter_dir(COUNTER_WANTS_NETWORK);
+    let output = watoots(&["reload", &first, "--to", &second, "-c", "bump", "--", "1"]);
+
+    assert!(!output.status.success(), "{output:?}");
+    let log = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert!(log.contains("wasi:sockets"), "{log}");
+    assert!(log.contains("not granted"), "{log}");
+}

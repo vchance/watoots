@@ -54,8 +54,9 @@ same content as the published scoping page (read-only reference).
   ADR-0003 (C++ toolchain), ADR-0004 (WAVE), ADR-0005 (cargo from
   CMake), ADR-0006 (`wasi:logging` yes, guest-emitted metrics no) and
   ADR-0007 (link `wit-component`, don't shell out), ADR-0008 (proptest on
-  stable; record/replay is the fuzzing oracle) and ADR-0009 (profile at the
-  boundary; the timeout outranks the sampler) are done.
+  stable; record/replay is the fuzzing oracle), ADR-0009 (profile at the
+  boundary; the timeout outranks the sampler) and ADR-0010 (reload carries
+  state as WIT values; checkpoint is not buildable) are done.
 - Prefer `wasmtime::component::Val` + WAVE for dynamic calls; `bindgen!` only
   where the Rust host has a static world.
 - Tests live next to code; integration tests under `crates/*/tests/` use the
@@ -94,7 +95,7 @@ from what each toolchain actually imports, and two C++ hosts.
 
 M6 so far: `inspect` rewritten as a capability summary plus `--targets` and
 `wit semver-check`; property tests whose oracle is record/replay; `PluginStats`;
-a boundary profiler. **`reload` is the one v0.2 candidate untouched.**
+a boundary profiler; and reload. **Every v0.2 candidate in the spec is done.**
 
 M5 shipped: `docs/MANIFEST.md`, a root `SECURITY.md` (reporting policy)
 alongside `docs/SECURITY.md` (threat model), `CONTRIBUTING.md`,

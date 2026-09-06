@@ -410,6 +410,47 @@ class Plugin {
     return {};
   }
 
+  /// Replace this plugin's code with new bytes, keeping its name and handle.
+  ///
+  /// Reload is `Host::LoadBinary` plus a state handoff, not a cheaper path
+  /// that skips the checks: the same manifest, the same import intersection,
+  /// the same refusal. New bytes must not acquire a capability by arriving as
+  /// an update.
+  ///
+  /// **A failure leaves this plugin running the code it was already running**
+  /// -- the replacement is built to completion before it takes over -- with
+  /// one exception, a trap inside `save-state`, after which Wasmtime will not
+  /// re-enter the instance. See `wt_plugin_reload` for the state hooks and for
+  /// what happens to the counters.
+  [[nodiscard]] Result<wt_reload_report_t> Reload(
+      std::span<const std::byte> wasm) {
+    wt_reload_report_t report{};
+    wt_error_t* error = nullptr;
+    const wt_status status = wt_plugin_reload(
+        handle_.Get(),
+        reinterpret_cast<const uint8_t*>(wasm.data()),  // NOLINT
+        wasm.size(), &report, &error);
+    if (status != WT_OK) {
+      return unexpected(internal::TakeError(status, error));
+    }
+    return report;
+  }
+
+  /// Replace this plugin's code with a component read from `path`.
+  ///
+  /// As `Reload`, and additionally re-points `${plugin_dir}` at the directory
+  /// the replacement came from. The plugin keeps the name it was loaded under.
+  [[nodiscard]] Result<wt_reload_report_t> ReloadFile(const std::string& path) {
+    wt_reload_report_t report{};
+    wt_error_t* error = nullptr;
+    const wt_status status =
+        wt_plugin_reload_file(handle_.Get(), path.c_str(), &report, &error);
+    if (status != WT_OK) {
+      return unexpected(internal::TakeError(status, error));
+    }
+    return report;
+  }
+
   /// Call an exported function with WAVE-encoded arguments.
   Result<Value> Call(const std::string& export_name,
                      std::span<const std::string> args) {

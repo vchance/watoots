@@ -50,7 +50,7 @@ pub use imports::{GrantReport, ImportDecision, Requirement};
 pub use manifest::{
     Clocks, DEFAULT_TRANSFER_BYTES, FsGrants, Limits, LogLevel, Manifest, Permissions,
 };
-pub use plugin::{Plugin, PluginStats};
+pub use plugin::{Plugin, PluginStats, RESTORE_STATE_EXPORT, ReloadReport, SAVE_STATE_EXPORT};
 pub use profile::{FunctionKind, FunctionProfile, PluginProfile, Profiling};
 pub use registry::Registry;
 pub use trace::{Outcome, TraceEvent, TraceHook};

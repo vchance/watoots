@@ -30,6 +30,8 @@ enum Command {
     Run(RunArgs),
     /// Call an exported function and report where its time went.
     Profile(ProfileArgs),
+    /// Call an export, swap the component for a new build, and call it again.
+    Reload(ReloadArgs),
     /// Call an exported function and write a trace of every crossing.
     Record(RecordArgs),
     /// Re-run a recorded session against a component, with no application.
@@ -149,6 +151,25 @@ struct ProfileArgs {
     sample_interval_ms: u64,
 }
 
+/// `watoots reload`: does my new build drop in?
+///
+/// `watoots inspect new.wasm -m policy.toml` already answers the security half
+/// — whether the replacement asks for anything the manifest does not grant —
+/// and answers it without running anything. This answers the rest of the
+/// question, which nothing else can: that the replacement instantiates under
+/// that manifest, that its `save-state`/`restore-state` line up with the
+/// outgoing build's, and that the state actually arrives. The call is made
+/// before and after so the difference is visible in the output rather than
+/// asserted in prose.
+#[derive(Args)]
+struct ReloadArgs {
+    #[command(flatten)]
+    invocation: Invocation,
+    /// The replacement component.
+    #[arg(long = "to", value_name = "COMPONENT")]
+    to: PathBuf,
+}
+
 #[derive(Args)]
 struct RecordArgs {
     #[command(flatten)]
@@ -238,6 +259,7 @@ fn run(cli: Cli) -> Result<ExitCode, String> {
         Command::Inspect(args) => inspect(&args),
         Command::Run(args) => invoke(&args.invocation, None),
         Command::Profile(args) => profile(&args),
+        Command::Reload(args) => reload(&args),
         Command::Record(args) => record(&args),
         Command::Replay(args) => do_replay(&args),
         Command::Fuzz(args) => fuzz(&args),
@@ -436,6 +458,48 @@ fn invoke(invocation: &Invocation, hook: Option<Arc<dyn TraceHook>>) -> Result<E
     for value in &results {
         println!("{value}");
     }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// `watoots reload`: call, swap the component, call again.
+fn reload(args: &ReloadArgs) -> Result<ExitCode, String> {
+    let host = build_host(&args.invocation, None, None)?;
+    let mut plugin = host
+        .load(&args.invocation.component)
+        .map_err(|err| err.message().to_string())?;
+
+    let call_args: Vec<&str> = args.invocation.args.iter().map(String::as_str).collect();
+    let call = |plugin: &mut watoots::Plugin| -> Result<(), String> {
+        let results = plugin
+            .call_wave(&args.invocation.call, &call_args)
+            .map_err(|err| err.message().to_string())?;
+        for value in &results {
+            println!("{value}");
+        }
+        Ok(())
+    };
+
+    call(&mut plugin)?;
+
+    // The report goes to stderr, as `run`'s log lines do: stdout carries the
+    // call's return values and nothing else, so `watoots reload ... > out`
+    // keeps working.
+    let report = plugin
+        .reload_from_file(&args.to)
+        .map_err(|err| err.message().to_string())?;
+    eprintln!(
+        "reloaded {} as {} (reload {}); state: {}",
+        args.invocation.component.display(),
+        args.to.display(),
+        report.reloads,
+        match (report.state_saved, report.state_restored) {
+            (_, true) => "carried",
+            (true, false) => "DROPPED — the replacement exports no restore-state",
+            (false, false) => "none — neither build exports the hooks",
+        }
+    );
+
+    call(&mut plugin)?;
     Ok(ExitCode::SUCCESS)
 }
 

@@ -10,7 +10,7 @@ use std::path::Path;
 
 use wasmtime::component::Val;
 
-use crate::{Error, ErrorKind, Host, Plugin, Result};
+use crate::{Error, ErrorKind, Host, Plugin, ReloadReport, Result};
 
 /// A named collection of plugins loaded under one [`Host`].
 #[derive(Debug)]
@@ -49,6 +49,32 @@ impl Registry {
     pub fn load_binary(&mut self, name: &str, wasm: &[u8]) -> Result<()> {
         let plugin = self.host.load_binary(name, wasm)?;
         self.insert(plugin)
+    }
+
+    /// Replace a registered plugin's code with a component from disk.
+    ///
+    /// The plugin keeps its name and its slot: the registry never has a gap,
+    /// and nothing here removes an entry before an entry exists to put back.
+    /// The check the manifest exists for is re-run against the new bytes, and a
+    /// failed reload leaves the plugin registered and running its old code —
+    /// see [`Plugin::reload`].
+    pub fn reload(&mut self, name: &str, path: impl AsRef<Path>) -> Result<ReloadReport> {
+        self.expect(name)?.reload_from_file(path)
+    }
+
+    /// Replace a registered plugin's code with a component already in memory.
+    pub fn reload_binary(&mut self, name: &str, wasm: &[u8]) -> Result<ReloadReport> {
+        self.expect(name)?.reload(wasm)
+    }
+
+    /// Borrow a plugin by name, or say which name was not registered.
+    fn expect(&mut self, name: &str) -> Result<&mut Plugin> {
+        self.plugins.get_mut(name).ok_or_else(|| {
+            Error::new(
+                ErrorKind::NotFound,
+                format!("no plugin named {name:?} is registered"),
+            )
+        })
     }
 
     fn insert(&mut self, plugin: Plugin) -> Result<()> {
@@ -103,13 +129,6 @@ impl Registry {
 
     /// Call an export on a named plugin.
     pub fn call(&mut self, plugin: &str, export: &str, args: &[Val]) -> Result<Vec<Val>> {
-        self.get_mut(plugin)
-            .ok_or_else(|| {
-                Error::new(
-                    ErrorKind::NotFound,
-                    format!("no plugin named {plugin:?} is registered"),
-                )
-            })?
-            .call(export, args)
+        self.expect(plugin)?.call(export, args)
     }
 }

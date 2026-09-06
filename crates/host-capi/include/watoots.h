@@ -107,6 +107,11 @@ typedef void (*wt_log_sink_t)(void *userdata,
 // is measured at the boundary rather than reported by the guest, so a plugin
 // can neither forge nor inflate them. See ADR-0006 for why watoots offers
 // these and not metrics a plugin emits about itself.
+//
+// Every counter **accumulates across a reload** — these answer "what has this
+// plugin cost me", and a reload is a new build of the same plugin rather than
+// a new plugin. [`wt_plugin_profile`] takes the opposite decision for the
+// opposite reason; see ADR-0010.
 typedef struct wt_plugin_stats_t {
   // Calls that have completed, successfully or not.
   uint64_t calls;
@@ -118,11 +123,32 @@ typedef struct wt_plugin_stats_t {
   uint64_t log_messages;
   // Bytes of log message emitted.
   uint64_t log_bytes;
-  // Imports the component declares.
+  // Imports the component declares. The *current* bytes': a reload re-runs
+  // the check, so this describes what is running now.
   uint64_t imports_declared;
   // How many of those the manifest did not grant.
   uint64_t imports_denied;
+  // Successful [`wt_plugin_reload`]s. Every other field here accumulates
+  // across those; see the note on the struct.
+  uint64_t reloads;
 } wt_plugin_stats_t;
+
+// What one reload did with the outgoing instance's state.
+//
+// Plain integers and flags, owned by the caller: there is nothing to free. The
+// reload itself either happened or returned a non-`WT_OK` status; this says
+// what crossed. `state_saved` without `state_restored` means the outgoing
+// build had state to hand over and the incoming one declared nowhere to put
+// it, so it was dropped — not an error, since a rollback to a build without
+// the hooks has to keep working, but worth a line in a log.
+typedef struct wt_reload_report_t {
+  // The outgoing instance exported `save-state` and it returned.
+  bool state_saved;
+  // The incoming instance exported `restore-state` and was given the value.
+  bool state_restored;
+  // Reloads this plugin has survived, this one included.
+  uint64_t reloads;
+} wt_reload_report_t;
 
 // Where a plugin's time has gone, split at the host/guest boundary.
 //
@@ -376,6 +402,64 @@ const char *wt_plugin_name(const struct wt_plugin_t *plugin);
 enum wt_status wt_plugin_stats(const struct wt_plugin_t *plugin,
                                struct wt_plugin_stats_t *stats_out,
                                struct wt_error_t **error_out);
+
+// The export a plugin uses to hand its state out before it is replaced.
+//
+// `"save-state"`. Never NULL; static storage. It takes no parameters and
+// returns exactly one value of whatever type the world declares — watoots
+// carries the value without interpreting it. Optional: a component that does
+// not export it reloads with no state.
+const char *wt_save_state_export(void);
+
+// The export a plugin uses to take state back after it replaces another.
+//
+// `"restore-state"`. One parameter, of the type `save-state` returns, and no
+// result. Also optional. Never NULL; static storage.
+const char *wt_restore_state_export(void);
+
+// Replace a plugin's code with new bytes, keeping its name and its handle.
+//
+// Reload is `wt_host_load` plus a state handoff, **not** a cheaper path that
+// skips the checks: the bytes are compiled and intersected with the same
+// manifest, and a component asking for something the manifest does not grant
+// is refused here with `WT_ERR_PERMISSION_DENIED` exactly as it would be at
+// load. New bytes must not acquire a capability by arriving as an update.
+//
+// **A failed reload leaves the plugin running the code it was already
+// running.** The replacement is built to completion — compiled, checked,
+// instantiated and given the state — before it takes over, so every failure
+// returns with the handle still valid and still usable. The one exception is
+// a trap inside `save-state`: Wasmtime refuses to re-enter a component
+// instance after any trap, so that plugin is unreplaced but also uncallable.
+//
+// If the outgoing instance exports `save-state` its value is passed to the
+// incoming instance's `restore-state`; both are optional, and a missing one
+// means the reload carries no state rather than failing. The value crosses as
+// a typed WIT value, so it is bounded by `limits.transfer` like any other
+// crossing and its type must match on both sides.
+//
+// `report_out` may be NULL. Counters from `wt_plugin_stats` carry across;
+// `wt_plugin_profile` starts again, and sampled guest profiles do not survive
+// at all — call `wt_plugin_write_guest_profile` first if you want them. Rows
+// already fetched with `wt_plugin_profile` stay readable across a reload and
+// go on describing the build they were taken from, until the next
+// `wt_plugin_profile` replaces them.
+enum wt_status wt_plugin_reload(struct wt_plugin_t *plugin,
+                                const uint8_t *wasm,
+                                size_t wasm_len,
+                                struct wt_reload_report_t *report_out,
+                                struct wt_error_t **error_out);
+
+// Replace a plugin's code with a component read from `path`.
+//
+// As [`wt_plugin_reload`], and additionally re-points `${plugin_dir}` at the
+// directory the replacement came from. The plugin keeps the name it was loaded
+// under even when the file is named differently: a reload replaces code, not
+// identity.
+enum wt_status wt_plugin_reload_file(struct wt_plugin_t *plugin,
+                                     const char *path,
+                                     struct wt_reload_report_t *report_out,
+                                     struct wt_error_t **error_out);
 
 // Read a plugin's time split into `profile_out`.
 //

@@ -38,7 +38,7 @@ What Wasmtime 48 already gives us, so we build on it rather than around it.
 - **Component model is Tier 1** on x86_64/aarch64 for both Cranelift and Winch. `bindgen!` supports async, tracing, trappable errors, resource mapping, and (48.0) emits `COMPONENT_TYPE` for reflection. 48.x is the next LTS line: 24 months of patches.
 - **Limits are mature:** fuel with per-opcode costs (48.0), epoch interruption (~10% overhead, async-yield capable), `StoreLimits`/`ResourceLimiter`, pooling allocator with memory/instance caps.
 - **Precompilation:** `Engine::precompile_component` → `.cwasm`, plus a built-in compile cache. Wizer now lives in-tree for init-time snapshots.
-- **No snapshot/restore, and nobody is working on it:** issue #4002 has been open since April 2022 with no activity since. The v0.2 checkpoint experiment isn't racing anyone.
+- **No snapshot/restore, and nobody is working on it:** issue #4002 has been open since April 2022 with no activity since. The v0.2 checkpoint experiment isn't racing anyone — and it is now settled: it cannot be built on the public API at all, see [ADR-0010](adr/0010-reload.md).
 - **Debug/profile hooks exist:** gdbstub guest debugger (`wasmtime -g`, since 44), core dumps on trap, `GuestProfiler` emitting Firefox-profiler JSON. DWARF source debugging is officially "best-effort, no maintainer" — we don't touch it.
 - **WASI:** 0.2.12 is the stable, universally-supported target. 0.3.0 was ratified 2026-06-11 (async, `stream<T>`/`future<T>`, `wasi:io` deleted), but `wasmtime-wasi::p3` is documented as not production-ready and `wasm32-wasip3` is Rust Tier 3. Ship on 0.2, keep the permission model 0.3-shaped.
 - **48.0 defaults changed in our favor:** `wasmtime-wasi` now denies TCP/UDP by default and simplified filesystem perms to ro/rw — the same shape a manifest wants.
@@ -53,7 +53,7 @@ What Wasmtime 48 already gives us, so we build on it rather than around it.
 | C/C++ hosts have no component-model option | Extism is the only polyglot host and it's bytes-ABI; component embedders are Rust-only | C API (cbindgen) + C++ header from v0.1 |
 | Host API boilerplate | wasmtime #9294, #11287, #8857, #9600; "first-class functions in WIT are the gap for SDK generation" | Dynamic typed calls (`Val` + WAVE) alongside `bindgen!`; reentrancy patterns documented, not hidden |
 | Debugging plugins is painful | Wasmtime stability tiers; LLDB step bug #12995; "still painful" (Apr 2026) | Record/replay at the WIT level: reproduce a plugin bug without the host |
-| Hot reload loses state | wasmtime #4002 open since 2022, no activity since; every app reinstantiates | v0.2: reload with optional `export-state`/`import-state` hook; same-binary checkpoint via memory/global/table copy (feasible, unproven) |
+| Hot reload loses state | wasmtime #4002 open since 2022, no activity since; every app reinstantiates | Done in v0.2: reload carries state as typed WIT values through optional `save-state`/`restore-state` exports, and re-runs the grant check. Same-binary checkpoint was tried and is **not possible** — a component's memory, globals and tables are unreachable from the public API ([ADR-0010](adr/0010-reload.md)) |
 | No typed fuzzing of components | Only Wasmtime's internal `component_api` fuzz oracle; no standalone tool | Follow-on: WIT-driven fuzzer that emits replay files for each crash |
 
 ### What we deliberately don't build
@@ -61,7 +61,8 @@ What Wasmtime 48 already gives us, so we build on it rather than around it.
 - **WIT compatibility checker** — `wasm-tools component semver-check` covers it. Wrap it in `inspect`, don't reimplement.
 - **Engine-level deterministic replay** — Wasmtime's `rr` feature is the right home for that (binary trace, ~4–5% overhead, human-readable explicitly a non-goal). It is currently stalled: `RRConfig::{Recording, Replaying}` and the `rr` cargo feature exist, but replay is unimplemented and the last PR has sat since April. We complement it; if it ships, it becomes an optional bit-exact backend.
 - **Source-level debugging** — DWARF in Wasmtime is unmaintained; the new gdbstub debugger is the path, and it's theirs.
-- **Cross-version state migration** (Erlang-style hot code loading) — too big for the first year. Same-binary reload with state hooks is the honest v0.2.
+- **Cross-version state migration** (Erlang-style hot code loading) — too big for the first year. Same-binary reload with state hooks is the honest v0.2, and it shipped.
+- **Same-binary checkpoint/restore.** Not a scheduling decision: a component's linear memory, globals and tables are not reachable through wasmtime's public API, so there is nothing to copy. That is deliberate upstream — a component exporting its memory would hand callers the ability to corrupt its own invariants. [ADR-0010](adr/0010-reload.md) records what would have to change for this to be reconsidered.
 - **Guest-emitted metrics** — counters, gauges and histograms reported *by the plugin*. Label cardinality from untrusted code is unbounded, and unbounded cardinality is a denial of service on the metrics backend; fuel limits computation, not what crosses the boundary. Host-observed metrics need no guest API — `TraceHook` already sees every crossing. See [ADR-0006](adr/0006-logging-and-metrics.md), which also adopts `wasi:logging` as a granted capability.
 
 ## The two pieces
@@ -162,7 +163,7 @@ Why this is different from Wasmtime's own `rr`: theirs records at the canonical-
 ### v0.2 candidates
 
 - `watoots inspect plugin.wasm`: human-readable permission manifest from imports ("reads files under X, no network, uses monotonic clock"), plus `semver-check` and `targets` wrapped.
-- Reload: drop/reinstantiate with optional `export-state`/`import-state` WIT hooks; experiment with same-binary checkpoint by copying linear memory, globals, and tables through the public API.
+- ~~Reload~~ — done, and the checkpoint experiment came back negative. See [ADR-0010](adr/0010-reload.md): the hooks are `save-state`/`restore-state` (an `import-state` that is an *export* is a category error in a component-model project), and copying memory, globals and tables is impossible because none of them is reachable from wasmtime's public API.
 - WIT-driven fuzzer reusing Wasmtime's `component_api` oracle pattern (or `mutatis`), emitting a replay trace per crash.
 - Profiler view: wrap `GuestProfiler` and attribute time to guest vs. host-call vs. boundary marshalling per WIT function.
 
@@ -198,7 +199,7 @@ Decomposed honestly (from the 2026-08-27 review):
 | C API + C++ header | Glue, but nobody has done it | Medium — value is that it exists |
 | Manifest permission schema + import-intersection check | Design decision | High if it becomes the convention |
 | WIT-level trace format, resource-handle mapping, divergence semantics, reentrancy handling | Real engineering | High — non-obvious; Wasmtime's team chose a different level |
-| Same-binary checkpoint/restore (v0.2) | Real engineering | High — #4002 unsolved since 2022 |
+| ~~Same-binary checkpoint/restore~~ | Not buildable | **Nil.** `ComponentItem` has no memory, global or table variant and nothing public returns a `Memory` from component-land. The value was real; the route does not exist ([ADR-0010](adr/0010-reload.md)) |
 | Tracking Wasmtime releases + advisories for 2 years | Commitment | High — this is what people actually adopt |
 
 Nothing technically stops incumbents from building this; what stops them is incentive (Zed built a host for Zed; Extism has a strategic stance against components). What is defensible is trust, convention, and judgment about what not to build. **Lead with record/replay** — it is where understanding shows and where no incumbent is working — and treat the host library as the delivery vehicle.

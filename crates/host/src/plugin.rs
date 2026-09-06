@@ -10,12 +10,26 @@ use wasmtime::component::{Component, Linker, ResourceTable, Type, Val};
 use wasmtime::{Engine, GuestProfiler, Store, StoreLimits, StoreLimitsBuilder, UpdateDeadline};
 use wasmtime_wasi::{FsPerms, WasiCtx, WasiCtxView, WasiView};
 
-use crate::host::{HostFunc, LogRecord, LogSink, epoch_ticks};
+use crate::host::{HostFunc, LogRecord, LogSink, epoch_ticks, plugin_dir_var, read_component};
 use crate::imports::GrantReport;
 use crate::manifest::{Limits, LogLevel, Manifest};
 use crate::profile::{Deadline, PluginProfile, ProfileState, Profiling};
 use crate::trace::{Outcome, TraceEvent, TraceHook};
-use crate::{Error, ErrorKind, Result};
+use crate::{Error, ErrorKind, Host, Result};
+
+/// The export a plugin uses to hand its state out before it is replaced.
+///
+/// Optional: a component that does not export it reloads with no state, which
+/// ADR-0010 calls the honest behaviour rather than an error. It takes no
+/// parameters and returns exactly one value, of whatever type the world
+/// declares — the host carries the value without interpreting it.
+pub const SAVE_STATE_EXPORT: &str = "save-state";
+
+/// The export a plugin uses to take state back after it replaces another.
+///
+/// The mirror of [`SAVE_STATE_EXPORT`]: one parameter, no results, and the
+/// parameter's type must be the one `save-state` returned. Also optional.
+pub const RESTORE_STATE_EXPORT: &str = "restore-state";
 
 /// The `wasi:logging` interface, spelled as the proposal publishes it.
 ///
@@ -103,6 +117,9 @@ struct Counters {
     fuel_consumed: u64,
     log_messages: u64,
     log_bytes: u64,
+    /// Carried across a reload and incremented by it; see
+    /// [`PluginStats::reloads`].
+    reloads: u64,
 }
 
 /// What a host has observed about one plugin.
@@ -111,6 +128,15 @@ struct Counters {
 /// a plugin report its own: these numbers are observed at the boundary, so a
 /// guest cannot inflate or forge them, and their cardinality is fixed by this
 /// struct rather than by untrusted input.
+///
+/// # Across a reload
+///
+/// Every counter here **accumulates** across [`Plugin::reload`]; only
+/// [`reloads`](PluginStats::reloads) changes. These numbers answer "what has
+/// this plugin cost me", and a reload is a new build of the same plugin rather
+/// than a new plugin — a host that reloads on every file change would otherwise
+/// report near-zero fuel forever. [`Plugin::profile`] takes the opposite
+/// decision, for the opposite reason; see its documentation.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct PluginStats {
     /// Calls that have completed, successfully or not.
@@ -125,11 +151,47 @@ pub struct PluginStats {
     /// Bytes of log message emitted.
     pub log_bytes: u64,
     /// Imports the component declares.
+    ///
+    /// The *current* bytes': a reload re-runs the intersection check, so this
+    /// and `imports_denied` describe the component running now rather than the
+    /// one first loaded.
     pub imports_declared: usize,
     /// How many of those the manifest did not grant. Non-zero only where the
     /// application served them itself, since otherwise the load would have
     /// failed.
     pub imports_denied: usize,
+    /// Successful [`Plugin::reload`]s. Zero for a plugin still running the
+    /// bytes it was loaded with; a failed reload does not count, because
+    /// nothing was replaced.
+    pub reloads: u64,
+}
+
+/// What one [`Plugin::reload`] did with the outgoing instance's state.
+///
+/// The reload itself either happened or returned an error — this says what
+/// crossed, which is the part a host may want to log or refuse. `state_saved`
+/// without `state_restored` is the case worth noticing: the outgoing build had
+/// state to hand over and the incoming one declared nowhere to put it, so it
+/// was dropped. That is not an error (ADR-0010 makes the hooks optional in both
+/// directions, so that a rollback to a build without them still works), but it
+/// is worth a line in a log.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ReloadReport {
+    /// The outgoing instance exported [`SAVE_STATE_EXPORT`] and it returned.
+    pub state_saved: bool,
+    /// The incoming instance exported [`RESTORE_STATE_EXPORT`] and was given
+    /// the value.
+    pub state_restored: bool,
+    /// Reloads this plugin has survived, this one included.
+    pub reloads: u64,
+}
+
+impl ReloadReport {
+    /// Whether state was handed over and had nowhere to land.
+    #[must_use]
+    pub fn state_dropped(&self) -> bool {
+        self.state_saved && !self.state_restored
+    }
 }
 
 /// How much more a plugin may say during the call in progress.
@@ -241,6 +303,20 @@ pub struct Plugin {
     /// Mirrors `State::profile.is_some()`, so the hot path in [`Plugin::call`]
     /// costs one bool rather than a store borrow.
     profiling: bool,
+    /// The host this was loaded under, kept so [`Plugin::reload`] can go back
+    /// through the same load path — same engine, same manifest, same check.
+    /// Cloning a `Host` shares its engine, so this costs one `Arc`.
+    ///
+    /// It also fixes something that was quietly wrong: a `Host` owns the epoch
+    /// ticker, and dropping the last one stops the thread. A plugin that
+    /// outlived its host used to keep running with the epoch frozen, which
+    /// means `limits.timeout` silently stopped firing — on a plugin already
+    /// running. Holding the host here makes that impossible.
+    host: Host,
+    /// The per-load `${...}` substitutions this plugin's manifest was resolved
+    /// with. Kept so a reload resolves it the same way rather than quietly
+    /// changing what the manifest granted.
+    vars: BTreeMap<String, String>,
 }
 
 impl fmt::Debug for Plugin {
@@ -249,6 +325,7 @@ impl fmt::Debug for Plugin {
             .field("name", &self.name)
             .field("limits", &self.limits)
             .field("imports", &self.report.decisions.len())
+            .field("reloads", &self.store.data().counters.reloads)
             .finish_non_exhaustive()
     }
 }
@@ -256,11 +333,13 @@ impl fmt::Debug for Plugin {
 impl Plugin {
     pub(crate) fn instantiate(
         name: &str,
-        engine: &Engine,
+        host: &Host,
         component: &Component,
         wiring: &Wiring<'_>,
         report: GrantReport,
+        vars: BTreeMap<String, String>,
     ) -> Result<Self> {
+        let engine = host.engine();
         let manifest = wiring.manifest;
         let wasi = build_wasi_ctx(manifest)?;
 
@@ -349,6 +428,8 @@ impl Plugin {
             report,
             trace: wiring.trace.map(Arc::clone),
             profiling,
+            host: host.clone(),
+            vars,
         })
     }
 
@@ -381,7 +462,220 @@ impl Plugin {
             log_bytes: state.counters.log_bytes,
             imports_declared: self.report.decisions.len(),
             imports_denied: self.report.denied().count(),
+            reloads: state.counters.reloads,
         }
+    }
+
+    /// Replace this plugin's code with new bytes, keeping its name and slot.
+    ///
+    /// Reload is [`Host::load`] plus a state handoff, **not** a cheaper path
+    /// that skips the checks. The bytes are compiled and their imports
+    /// intersected with the same manifest, and a component that asks for
+    /// something the manifest does not grant is refused here exactly as it
+    /// would be at load: new bytes must not be able to acquire a capability by
+    /// arriving as an update. That is ADR-0010's central claim.
+    ///
+    /// # Nothing is replaced until everything has succeeded
+    ///
+    /// The replacement is built to completion first — compiled, checked,
+    /// instantiated, and given the state — and only then does it take over.
+    /// Every failure path returns before that, leaving the plugin *running the
+    /// code it was already running*: a plugin that cannot be replaced is better
+    /// than a host left with none. Two instances therefore exist at once for
+    /// the duration of the call, which for a large guest is a real spike.
+    ///
+    /// One caveat, stated rather than glossed. Every failure that can be
+    /// reached without calling the guest — a refused import, bytes that are not
+    /// a component, a hook of a shape the host cannot call, a state type the
+    /// replacement does not take — happens before anything is entered, and
+    /// leaves a fully working plugin. The exception is a *trap inside
+    /// `save-state`*: Wasmtime 48 refuses to re-enter a component instance
+    /// after any trap, so that plugin is unreplaced but also uncallable. Reload
+    /// neither causes that nor can undo it — a trapping ordinary call does the
+    /// same — and it is the reason the replacement is built first.
+    ///
+    /// # State
+    ///
+    /// If the outgoing instance exports [`SAVE_STATE_EXPORT`] it is called, and
+    /// the value it returns is passed to the incoming instance's
+    /// [`RESTORE_STATE_EXPORT`]. Both are optional and either side may be
+    /// missing, in which case the reload happens with no state rather than
+    /// failing. The value crosses as a typed WIT value: it is bounded by
+    /// `limits.transfer` like any other crossing, it goes through the seam a
+    /// [`TraceHook`] watches, and its type must match on both sides — this is
+    /// not cross-version state migration, which the spec puts on the list of
+    /// things watoots does not build.
+    ///
+    /// Both hooks are ordinary calls: they burn fuel, count towards
+    /// [`Plugin::stats`], and appear in a trace.
+    ///
+    /// # Counters
+    ///
+    /// [`Plugin::stats`] accumulates across a reload; [`Plugin::profile`]
+    /// starts again. Each has its own reason, given on each of them. Sampled
+    /// guest profiles do not survive at all — the sampler is bound to one
+    /// compiled component — so call [`Plugin::write_guest_profile`] before
+    /// reloading if you want them.
+    pub fn reload(&mut self, wasm: &[u8]) -> Result<ReloadReport> {
+        let vars = self.vars.clone();
+        self.reload_with(wasm, vars)
+    }
+
+    /// Replace this plugin's code with a component read from disk.
+    ///
+    /// As [`Plugin::reload`], and additionally re-points `${plugin_dir}` at the
+    /// directory the replacement came from. The plugin keeps the name it was
+    /// registered under even when the file is named differently — a reload
+    /// replaces code, not identity.
+    pub fn reload_from_file(&mut self, path: impl AsRef<Path>) -> Result<ReloadReport> {
+        let path = path.as_ref();
+        let wasm = read_component(path)?;
+        let mut vars = self.vars.clone();
+        vars.extend(plugin_dir_var(path));
+        self.reload_with(&wasm, vars)
+    }
+
+    /// The one place a running plugin is replaced.
+    ///
+    /// Written as four steps that each either fail or produce a value, and a
+    /// single assignment at the end that cannot fail. Anything added here
+    /// belongs *above* that assignment; nothing below it is allowed to be
+    /// fallible, which is what keeps "the old instance survives" a property of
+    /// the shape rather than of remembering to be careful.
+    fn reload_with(&mut self, wasm: &[u8], vars: BTreeMap<String, String>) -> Result<ReloadReport> {
+        // 1. Build the replacement, through the same function `Host::load`
+        //    uses: the same compile, the same import intersection, the same
+        //    refusal. Reload has no load path of its own to forget a check in,
+        //    and a check added to loading is a check reload gains for free.
+        //
+        //    First, deliberately: a reload refused for asking too much has then
+        //    not so much as called into the running plugin.
+        let mut fresh = self.host.instantiate_plugin(&self.name, wasm, vars)?;
+
+        // 2. Ask the outgoing instance for its state, if it has any to give.
+        let saved = self.save_state()?;
+
+        // 3. Hand it to the replacement, if the replacement takes it.
+        let state_restored = match &saved {
+            None => false,
+            Some(state) => fresh.restore_state(state)?,
+        };
+
+        // 4. Nothing after this line can fail.
+        fresh.inherit(self);
+        let reloads = fresh.store.data().counters.reloads;
+        *self = fresh;
+
+        Ok(ReloadReport {
+            state_saved: saved.is_some(),
+            state_restored,
+            reloads,
+        })
+    }
+
+    /// Call `save-state`, or report that there is none to call.
+    ///
+    /// The type comes back with the value because the incoming instance's
+    /// `restore-state` has to be checked against it, and a mismatch deserves to
+    /// be named rather than surfacing as the canonical ABI refusing an
+    /// argument.
+    fn save_state(&mut self) -> Result<Option<(Val, Type)>> {
+        let Some(func) = self.instance.get_func(&mut self.store, SAVE_STATE_EXPORT) else {
+            return Ok(None);
+        };
+
+        let ty = func.ty(&self.store);
+        let results: Vec<Type> = ty.results().collect();
+        if ty.params().len() != 0 || results.len() != 1 {
+            return Err(Error::new(
+                ErrorKind::InvalidArgument,
+                format!(
+                    "{}: {SAVE_STATE_EXPORT} must take no parameters and return \
+                     exactly one value; this one takes {} and returns {}",
+                    self.name,
+                    ty.params().len(),
+                    results.len()
+                ),
+            ));
+        }
+
+        let mut values = self.call(SAVE_STATE_EXPORT, &[])?;
+        let value = values.pop().ok_or_else(|| {
+            Error::new(
+                ErrorKind::Internal,
+                format!("{}: {SAVE_STATE_EXPORT} returned nothing", self.name),
+            )
+        })?;
+        Ok(Some((
+            value,
+            results.into_iter().next().expect("one result"),
+        )))
+    }
+
+    /// Give `restore-state` the value, or report that there is nowhere to put
+    /// it.
+    fn restore_state(&mut self, state: &(Val, Type)) -> Result<bool> {
+        let (value, saved_type) = state;
+        let Some(func) = self
+            .instance
+            .get_func(&mut self.store, RESTORE_STATE_EXPORT)
+        else {
+            return Ok(false);
+        };
+
+        let ty = func.ty(&self.store);
+        let params: Vec<Type> = ty.params().map(|(_, ty)| ty).collect();
+        if params.len() != 1 || ty.results().len() != 0 {
+            return Err(Error::new(
+                ErrorKind::InvalidArgument,
+                format!(
+                    "{}: {RESTORE_STATE_EXPORT} must take exactly one parameter \
+                     and return nothing; this one takes {} and returns {}",
+                    self.name,
+                    params.len(),
+                    ty.results().len()
+                ),
+            ));
+        }
+
+        if params[0] != *saved_type {
+            return Err(Error::new(
+                ErrorKind::InvalidArgument,
+                format!(
+                    "{}: the outgoing build's {SAVE_STATE_EXPORT} returns {:?} \
+                     but the replacement's {RESTORE_STATE_EXPORT} takes {:?}. \
+                     State crosses a reload as a typed value of one shape; \
+                     changing that shape is changing the world, and watoots \
+                     does not migrate state between versions of it.",
+                    self.name, saved_type, params[0]
+                ),
+            ));
+        }
+
+        self.call(RESTORE_STATE_EXPORT, std::slice::from_ref(value))?;
+        Ok(true)
+    }
+
+    /// Take over the outgoing instance's lifetime totals.
+    ///
+    /// Called on the *replacement*, immediately before it takes over, and
+    /// infallible on purpose: by the time this runs there is nothing left that
+    /// could send the reload back. See [`PluginStats`] for why the counters
+    /// accumulate here and the profile does not.
+    fn inherit(&mut self, previous: &Self) {
+        let carried = previous.store.data().counters;
+        let peak = previous.store.data().limits.peak_memory;
+
+        let state = self.store.data_mut();
+        state.counters.calls += carried.calls;
+        state.counters.fuel_consumed += carried.fuel_consumed;
+        state.counters.log_messages += carried.log_messages;
+        state.counters.log_bytes += carried.log_bytes;
+        state.counters.reloads = carried.reloads + 1;
+        // A high-water mark across the plugin's life, which is what the field
+        // says it is. The replacement has only just started, so without this
+        // the number would fall — and a peak that falls is not a peak.
+        state.limits.peak_memory = state.limits.peak_memory.max(peak);
     }
 
     /// Where this plugin's time has gone, split at the boundary.
@@ -395,6 +689,17 @@ impl Plugin {
     /// Fails when the host was not built with
     /// [`HostBuilder::profile`](crate::HostBuilder::profile), because a page of
     /// zeroes is a worse answer than being told the feature is off.
+    ///
+    /// # Across a reload
+    ///
+    /// This **starts again** at every [`Plugin::reload`], which is the opposite
+    /// of what [`Plugin::stats`] does and for the opposite reason: a profile
+    /// attributes time to *code*, and one row averaging two different builds of
+    /// an export describes neither. Comparing the profile before a reload with
+    /// the profile after is the whole reason to profile a reload at all, and
+    /// summing them would destroy it. `profile().calls` therefore drifts below
+    /// `stats().calls` on a plugin that has been reloaded, which is the visible
+    /// consequence of the two answering different questions.
     pub fn profile(&self) -> Result<PluginProfile> {
         self.store.data().profile.as_ref().map_or_else(
             || {
@@ -634,7 +939,9 @@ impl Plugin {
     /// than raise an error, so a memory ceiling is only ever reported here via
     /// a trap; there is nothing extra to match on.
     fn classify_call_error(&self, export: &str, err: &wasmtime::Error) -> Error {
-        let kind = if err.downcast_ref::<LogVolumeExceeded>().is_some() {
+        let kind = if err.downcast_ref::<LogVolumeExceeded>().is_some()
+            || exhausted_transfer_budget(err)
+        {
             ErrorKind::LimitExceeded
         } else {
             match err.downcast_ref::<wasmtime::Trap>() {
@@ -649,6 +956,23 @@ impl Plugin {
             format!("{}: {export}: {}\n{err}", self.name, err.root_cause()),
         )
     }
+}
+
+/// Whether an error is `limits.transfer` being spent, rather than a plugin
+/// misbehaving.
+///
+/// Matched on the message, which is not how anything else here is classified —
+/// wasmtime raises this as a private `HostcallFuelExhausted` with no public
+/// type to downcast to, so the rendering is the only signal there is.
+///
+/// The fragility is real and is answered by a test rather than by accepting the
+/// wrong answer: `a_transfer_overrun_is_a_limit_and_not_a_trap` fails loudly if
+/// wasmtime ever rewords this. Reporting a ceiling as a trap is worse than
+/// depending on a string — it sends whoever installed the plugin to debug the
+/// plugin, when what they need to edit is their own manifest.
+fn exhausted_transfer_budget(err: &wasmtime::Error) -> bool {
+    err.chain()
+        .any(|cause| cause.to_string().contains("fuel allocated for hostcalls"))
 }
 
 /// Install `wasi:logging` on the linker, if the manifest grants it.

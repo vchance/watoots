@@ -1305,6 +1305,17 @@ fn a_return_over_the_transfer_budget_is_refused_and_the_manifest_can_raise_it() 
         "expected the transfer budget to be what stopped it, got: {}",
         refused.message()
     );
+    // A ceiling, not misbehaviour. This also pins the string watoots has to
+    // match on: wasmtime raises hostcall exhaustion as a private type with no
+    // public variant to downcast to, so if it ever rewords the message this
+    // assertion is what says so, instead of transfer overruns quietly going
+    // back to reading as traps and sending people to debug the wrong thing.
+    assert_eq!(
+        refused.kind(),
+        ErrorKind::LimitExceeded,
+        "a spent budget is a limit: {}",
+        refused.message()
+    );
 
     // Raising it in the manifest is the fix, and it has to actually work or the
     // key is decoration.

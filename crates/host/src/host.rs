@@ -304,28 +304,12 @@ impl Host {
     /// on top of any variables set on the builder.
     pub fn load(&self, path: impl AsRef<Path>) -> Result<Plugin> {
         let path = path.as_ref();
-        let wasm = std::fs::read(path).map_err(|err| {
-            Error::new(
-                ErrorKind::NotFound,
-                format!("cannot read component {}: {err}", path.display()),
-            )
-        })?;
-
-        let plugin_dir = path
-            .parent()
-            .filter(|parent| !parent.as_os_str().is_empty())
-            .unwrap_or_else(|| Path::new("."))
-            .display()
-            .to_string();
-
+        let wasm = read_component(path)?;
         let name = path.file_stem().map_or_else(
             || path.display().to_string(),
             |s| s.to_string_lossy().into(),
         );
-
-        self.load_binary_with(&name, &wasm, |vars| {
-            vars.insert("plugin_dir".to_string(), plugin_dir);
-        })
+        self.instantiate_plugin(&name, &wasm, plugin_dir_var(path))
     }
 
     /// Load a component already in memory.
@@ -333,14 +317,22 @@ impl Host {
     /// `${plugin_dir}` is not defined for this path — there is no directory to
     /// point it at — so a manifest using it must be loaded with [`Host::load`].
     pub fn load_binary(&self, name: &str, wasm: &[u8]) -> Result<Plugin> {
-        self.load_binary_with(name, wasm, |_| {})
+        self.instantiate_plugin(name, wasm, BTreeMap::new())
     }
 
-    fn load_binary_with(
+    /// Compile, check against the manifest, and instantiate.
+    ///
+    /// The single path from bytes to a running plugin: [`Host::load`],
+    /// [`Host::load_binary`] and [`Plugin::reload`] all come through here, so
+    /// there is no second route that could be built without the grant check.
+    /// `extra_vars` are the per-load substitutions — `${plugin_dir}` today —
+    /// layered on top of the builder's; a plugin keeps them so a reload
+    /// resolves its manifest exactly as the original load did.
+    pub(crate) fn instantiate_plugin(
         &self,
         name: &str,
         wasm: &[u8],
-        extra_vars: impl FnOnce(&mut BTreeMap<String, String>),
+        extra_vars: BTreeMap<String, String>,
     ) -> Result<Plugin> {
         let component = self.compile(wasm)?;
 
@@ -359,7 +351,11 @@ impl Host {
         }
 
         let mut vars = self.inner.vars.clone();
-        extra_vars(&mut vars);
+        vars.extend(
+            extra_vars
+                .iter()
+                .map(|(name, value)| (name.clone(), value.clone())),
+        );
 
         let mut manifest = self.inner.manifest.clone();
         manifest.substitute(&vars)?;
@@ -371,7 +367,7 @@ impl Host {
             log_sink: self.inner.log_sink.as_ref(),
             profiling: self.inner.profiling,
         };
-        Plugin::instantiate(name, &self.inner.engine, &component, &wiring, report)
+        Plugin::instantiate(name, self, &component, &wiring, report, extra_vars)
     }
 
     /// Compile a component, going through the precompile cache when one is set.
@@ -706,6 +702,31 @@ impl HostBuilder {
             }),
         })
     }
+}
+
+/// Read a component from disk, saying which file was missing.
+pub(crate) fn read_component(path: &Path) -> Result<Vec<u8>> {
+    std::fs::read(path).map_err(|err| {
+        Error::new(
+            ErrorKind::NotFound,
+            format!("cannot read component {}: {err}", path.display()),
+        )
+    })
+}
+
+/// The `${plugin_dir}` substitution a file-backed load defines.
+///
+/// Shared with [`Plugin::reload_from_file`], which re-points it at wherever the
+/// replacement came from: a manifest that grants `${plugin_dir}/cache` means
+/// the new component's directory, not the old one's.
+pub(crate) fn plugin_dir_var(path: &Path) -> BTreeMap<String, String> {
+    let dir = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."))
+        .display()
+        .to_string();
+    BTreeMap::from([("plugin_dir".to_string(), dir)])
 }
 
 /// Strip an `@version` suffix, which is how grants are matched.

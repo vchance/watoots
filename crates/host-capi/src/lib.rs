@@ -866,6 +866,11 @@ pub unsafe extern "C" fn wt_plugin_name(plugin: *const wt_plugin_t) -> *const c_
 /// is measured at the boundary rather than reported by the guest, so a plugin
 /// can neither forge nor inflate them. See ADR-0006 for why watoots offers
 /// these and not metrics a plugin emits about itself.
+///
+/// Every counter **accumulates across a reload** — these answer "what has this
+/// plugin cost me", and a reload is a new build of the same plugin rather than
+/// a new plugin. [`wt_plugin_profile`] takes the opposite decision for the
+/// opposite reason; see ADR-0010.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default)]
 #[allow(non_camel_case_types)]
@@ -880,10 +885,14 @@ pub struct wt_plugin_stats_t {
     pub log_messages: u64,
     /// Bytes of log message emitted.
     pub log_bytes: u64,
-    /// Imports the component declares.
+    /// Imports the component declares. The *current* bytes': a reload re-runs
+    /// the check, so this describes what is running now.
     pub imports_declared: u64,
     /// How many of those the manifest did not grant.
     pub imports_denied: u64,
+    /// Successful [`wt_plugin_reload`]s. Every other field here accumulates
+    /// across those; see the note on the struct.
+    pub reloads: u64,
 }
 
 /// Read a plugin's counters into `stats_out`.
@@ -909,8 +918,140 @@ pub unsafe extern "C" fn wt_plugin_stats(
                 log_bytes: stats.log_bytes,
                 imports_declared: stats.imports_declared as u64,
                 imports_denied: stats.imports_denied as u64,
+                reloads: stats.reloads,
             };
         }
+        Ok(())
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Reload (ADR-0010)
+// ---------------------------------------------------------------------------
+
+/// What one reload did with the outgoing instance's state.
+///
+/// Plain integers and flags, owned by the caller: there is nothing to free. The
+/// reload itself either happened or returned a non-`WT_OK` status; this says
+/// what crossed. `state_saved` without `state_restored` means the outgoing
+/// build had state to hand over and the incoming one declared nowhere to put
+/// it, so it was dropped — not an error, since a rollback to a build without
+/// the hooks has to keep working, but worth a line in a log.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+#[allow(non_camel_case_types)]
+pub struct wt_reload_report_t {
+    /// The outgoing instance exported `save-state` and it returned.
+    pub state_saved: bool,
+    /// The incoming instance exported `restore-state` and was given the value.
+    pub state_restored: bool,
+    /// Reloads this plugin has survived, this one included.
+    pub reloads: u64,
+}
+
+/// The export a plugin uses to hand its state out before it is replaced.
+///
+/// `"save-state"`. Never NULL; static storage. It takes no parameters and
+/// returns exactly one value of whatever type the world declares — watoots
+/// carries the value without interpreting it. Optional: a component that does
+/// not export it reloads with no state.
+#[unsafe(no_mangle)]
+pub extern "C" fn wt_save_state_export() -> *const c_char {
+    // `watoots::SAVE_STATE_EXPORT` with a NUL, checked by the test that
+    // compares the two.
+    c"save-state".as_ptr()
+}
+
+/// The export a plugin uses to take state back after it replaces another.
+///
+/// `"restore-state"`. One parameter, of the type `save-state` returns, and no
+/// result. Also optional. Never NULL; static storage.
+#[unsafe(no_mangle)]
+pub extern "C" fn wt_restore_state_export() -> *const c_char {
+    c"restore-state".as_ptr()
+}
+
+fn write_reload_report(report: &watoots::ReloadReport, out: *mut wt_reload_report_t) {
+    if out.is_null() {
+        return;
+    }
+    // SAFETY: checked non-null; the caller owns the storage and there is
+    // nothing in it to free.
+    unsafe {
+        *out = wt_reload_report_t {
+            state_saved: report.state_saved,
+            state_restored: report.state_restored,
+            reloads: report.reloads,
+        };
+    }
+}
+
+/// Replace a plugin's code with new bytes, keeping its name and its handle.
+///
+/// Reload is `wt_host_load` plus a state handoff, **not** a cheaper path that
+/// skips the checks: the bytes are compiled and intersected with the same
+/// manifest, and a component asking for something the manifest does not grant
+/// is refused here with `WT_ERR_PERMISSION_DENIED` exactly as it would be at
+/// load. New bytes must not acquire a capability by arriving as an update.
+///
+/// **A failed reload leaves the plugin running the code it was already
+/// running.** The replacement is built to completion — compiled, checked,
+/// instantiated and given the state — before it takes over, so every failure
+/// returns with the handle still valid and still usable. The one exception is
+/// a trap inside `save-state`: Wasmtime refuses to re-enter a component
+/// instance after any trap, so that plugin is unreplaced but also uncallable.
+///
+/// If the outgoing instance exports `save-state` its value is passed to the
+/// incoming instance's `restore-state`; both are optional, and a missing one
+/// means the reload carries no state rather than failing. The value crosses as
+/// a typed WIT value, so it is bounded by `limits.transfer` like any other
+/// crossing and its type must match on both sides.
+///
+/// `report_out` may be NULL. Counters from `wt_plugin_stats` carry across;
+/// `wt_plugin_profile` starts again, and sampled guest profiles do not survive
+/// at all — call `wt_plugin_write_guest_profile` first if you want them. Rows
+/// already fetched with `wt_plugin_profile` stay readable across a reload and
+/// go on describing the build they were taken from, until the next
+/// `wt_plugin_profile` replaces them.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wt_plugin_reload(
+    plugin: *mut wt_plugin_t,
+    wasm: *const u8,
+    wasm_len: usize,
+    report_out: *mut wt_reload_report_t,
+    error_out: *mut *mut wt_error_t,
+) -> wt_status {
+    guard(error_out, || {
+        if plugin.is_null() || wasm.is_null() {
+            return Err(Error::invalid_argument("plugin and wasm must not be NULL"));
+        }
+        let bytes = unsafe { std::slice::from_raw_parts(wasm, wasm_len) };
+        let report = unsafe { (*plugin).inner.reload(bytes) }?;
+        write_reload_report(&report, report_out);
+        Ok(())
+    })
+}
+
+/// Replace a plugin's code with a component read from `path`.
+///
+/// As [`wt_plugin_reload`], and additionally re-points `${plugin_dir}` at the
+/// directory the replacement came from. The plugin keeps the name it was loaded
+/// under even when the file is named differently: a reload replaces code, not
+/// identity.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wt_plugin_reload_file(
+    plugin: *mut wt_plugin_t,
+    path: *const c_char,
+    report_out: *mut wt_reload_report_t,
+    error_out: *mut *mut wt_error_t,
+) -> wt_status {
+    guard(error_out, || {
+        if plugin.is_null() {
+            return Err(Error::invalid_argument("plugin must not be NULL"));
+        }
+        let path = unsafe { borrow_str(path, "path") }?;
+        let report = unsafe { (*plugin).inner.reload_from_file(path) }?;
+        write_reload_report(&report, report_out);
         Ok(())
     })
 }

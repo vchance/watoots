@@ -43,6 +43,60 @@ constexpr const char* kWantsNetwork = R"(
 )
 )";
 
+// A counter with both reload state hooks (ADR-0010), and a second build of it
+// whose `get` adds a thousand -- so one call says both which build is running
+// and what state it started from.
+constexpr const char* kCounterV1 = R"(
+(component
+  (core module $m
+    (global $n (mut i32) (i32.const 0))
+    (func (export "get") (result i32) (global.get $n))
+    (func (export "bump") (param i32)
+      (global.set $n (i32.add (global.get $n) (local.get 0))))
+    (func (export "save") (result i32) (global.get $n))
+    (func (export "restore") (param i32) (global.set $n (local.get 0))))
+  (core instance $i (instantiate $m))
+  (func $get (result u32) (canon lift (core func $i "get")))
+  (func $bump (param "n" u32) (canon lift (core func $i "bump")))
+  (func $save (result u32) (canon lift (core func $i "save")))
+  (func $restore (param "state" u32) (canon lift (core func $i "restore")))
+  (export "get" (func $get))
+  (export "bump" (func $bump))
+  (export "save-state" (func $save))
+  (export "restore-state" (func $restore))
+)
+)";
+
+constexpr const char* kCounterV2 = R"(
+(component
+  (core module $m
+    (global $n (mut i32) (i32.const 0))
+    (func (export "get") (result i32) (i32.add (global.get $n) (i32.const 1000)))
+    (func (export "save") (result i32) (global.get $n))
+    (func (export "restore") (param i32) (global.set $n (local.get 0))))
+  (core instance $i (instantiate $m))
+  (func $get (result u32) (canon lift (core func $i "get")))
+  (func $save (result u32) (canon lift (core func $i "save")))
+  (func $restore (param "state" u32) (canon lift (core func $i "restore")))
+  (export "get" (func $get))
+  (export "save-state" (func $save))
+  (export "restore-state" (func $restore))
+)
+)";
+
+// The same world, plus a socket the manifest never granted.
+constexpr const char* kCounterWantsNetwork = R"(
+(component
+  (import "wasi:sockets/tcp@0.2.6" (instance (export "connect" (func))))
+  (core module $m
+    (global $n (mut i32) (i32.const 0))
+    (func (export "get") (result i32) (global.get $n)))
+  (core instance $i (instantiate $m))
+  (func $get (result u32) (canon lift (core func $i "get")))
+  (export "get" (func $get))
+)
+)";
+
 wt::Host BuildHost(const char* manifest = "") {
   wt::HostBuilder builder;
   EXPECT_TRUE(builder.ManifestFromString(manifest).has_value());
@@ -422,6 +476,106 @@ TEST(CApi, PluginStatsAreObservedNotReported) {
   ASSERT_TRUE(after.has_value()) << after.error().Message();
   EXPECT_EQ(after->calls, 1U);
   EXPECT_EQ(after->imports_denied, 0U);
+  EXPECT_EQ(after->reloads, 0U);
+}
+
+// ---------------------------------------------------------------------------
+// Reload (ADR-0010)
+// ---------------------------------------------------------------------------
+
+TEST(CApi, ReloadRunsTheNewCodeAndCarriesState) {
+  const wt::Host host = BuildHost();
+  const std::string first = kCounterV1;
+  const std::string second = kCounterV2;
+
+  auto plugin = host.LoadBinary("counter", AsBytes(first));
+  ASSERT_TRUE(plugin.has_value()) << plugin.error().Message();
+
+  const std::vector<std::string> seven{"7"};
+  ASSERT_TRUE(plugin->Call("bump", seven).has_value());
+
+  auto report = plugin->Reload(AsBytes(second));
+  ASSERT_TRUE(report.has_value()) << report.error().Message();
+  EXPECT_TRUE(report->state_saved);
+  EXPECT_TRUE(report->state_restored);
+  EXPECT_EQ(report->reloads, 1U);
+
+  // 1007 in one number: 1000 says the new build is running, 7 says it started
+  // from the old instance's state.
+  auto value = plugin->Call("get");
+  ASSERT_TRUE(value.has_value()) << value.error().Message();
+  EXPECT_EQ(value->value_or(""), "1007");
+  EXPECT_EQ(plugin->Name(), "counter")
+      << "a reload replaces code, not identity";
+
+  // Counters accumulate across a reload; the reload count is what separates
+  // "one instance did all this" from "this is the second build".
+  auto stats = plugin->Stats();
+  ASSERT_TRUE(stats.has_value()) << stats.error().Message();
+  EXPECT_EQ(stats->reloads, 1U);
+  EXPECT_GE(stats->calls, 4U) << "bump, get, and the two handoff hooks";
+}
+
+TEST(CApi, AReloadThatWantsMoreIsRefusedAndTheOldCodeRunsOn) {
+  // ADR-0010's central claim, from C++: new bytes must not acquire a
+  // capability by arriving as an update.
+  const wt::Host host = BuildHost();
+  const std::string first = kCounterV1;
+  const std::string greedy = kCounterWantsNetwork;
+
+  auto plugin = host.LoadBinary("counter", AsBytes(first));
+  ASSERT_TRUE(plugin.has_value()) << plugin.error().Message();
+  const std::vector<std::string> five{"5"};
+  ASSERT_TRUE(plugin->Call("bump", five).has_value());
+
+  auto refused = plugin->Reload(AsBytes(greedy));
+  ASSERT_FALSE(refused.has_value());
+  EXPECT_EQ(refused.error().Code(), WT_ERR_PERMISSION_DENIED);
+  EXPECT_NE(refused.error().Message().find("wasi:sockets"), std::string::npos)
+      << refused.error().Message();
+
+  // The handle is still valid and the old instance is still the one running.
+  auto value = plugin->Call("get");
+  ASSERT_TRUE(value.has_value()) << value.error().Message();
+  EXPECT_EQ(value->value_or(""), "5");
+
+  auto stats = plugin->Stats();
+  ASSERT_TRUE(stats.has_value()) << stats.error().Message();
+  EXPECT_EQ(stats->reloads, 0U) << "nothing was replaced";
+}
+
+TEST(CApi, PublishesTheStateHookNames) {
+  // A world author reads these off the header rather than out of prose, so
+  // they are part of the API.
+  EXPECT_STREQ(wt_save_state_export(), "save-state");
+  EXPECT_STREQ(wt_restore_state_export(), "restore-state");
+}
+
+TEST(CApi, ReloadFileReplacesTheCodeAndKeepsTheName) {
+  const std::filesystem::path dir =
+      std::filesystem::temp_directory_path() / "watoots_reload_test";
+  std::filesystem::create_directories(dir);
+  const std::filesystem::path replacement = dir / "counter-v2.wat";
+  {
+    std::ofstream out(replacement);
+    out << kCounterV2;
+  }
+
+  const wt::Host host = BuildHost();
+  const std::string first = kCounterV1;
+  auto plugin = host.LoadBinary("counter", AsBytes(first));
+  ASSERT_TRUE(plugin.has_value()) << plugin.error().Message();
+
+  auto report = plugin->ReloadFile(replacement.string());
+  ASSERT_TRUE(report.has_value()) << report.error().Message();
+  EXPECT_TRUE(report->state_restored);
+  EXPECT_EQ(plugin->Name(), "counter");
+
+  auto value = plugin->Call("get");
+  ASSERT_TRUE(value.has_value()) << value.error().Message();
+  EXPECT_EQ(value->value_or(""), "1000");
+
+  std::filesystem::remove_all(dir);
 }
 
 // ---------------------------------------------------------------------------
