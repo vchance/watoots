@@ -24,15 +24,18 @@ same content as the published scoping page (read-only reference).
   memory or engine state. We do not reimplement `wasm-tools component
   semver-check` or `targets` — call/wrap them.
 
-## Layout (workspace exists; crates are v0.0.0 placeholders until M1 fills them)
+## Layout
 - `crates/host/`        core library (`Host`, `Plugin`, manifest, limits, registry, cache)
 - `crates/host-capi/`   cbindgen C API + `include/` C++ RAII header + CMake package
 - `crates/trace/`       trace format (WAVE text + binary), recorder shim, replay runner
 - `crates/cli/`         `watoots` binary: `inspect`, `run`, `record`, `replay`, `trace fmt`
 - `examples/wit/lint/`  the lint world (four guests)
 - `examples/wit/asset/` the asset-pipeline world
-- `examples/plugins/`   Rust, JS (ComponentizeJS), Python (componentize-py) sample plugins
-- `examples/host-cpp/`  minimal C++ host app proving the C API
+- `examples/plugins/`   eight guests: Rust, C++ (wasi-sdk), JS (ComponentizeJS),
+                        Python (componentize-py), each implementing both worlds
+- `examples/host-cpp/`  C++ host for the lint world, proving the C API
+- `examples/host-cpp-asset/` C++ host for the asset world: decodes PNG with stb,
+                        routes a pipeline on `describe`, writes PNG back
 - `docs/adr/`           architecture decision records (one file per decision)
 
 ## Naming (ADR-0001)
@@ -50,14 +53,15 @@ same content as the published scoping page (read-only reference).
   `docs/adr/NNNN-title.md` when made. Don't silently pick. ADR-0001 (name), ADR-0002 (license: Apache-2.0 WITH LLVM-exception), and
   ADR-0003 (C++ toolchain), ADR-0004 (WAVE), ADR-0005 (cargo from
   CMake), ADR-0006 (`wasi:logging` yes, guest-emitted metrics no) and
-  ADR-0007 (link `wit-component`, don't shell out) and ADR-0008 (proptest on
-  stable; record/replay is the fuzzing oracle) are done.
+  ADR-0007 (link `wit-component`, don't shell out), ADR-0008 (proptest on
+  stable; record/replay is the fuzzing oracle) and ADR-0009 (profile at the
+  boundary; the timeout outranks the sampler) are done.
 - Prefer `wasmtime::component::Val` + WAVE for dynamic calls; `bindgen!` only
   where the Rust host has a static world.
 - Tests live next to code; integration tests under `crates/*/tests/` use the
   sample plugins in `examples/`.
 
-## Environment notes (as of 2026-08-28)
+## Environment notes (as of 2026-09-06)
 - Rust 1.97.1, cargo 1.97.1, CMake 4.4.3 present. MSRV is 1.95 (Wasmtime 48).
 - `wasm32-wasip2` target **is installed**.
 - `wasm-tools`, `wac` and `cargo-component` are **not** installed. Host tests
@@ -77,25 +81,31 @@ same content as the published scoping page (read-only reference).
 ## Milestones (from the spec)
 M1 spike → M2 host core → M3 C API + polyglot proof (first publishable) →
 M4 record/replay → M5 ship v0.1 → M6 v0.2 from feedback.
-Current: **M5** (ship v0.1), in progress. M1-M4 are done. `crates/host` has the
+Current: **M6**. M1-M5 are done and v0.2.0 is tagged. `crates/host` has the
 engine, manifest, import-intersection check, per-call limits, registry,
 precompile cache, dynamic `Val`/WAVE calls, determinism knobs and the trace
 hook; `crates/host-capi` has the cbindgen C API, the C++ RAII header and an
 installable CMake package; `crates/trace` has the trace format (text + binary),
 recorder and replay runner; `crates/cli` has `watoots inspect|run|record|replay|
-trace fmt`. `examples/` has one WIT world in Rust, JavaScript and Python, three
-policies, and a C++ host app that runs all three.
+trace fmt`. `examples/` has two WIT worlds: `lint` (small, hermetic, the smoke test) and
+`asset` (an image pipeline with variants, a result, large `list<u8>` payloads
+and a filesystem capability). Four guests implement each, eight policies derived
+from what each toolchain actually imports, and two C++ hosts.
 
-M5 is done except the announcement. Shipped: version 0.1.0 tagged 2026-09-03,
-`docs/MANIFEST.md`, a root `SECURITY.md` (reporting policy) alongside
-`docs/SECURITY.md` (threat model), `CONTRIBUTING.md`, a manifest-first README,
-`tools/demo.sh`, `CHANGELOG.md`, and green CI. The repo is public at
-`github.com/vchance/watoots`; crate metadata points at it. crates.io has only
-the `0.0.0` name placeholders published 2026-08-28 (tag `v0.0.0`, never pushed
-to the remote); 0.1.0 is deliberately not published.
-**Still not done, and deliberately: announcing anywhere, and asking maintainers
-for review.** That is the last M5 item and it is the user's call, not a
-blocker to route around.
+M6 so far: `inspect` rewritten as a capability summary plus `--targets` and
+`wit semver-check`; property tests whose oracle is record/replay; `PluginStats`;
+a boundary profiler. **`reload` is the one v0.2 candidate untouched.**
+
+M5 shipped: `docs/MANIFEST.md`, a root `SECURITY.md` (reporting policy)
+alongside `docs/SECURITY.md` (threat model), `CONTRIBUTING.md`,
+`CODE_OF_CONDUCT.md`, issue forms, a manifest-first README, `tools/demo.sh`,
+`CHANGELOG.md`. The repo is public at `github.com/vchance/watoots` and crate
+metadata points at it. Tags `v0.0.0`, `v0.1.0` and `v0.2.0` are all on the
+remote; **crates.io has only the `0.0.0` name placeholders** and neither release
+is published there, so the README tells people to build from the tag.
+
+**Announcing is Von's call and is not to be raised.** It is the last M5 item on
+paper; do not offer it, recommend it, or list it as outstanding.
 
 Four things the real guests taught us, worth knowing before debugging a denial:
 a `wasm32-wasip2` Rust guest imports `wasi:clocks/monotonic-clock` and
