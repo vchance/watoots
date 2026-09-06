@@ -191,18 +191,21 @@ Evenings-and-weekends pace, one focused person. Ordered by dependency: the trace
 
 ## Where the value actually is
 
-Decomposed honestly (from the 2026-08-27 review):
+Decomposed honestly (2026-08-27; revised 2026-09-06 after checking each claim
+against what actually shipped — two of them were wrong):
 
 | Piece | Nature | Value |
 |---|---|---|
 | Engine config, WASI wiring, precompile cache, registry | Glue | Low |
-| C API + C++ header | Glue, but nobody has done it | Medium — value is that it exists |
-| Manifest permission schema + import-intersection check | Design decision | High if it becomes the convention |
-| WIT-level trace format, resource-handle mapping, divergence semantics, reentrancy handling | Real engineering | High — non-obvious; Wasmtime's team chose a different level |
+| C API + C++ header | Glue — and *not* unprecedented | Low on its own. Wasmtime's C API has had component support since 2025 and ships `.hh` C++ wrappers. The value is the next row, reached through C |
+| Manifest permission schema + import-intersection check | Design decision | Medium. Deny-by-default is table stakes — Spin, wasmCloud, Wassette and ACT all lead with it. What is unoccupied is exposing *any* policy surface to C: `wasmtime_component_linker_add_wasip2` links all of WASI or none, and no other component host offers a C policy API at all |
+| WIT-level trace format, resource-handle mapping, divergence semantics, reentrancy handling | Real engineering | **Highest.** Not because Wasmtime works at a different level — they do not — but because wasmtime#11284 names a human-readable trace format as an explicit non-goal, "an independent tool over the low-level trace". The people best placed to build this have written down that they will not |
 | ~~Same-binary checkpoint/restore~~ | Not buildable | **Nil.** `ComponentItem` has no memory, global or table variant and nothing public returns a `Memory` from component-land. The value was real; the route does not exist ([ADR-0010](adr/0010-reload.md)) |
 | Tracking Wasmtime releases + advisories for 2 years | Commitment | High — this is what people actually adopt |
 
-Nothing technically stops incumbents from building this; what stops them is incentive (Zed built a host for Zed; Extism has a strategic stance against components). What is defensible is trust, convention, and judgment about what not to build. **Lead with record/replay** — it is where understanding shows and where no incumbent is working — and treat the host library as the delivery vehicle.
+Nothing technically stops incumbents from building this; what stops them is incentive. Zed built a host for Zed and publishes none of it (`publish = false` on the workspace; only the *guest* crate ships). Extism has a strategic stance against components and its commit rate has gone 99 → 35 → 6 across 2024, 2025 and 2026. Wasmtime has written the non-goal down. What is defensible is trust, convention, and judgment about what not to build.
+
+**Lead with record/replay** — it is where understanding shows and where no incumbent is working — and treat the host library as the delivery vehicle. This was the conclusion in August and it survived the September re-check; what had drifted was the presentation, not the analysis. The README led with the manifest and called it "the product", which is the one claim every competitor now makes on its own front page.
 
 ## Open decisions
 

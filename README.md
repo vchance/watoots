@@ -18,7 +18,7 @@ first-class rather than an afterthought.
 
 ## The manifest
 
-This is the product. Everything else exists to enforce it.
+The front door, and the thing worth looking at first.
 
 ```toml
 [permissions]
@@ -74,8 +74,19 @@ Limits of the sandbox, stated plainly: **[docs/SECURITY.md](docs/SECURITY.md)**.
 
 ## Record and replay
 
-Every call between an application and a plugin already goes through the host
-library, so recording is a hook rather than an instrumentation pass:
+**The part nobody else builds.** Deny-by-default is table stakes now — Spin,
+wasmCloud and Wassette all lead with it — but a readable, host-free replay that
+becomes a regression test does not exist anywhere else. Wasmtime has its own
+record/replay work at the *same* level as this, and
+[wasmtime#11284](https://github.com/bytecodealliance/wasmtime/pull/11284) lists
+as an explicit non-goal:
+
+> A human readable trace format. This belongs better in something like
+> wit-bindgen, and/or as an independent tool over the low-level trace.
+
+That is this. Every call between an application and a plugin already goes
+through the host library, so recording is a hook rather than an instrumentation
+pass:
 
 ```console
 $ watoots record lint.wasm -m policy.toml -c lint -o bug.wave -- '"notes.md"' '"TODO\n"'
