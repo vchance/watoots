@@ -1,6 +1,6 @@
 # watoots
 
-> **Work in progress — v0.2.0 is tagged, not published.** crates.io holds
+> **Work in progress — v0.3.0 is tagged, not published.** crates.io holds
 > only the `0.0.0` placeholders that reserve the names, so build from the tag.
 > The API can still change between 0.x releases. What is here works and is
 > tested in CI: the host, the C API, record/replay, `wasi:logging`, a boundary

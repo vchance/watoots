@@ -4,6 +4,71 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] — 2026-09-06
+
+Additive for manifests and plugins. **One C ABI change:** `wt_plugin_stats_t`
+gained a trailing `reloads` field, so a caller compiled against a 0.2.0 header
+reads a struct one field short. Nothing is published to crates.io, so nobody is
+holding a stale header — but it is an ABI change and this is where it is said.
+
+### Added
+
+- **A second example world, and four guests for it.** `examples/wit/asset` is an
+  image pipeline: a record carrying a large `list<u8>`, a `variant` with
+  payloads, `result<image, failure>`, and a `lut` step that makes the plugin
+  open a file itself — the first example where a *plugin* needs the filesystem
+  rather than a language runtime. Rust, C++, JavaScript and Python implement it
+  and agree byte for byte; `crates/host/tests/asset_e2e.rs` runs the same cases
+  against every guest present and is where that claim is actually enforced.
+- **A C++ guest**, via wasi-sdk. The project's claim is that C++ applications
+  have no component-model plugin option; a C++ *host* only showed half of it.
+- **`examples/host-cpp-asset`**, which decodes PNG with `stb_image`, routes a
+  pipeline on `describe`, and writes the result back. `stb` is fetched with a
+  pinned commit like GoogleTest rather than vendored.
+- **`limits.transfer`** (ADR-0010's neighbour, found by the PNG host). Wasmtime
+  meters what the *host* allocates lifting a guest's return value, separately
+  from `limits.fuel`, and watoots did not expose it — so a plugin could not
+  return more than about 2.79 MB and the error named a budget the manifest had
+  no word for. Note the unit: on the dynamic path a `list<u8>` costs 48 per
+  byte, because lifting produces a `Val` per element. `docs/MANIFEST.md` carries
+  the arithmetic.
+- **Reload** ([ADR-0010](docs/adr/0010-reload.md)). `Plugin::reload`,
+  `wt_plugin_reload`, `wt::Plugin::Reload`, `watoots reload`. State crosses as
+  typed WIT values through optional `save-state` / `restore-state` exports.
+  Reload re-runs the import-intersection check — a plugin must not acquire a
+  capability by being updated — and a refused reload leaves the old instance
+  running, un-entered.
+- **`PluginProfile::wave_nanos`**, a fourth bucket. The profiler measured only
+  the call and not the WAVE text conversion around it, so it reported 52 ms of a
+  177 ms call and charged the difference to marshalling. Marshalling is what the
+  component model costs; this is what the *untyped* path costs, and only one of
+  them would go away under `bindgen!`.
+- `PluginStats::reloads`.
+
+### Fixed
+
+- A `limits.transfer` overrun reported `ErrorKind::Trap`, so a ceiling read as
+  misbehaviour and sent whoever installed the plugin to debug the plugin.
+- A leak in the C++ lint guest: an import's arguments belong to the caller and
+  there is no post-return on the guest side. 128 KiB growing to 1.0 MiB over
+  20 000 calls, now flat.
+- A `Plugin` outliving its `Host` lost the epoch ticker, so `limits.timeout`
+  silently stopped firing on an already-running plugin.
+
+### Changed
+
+- `examples/wit/` now holds one directory per world, because a WIT directory is
+  a single package and two worlds cannot share one.
+- Failure prose in the asset world is explicitly **not** conformance surface.
+  Pinning it made the second guest reproduce five behaviours of Rust's standard
+  library; a host branches on the case.
+
+### Not built
+
+- **Same-binary checkpoint/restore.** Tried, and it cannot be done: a
+  component's memory, globals and tables are unreachable from wasmtime's public
+  API. See [ADR-0010](docs/adr/0010-reload.md) for what would have to change.
+
 ## [0.2.0] — 2026-09-04
 
 Everything here is additive: a 0.1.0 manifest and a 0.1.0 plugin still work.
@@ -136,5 +201,6 @@ First release. Both halves of the project work end to end.
 See [docs/SECURITY.md](docs/SECURITY.md) for what the sandbox does and does not
 protect against.
 
+[0.3.0]: https://github.com/vchance/watoots/releases/tag/v0.3.0
 [0.2.0]: https://github.com/vchance/watoots/releases/tag/v0.2.0
 [0.1.0]: https://github.com/vchance/watoots/releases/tag/v0.1.0

@@ -92,6 +92,40 @@ dim "Three buckets, not one number. A slow call is a slow plugin, a slow host"
 dim "function, or a value being copied across the boundary -- and the fix is"
 dim "different in each case."
 
+# ---------------------------------------------------------------------------
+step "7. Swap the plugin without restarting the host"
+dim "\$ watoots reload $plugin --to rust_lint.wasm -c name"
+echo
+$watoots reload "$plugin" --to "$plugin" -m "$policy" \
+  --answer 'watoots:example/log@0.1.0#emit=' -c name
+echo
+dim "Same world, new bytes, no restart. The replacement is built and checked"
+dim "before the running plugin is touched."
+
+# ---------------------------------------------------------------------------
+step "8. And refused when the new build wants more"
+# Not a contrived failure: the C++ guest is a real build of the same world, and
+# wasi-libc links the wall clock where Rust's std does not. The manifest that
+# was right for the old bytes is wrong for the new ones, and that is the case
+# reload exists to catch.
+cpp=examples/plugins/cpp-lint/cpp_lint.wasm
+if [ -f "$cpp" ]; then
+  dim "\$ watoots reload $plugin --to cpp_lint.wasm -c name"
+  echo
+  if $watoots reload "$plugin" --to "$cpp" -m "$policy" \
+    --answer 'watoots:example/log@0.1.0#emit=' -c name 2>&1 | head -2; then
+    echo
+    echo "UNEXPECTED: the C++ build should want the wall clock"
+    exit 1
+  fi
+  echo
+  dim "The C++ build links wasi:clocks/wall-clock through wasi-libc; the policy"
+  dim "grants monotonic. A plugin must not acquire a capability by being updated,"
+  dim "so the reload is refused and the Rust plugin is still the one running."
+else
+  dim "(build the C++ guest to see this: tools/build-plugins.sh cpp)"
+fi
+
 bold "That is the whole product."
 dim "A manifest you can review before installing, and a bug report that is a"
 dim "file, which becomes a regression test with no host code around it."
