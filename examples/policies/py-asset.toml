@@ -67,3 +67,12 @@ memory  = "320MiB"
 # which is why this is ten times rust-asset's for identical arithmetic.
 fuel    = 5_000_000_000
 timeout = "30s"
+
+# A plugin returning an image needs this raised, and the arithmetic is not
+# obvious: `transfer` bounds what the *host* allocates lifting what the guest
+# hands back, and on watoots' dynamic path a `list<u8>` costs 48 units per byte
+# — `size_of::<Val>()`, not one. Wasmtime's 128MiB default therefore admits
+# about 2.79MB of pixels, so a 966x966 image cannot come back while the same
+# image goes in fine. 512MiB buys roughly 11MB of pixels, which covers a 1920x1920
+# frame. It is a DoS ceiling, so raise it deliberately rather than by habit.
+transfer = "512MiB"

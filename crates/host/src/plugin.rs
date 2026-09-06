@@ -870,6 +870,10 @@ fn install_host_funcs(linker: &mut Linker<State>, plugin: &str, wiring: &Wiring<
 /// Reset the per-call budgets on a store.
 fn arm(store: &mut Store<State>, limits: &Limits, name: &str) -> Result<()> {
     store.data_mut().log.rearm();
+    // Per crossing rather than per call, so wasmtime resets it itself; this
+    // sets the value each one starts from. Armed here with the others so a
+    // manifest is the only place any ceiling comes from.
+    store.set_hostcall_fuel(usize::try_from(limits.transfer).unwrap_or(usize::MAX));
     if let Some(fuel) = limits.fuel {
         store.set_fuel(fuel).map_err(|err| {
             Error::new(

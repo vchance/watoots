@@ -47,7 +47,9 @@ pub mod wave;
 pub use error::{Error, ErrorKind, Result};
 pub use host::{Host, HostBuilder, HostCall, HostFunc, ImportedFunction, LogRecord, LogSink};
 pub use imports::{GrantReport, ImportDecision, Requirement};
-pub use manifest::{Clocks, FsGrants, Limits, LogLevel, Manifest, Permissions};
+pub use manifest::{
+    Clocks, DEFAULT_TRANSFER_BYTES, FsGrants, Limits, LogLevel, Manifest, Permissions,
+};
 pub use plugin::{Plugin, PluginStats};
 pub use profile::{FunctionKind, FunctionProfile, PluginProfile, Profiling};
 pub use registry::Registry;

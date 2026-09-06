@@ -29,6 +29,13 @@ pub const DEFAULT_LOG_BYTES: u64 = 64 * 1024;
 /// Log messages a plugin may emit in one call, by default.
 pub const DEFAULT_LOG_MESSAGES: u64 = 1024;
 
+/// What a guest may hand the host in one crossing, by default.
+///
+/// Wasmtime's own default, kept rather than raised. It is a DoS mitigation, and
+/// a host library that quietly loosened someone else's security default would
+/// be the wrong kind of convenient — a manifest that needs more should say so.
+pub const DEFAULT_TRANSFER_BYTES: u64 = 128 * 1024 * 1024;
+
 /// A parsed manifest.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields, default)]
@@ -258,6 +265,25 @@ pub struct Limits {
     /// enormous message and a million empty ones cost the host in different
     /// places, and a cap that stops only one of them stops neither.
     pub log_messages: u64,
+    /// How much the guest may hand the host in a single crossing.
+    ///
+    /// Wasmtime's own DoS mitigation, which watoots did not previously expose:
+    /// it bounds what the *host* allocates on the guest's behalf when lifting
+    /// arguments and return values, so a plugin cannot ask for an unbounded
+    /// allocation on this side of the boundary. Per crossing, not per call, and
+    /// reset for each one. Only guest-to-host is metered — data going the other
+    /// way is already resident here.
+    ///
+    /// **The unit is not payload bytes on the dynamic path.** Lifting into
+    /// `Val` costs `size_of::<Val>()` per *element*, so a `list<u8>` spends 48
+    /// per byte: the default 128 MiB admits about 2.79 MB of `list<u8>`, which
+    /// is the wall a plugin returning an image hits. Divide by 48 to size this
+    /// for a byte payload; a typed `bindgen!` host would not pay it, because
+    /// `list<u8>` lifts into `Vec<u8>` there.
+    ///
+    /// Accepts `"128MiB"` or a plain integer.
+    #[serde(deserialize_with = "deserialize_bytes")]
+    pub transfer: u64,
 }
 
 impl Default for Limits {
@@ -268,6 +294,7 @@ impl Default for Limits {
             timeout: None,
             log_bytes: DEFAULT_LOG_BYTES,
             log_messages: DEFAULT_LOG_MESSAGES,
+            transfer: DEFAULT_TRANSFER_BYTES,
         }
     }
 }

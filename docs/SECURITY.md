@@ -16,6 +16,12 @@ it are written down, so here they are.
   cannot read or corrupt host memory, or another plugin's.
 - **Per-call resource ceilings.** Fuel, an epoch deadline, a memory limit, and a
   log-volume ceiling, re-armed before each call and held per plugin.
+- **A ceiling on what a guest may hand back.** `limits.transfer` bounds the
+  allocation the *host* makes while lifting a guest's arguments or return value,
+  so a plugin cannot make the host allocate without bound on its behalf. Per
+  crossing, and guest-to-host only — data going the other way is already
+  resident here. See `docs/MANIFEST.md` for why its unit is not the byte count
+  you would expect.
 
 ## What it does not give you
 

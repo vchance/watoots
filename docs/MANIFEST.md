@@ -135,6 +135,7 @@ narrowest directory that works.
 | `timeout` | `"200ms"` | none | epoch interruption, per call |
 | `log_bytes` | `"64KiB"` or bytes | 64 KiB | `wasi:logging`, per call |
 | `log_messages` | integer | 1024 | `wasi:logging`, per call |
+| `transfer` | `"128MiB"` or bytes | 128 MiB | wasmtime, per crossing |
 
 `fuel`, `timeout`, `log_bytes` and `log_messages` are **per call**, not per
 plugin lifetime: all four are re-armed before every export invocation. Limits are also per plugin — each owns its
@@ -151,6 +152,36 @@ and is charged **before** the `logging` level filters — otherwise
 `logging = "critical"` would be a licence to push unbounded bytes across the
 boundary at `trace`. Exceeding either ceiling fails the call with
 `WT_ERR_LIMIT_EXCEEDED`, the same way running out of fuel does.
+
+### `transfer`, and why it is not measured in the bytes you think
+
+`transfer` bounds what the **host** allocates while lifting what a guest hands
+it — arguments to a host function, and the value an export returns. It is
+wasmtime's own denial-of-service mitigation: without it a plugin could ask the
+host for an unbounded allocation and the host would oblige. It is charged **per
+crossing** and reset for each one, and only in the guest-to-host direction, since
+data going the other way is already resident here.
+
+The unit is where it gets interesting. Wasmtime documents it as *roughly* the
+number of bytes a guest may transfer, and for strings and lists of large records
+that is true. On watoots' dynamic path it is not, because lifting produces a
+`Val` per element and `size_of::<Val>()` is 48. **A `list<u8>` therefore costs 48
+per byte**, so the 128 MiB default admits about 2.79 MB of bytes:
+
+```
+$ host_cpp_asset plugin.wasm policy.toml 966x966.png out.png invert
+too much data is being copied between the host and the guest:
+fuel allocated for hostcalls has been exhausted
+```
+
+965×965 comes back; 966×966 does not. The same image goes *in* without
+complaint, because only one direction is metered. Divide by 48 to size this for
+a byte payload — `examples/policies/rust-asset.toml` sets `512MiB` for roughly
+11 MB of pixels, and says so.
+
+A host using `bindgen!` with a static world does not pay this, because there a
+`list<u8>` lifts into a `Vec<u8>` and costs one per byte. The 48× is the price
+of the untyped path the C API and the CLI take.
 
 ## `[determinism]`
 

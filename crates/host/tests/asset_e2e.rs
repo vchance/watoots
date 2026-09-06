@@ -98,6 +98,18 @@ impl Guest {
         self.open(Arc::new(Mutex::new(Vec::new())))
     }
 
+    /// The same, with `limits.transfer` raised.
+    ///
+    /// Only the one field: the grants stay the guest's own, so the test is
+    /// about the budget and not about a policy written for the occasion.
+    fn quiet_with_transfer(&self, transfer: u64) -> Plugin {
+        let mut manifest = self.manifest();
+        manifest.limits.transfer = transfer;
+        host_with(manifest, Arc::new(Mutex::new(Vec::new())))
+            .load(&self.wasm)
+            .unwrap_or_else(|err| panic!("loading {}: {}", self.name, err.message()))
+    }
+
     /// The lookup table shipped beside the guest, spelled the way its grant
     /// spells it.
     ///
@@ -1249,4 +1261,65 @@ fn every_shipped_policy_grants_exactly_what_its_component_asks_for() {
             report.describe()
         );
     }
+}
+
+/// A plugin cannot hand back more than `limits.transfer` allows, and the
+/// manifest is where that is decided.
+///
+/// This is the wall the PNG host found: wasmtime meters what the *host*
+/// allocates lifting a guest's return value, separately from `limits.fuel`, and
+/// on the dynamic `Val` path a `list<u8>` costs `size_of::<Val>()` — 48 — per
+/// byte. So the 128 MiB default admits about 2.79 MB of pixels and a 966×966
+/// image cannot come back, while the same image goes *in* fine, because only
+/// guest-to-host is metered.
+///
+/// Before `transfer` existed the manifest had no word for the budget the error
+/// message named, which is the worst shape a limit can have.
+#[test]
+fn a_return_over_the_transfer_budget_is_refused_and_the_manifest_can_raise_it() {
+    let Some(guest) = guests().iter().find(|g| g.name == "rust-asset") else {
+        return; // Nothing built; the suite's own skip rule.
+    };
+
+    // 966 × 966 × 3 = 2_799_468 bytes, just past the default's ~2.79 MB.
+    let (width, height) = (966_u32, 966_u32);
+    let pixels: Vec<u8> = vec![128; (width * height * 3) as usize];
+
+    // Both budgets are stated here rather than inherited from the shipped
+    // policy. That policy sets 512MiB precisely because an image pipeline needs
+    // it — a test that read the default out of it would be asserting what the
+    // example happens to say today, and this one broke exactly that way when
+    // the policy was raised.
+    let mut plugin = guest.quiet_with_transfer(watoots::DEFAULT_TRANSFER_BYTES);
+    let refused = plugin
+        .call(
+            "apply",
+            &[
+                image(width, height, &pixels),
+                Val::List(vec![step("invert")]),
+            ],
+        )
+        .expect_err("the default transfer budget cannot carry this back");
+    assert!(
+        refused.message().contains("hostcall"),
+        "expected the transfer budget to be what stopped it, got: {}",
+        refused.message()
+    );
+
+    // Raising it in the manifest is the fix, and it has to actually work or the
+    // key is decoration.
+    let mut generous = guest.quiet_with_transfer(512 * 1024 * 1024);
+    let results = generous
+        .call(
+            "apply",
+            &[
+                image(width, height, &pixels),
+                Val::List(vec![step("invert")]),
+            ],
+        )
+        .expect("512MiB of transfer budget is ample for 2.8MB of pixels");
+    let (w, h, out) = expect_ok(&results);
+    assert_eq!((w, h), (width, height));
+    assert_eq!(out.len(), pixels.len());
+    assert_eq!(out[0], 127, "invert of 128");
 }
