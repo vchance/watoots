@@ -109,15 +109,27 @@ from what each toolchain actually imports, and two C++ hosts.
 
 M6 so far: `inspect` rewritten as a capability summary plus `--targets` and
 `wit semver-check`; property tests whose oracle is record/replay; `PluginStats`;
-a boundary profiler; and reload. **Every v0.2 candidate in the spec is done.**
+a boundary profiler; reload; an audit trail (ADR-0011); a compiled-component
+cache; signature verification at load (ADR-0014); and `watoots diff`.
+**Every v0.2 candidate in the spec is done.**
+
+Decided since: no `permissions.net` allowlist (ADR-0012, breaking) and stay on
+WASI 0.2 with written conditions for p3 (ADR-0013).
 
 M5 shipped: `docs/MANIFEST.md`, a root `SECURITY.md` (reporting policy)
 alongside `docs/SECURITY.md` (threat model), `CONTRIBUTING.md`,
 `CODE_OF_CONDUCT.md`, issue forms, a manifest-first README, `tools/demo.sh`,
 `CHANGELOG.md`. The repo is public at `github.com/vchance/watoots` and crate
-metadata points at it. Tags `v0.0.0`, `v0.1.0` and `v0.2.0` are all on the
-remote; **crates.io has only the `0.0.0` name placeholders** and neither release
-is published there, so the README tells people to build from the tag.
+metadata points at it. Tags `v0.0.0`, `v0.1.0`, `v0.2.0` and `v0.3.0`
+are all on the remote; **crates.io has only the `0.0.0` name placeholders** and
+no release is published there, so the README tells people to build from the tag.
+
+**`main` is ahead of `v0.3.0`.** Work landing after a tag goes in the
+CHANGELOG's `[Unreleased]` section, not the tagged one -- appending to a
+released version's entry claims things that version does not contain, which is
+how a breaking `permissions.net` change briefly came to be filed under an
+already-shipped release. The next release is **0.4.0**, not a patch, because of
+that change. `Cargo.toml`'s version is bumped at release time, not before.
 
 **Announcing is Von's call and is not to be raised.** It is the last M5 item on
 paper; do not offer it, recommend it, or list it as outstanding.

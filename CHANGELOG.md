@@ -4,18 +4,139 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+Everything here landed **after** `v0.3.0` was tagged. The next release is
+**0.4.0** rather than a patch: `permissions.net` no longer accepts a list, so a
+manifest that parsed under 0.3.0 can fail under this.
+
+### Added
+
+- **Signature verification at load** ([ADR-0014](docs/adr/0014-signature-verification.md)).
+  A `[signature]` section names public keys, and a component not signed by one
+  of them does not load, is not compiled, and is not cached. The format is what
+  `cosign sign-blob` writes — ECDSA P-256 over SHA-256, base64 — so a signing
+  tool already exists. `Host::load` reads `<plugin>.wasm.sig` from beside the
+  component; `load_binary_signed` / `wt_host_load_binary_signed` take it as an
+  argument. **Reload re-verifies**, which is the reason this lives in watoots
+  rather than in the application: a check made before `load` is one that reload
+  silently skips.
+
+  Pinned keys only. No Sigstore keyless identity, no certificate chains, no
+  transparency-log inclusion — those need network access and a maintained trust
+  root inside `Host::load`. Verify a bundle where you fetch the plugin instead.
+
+  **`[signature]` is the one part of a manifest where absence does not deny**,
+  because otherwise upgrading would stop every existing plugin from loading.
+  `watoots replay` and `watoots fuzz` also skip the check, since a trace carries
+  the manifest but not the signature.
+
+- **An audit trail** ([ADR-0011](docs/adr/0011-audit-trail.md)). `AuditHook` is a
+  fourth observer carrying authorisation decisions only — never argument values,
+  so an audit line is safe to keep when a trace is not. Eight events: a plugin
+  loaded or refused, each import's verdict, a reload allowed or refused, a log
+  line admitted or suppressed by the level ceiling, and a ceiling spent. Six
+  ceilings, including `Memory`, whose refusal previously reached *nobody*: the
+  store limiter says no, `memory.grow` answers `-1`, and the call carries on.
+
+  Off unless installed — a library writing to stderr uninvited is badly behaved.
+  `watoots run --audit` and its siblings turn it on; `wt_host_builder_audit_hook`
+  is the C surface.
+
+- **`watoots diff old.wasm new.wasm`** — what changed between two builds, and
+  whether the update would still load. `Plugin::reload` already re-runs the
+  grant check and refuses a replacement that wants more (ADR-0010); this is that
+  refusal previewed, before the update ships. New imports are reported with the
+  manifest key that would grant them, removed exports as breaking callers, and
+  the two are counted separately because they are fixed in different places.
+  Exits non-zero on either.
+
+  Not a reimplementation of `wasm-tools component semver-check`, which compares
+  two WIT *packages* and which watoots wraps as `watoots wit semver-check`
+  (ADR-0007). This compares two compiled *components* against a policy.
+
+- **Compiled components are reused across loads.** A `Host` keeps the
+  `Component` it built, keyed by content hash, so a second instance of the same
+  plugin costs a clone rather than a compile — the normal shape of a plugin host
+  is many instances of one component, and without this each paid a full compile
+  (seconds, for an 18MB interpreter guest). Bounded at 32 distinct components,
+  oldest evicted, so a host reloading on every file change cannot accumulate a
+  morning's builds. `Host::compiles()` reports how many were actually built, so
+  a test can tell reuse from a rebuild.
+
+- `ErrorKind::SignatureInvalid` / `WT_ERR_SIGNATURE_INVALID` (9), distinct from
+  `PermissionDenied`: one means the plugin asked for something it was not
+  granted, the other that the bytes are not from a publisher you trust, and they
+  send a reader to different halves of the manifest.
+
+### Removed
+
+- **The `permissions.net` host allowlist, which never worked and could not**
+  ([ADR-0012](docs/adr/0012-no-net-allowlist.md)). `net` is now `"deny"` (the
+  default) or `"linked"`, and never a list. A non-empty list was already refused
+  at host-build time as "not enforced yet"; the promise cannot be kept at this
+  layer, because `wasmtime-wasi`'s `socket_addr_check` receives a resolved
+  `SocketAddr` and never the hostname that produced it. A manifest key that
+  reads as a restriction and enforces nothing is worse than no key — it misleads
+  the person reviewing a policy before installing a plugin, which is what the
+  manifest is *for*.
+
+  **Migrating:** `net = []` becomes `net = "linked"`; drop any named hosts and
+  apply the rule in your own `wasi:http` implementation, where the name still
+  exists. `net = ["example.com"]` never granted `example.com` in any released
+  version. `Permissions::net` is now a `NetGrant` rather than an
+  `Option<Vec<String>>`, and `is_granted()` replaces `is_some()`. The old shape
+  is a parse error that names `net = "linked"` as the replacement.
+
+### Fixed (security)
+
+- **WASI 0.3's wall clock would have been classified as the monotonic one.**
+  0.3 renames `wasi:clocks/wall-clock` to `system-clock` and adds `timezone`;
+  the capability table matched `wall-clock` by name and fell through on
+  `("clocks", _)` to `MonotonicClock`. A manifest saying `clocks = "monotonic"`
+  — the setting chosen precisely to keep real time away from a plugin — would
+  have admitted the real-time clock. `clocks` is the only WASI package split
+  across two different capabilities, which is why a fallthrough there
+  over-grants where the `filesystem` and `sockets` ones cannot. The arm is now
+  exhaustive and an unread `clocks` interface denies.
+
+  Latent rather than exploitable: the host links wasip2 only, so a p3 component
+  fails at instantiation either way. But classification runs first, so
+  `watoots inspect` would have reported a p3 plugin as satisfying a
+  monotonic-only policy. Found by writing ADR-0013.
+
+- **A new `ErrorKind` reached C as "a bug on our side".** `From<ErrorKind> for
+  wt_status` needs a catch-all because `ErrorKind` is `#[non_exhaustive]`, and
+  it silently mapped `SignatureInvalid` to `WT_ERR_INTERNAL` with nothing
+  failing to compile. `every_error_kind_has_its_own_status` now fails when a
+  kind falls through, since the compiler cannot.
+
+### Changed
+
+- **A written WASI p3 position** ([ADR-0013](docs/adr/0013-wasi-p3-position.md)),
+  replacing an open question in the spec. The host stays on 0.2, and the two
+  conditions for adopting p3 are written down and checkable. The disqualifying
+  one is that `wasmtime-wasi`'s p3 module states security fixes limited to
+  wasip3 get no patch release, which a sandbox cannot depend on. Two claims in
+  `docs/SPEC.md` were re-checked and corrected: `wasm32-wasip3` is still Tier 3
+  in the rustc book (the promotion proposal was accepted, which is not the
+  same), and it is Spin 4.1.0 rather than 4.0 that ships p3 on Wasmtime 48.
+
+- "The permission model is 0.3-shaped" is now a test rather than an intention:
+  `crates/host/tests/wasip3_shape.rs` classifies the p3 interface set read from
+  `wasmtime-wasi` 48.0.1's own WIT.
+
+- **CI checks the MSRV.** `rust-version` is a promise to anyone depending on
+  watoots and every other job runs on stable, so a dependency bump could raise
+  the real floor with nobody noticing. The job reads the version out of
+  `Cargo.toml`, so the two cannot drift.
+
 ## [0.3.0] — 2026-09-06
 
-**One breaking manifest change:** `permissions.net` no longer takes a list of
-hosts, and a manifest using `net = []` will not parse. See *Removed* below;
-`net = "linked"` is the replacement, and the parse error says so.
-
-**One C ABI change:** `wt_plugin_stats_t` gained a trailing `reloads` field, so
-a caller compiled against a 0.2.0 header reads a struct one field short. Nothing
-is published to crates.io, so nobody is holding a stale header — but it is an
-ABI change and this is where it is said.
-
-Everything else is additive for manifests and plugins.
+Additive for manifests and plugins. **One C ABI change:** `wt_plugin_stats_t`
+gained a trailing `reloads` field, so a caller compiled against a 0.2.0 header
+reads a struct one field short. Nothing is published to crates.io, so nobody is
+holding a stale header — but it is an ABI change and this is where it is said.
 
 ### Added
 
@@ -63,109 +184,11 @@ Everything else is additive for manifests and plugins.
 
 ### Changed
 
-- **A written WASI p3 position, replacing an open question in the spec.**
-  [ADR-0013](docs/adr/0013-wasi-p3-position.md): the host stays on 0.2, and the
-  two conditions for adopting p3 are written down and checkable. The
-  disqualifying one is that `wasmtime-wasi`'s p3 module states security fixes
-  limited to wasip3 get no patch release. Two claims in `docs/SPEC.md` were
-  re-checked and corrected — `wasm32-wasip3` is still Tier 3 in the rustc book
-  (the promotion proposal was accepted, which is not the same), and it is Spin
-  4.1.0 rather than 4.0 that ships p3 on Wasmtime 48.
-- "The permission model is 0.3-shaped" is now a test rather than an intention:
-  `crates/host/tests/wasip3_shape.rs` classifies the p3 interface set read from
-  `wasmtime-wasi` 48.0.1's own WIT.
 - `examples/wit/` now holds one directory per world, because a WIT directory is
   a single package and two worlds cannot share one.
 - Failure prose in the asset world is explicitly **not** conformance surface.
   Pinning it made the second guest reproduce five behaviours of Rust's standard
   library; a host branches on the case.
-
-### Added
-
-- **`watoots diff old.wasm new.wasm`** — what changed between two builds of a
-  plugin, and whether the update would still load. `Plugin::reload` already
-  re-runs the grant check and refuses a replacement that wants more (ADR-0010);
-  this is that refusal previewed, before the update ships. New imports are
-  reported with the manifest key that would grant them, removed exports as
-  breaking callers, and the two are counted separately because they are fixed
-  in different places. Exits non-zero on either, so it works as a gate.
-
-  Not a reimplementation of `wasm-tools component semver-check`, which compares
-  two WIT *packages* structurally and which watoots wraps as
-  `watoots wit semver-check` (ADR-0007). This compares two compiled
-  *components* against a policy, which is the question only watoots can answer.
-  An application-served interface is reported as one, not as a denied
-  permission — the same rule `inspect` follows.
-
-- **Signature verification at load.** A new `[signature]` section names public
-  keys, and a component that is not signed by one of them does not load, is not
-  compiled, and is not cached. The format is what `cosign sign-blob` writes —
-  ECDSA P-256 over SHA-256, base64 — so a signing tool already exists;
-  `Host::load` reads `<plugin>.wasm.sig` from beside the component, and
-  `load_binary_signed` / `wt_host_load_binary_signed` take it as an argument.
-  **Reload re-verifies**, which is the argument for doing this in watoots at
-  all: a check the application runs before calling `load` is a check that reload
-  silently skips, and the moment the code changes is the moment publisher
-  identity matters most. [ADR-0014](docs/adr/0014-signature-verification.md).
-
-  Scope is deliberately narrow: pinned keys only. No Sigstore keyless identity,
-  no certificate chains, no transparency-log inclusion — those need network
-  access and a maintained trust root inside `Host::load`, which a sandbox
-  library should not have. Verify a bundle where you fetch the plugin instead.
-
-  **`[signature]` is the one part of a manifest where absence does not deny**,
-  because otherwise upgrading would stop every existing plugin from loading.
-  `docs/MANIFEST.md` calls that out; do not read the usual rule into it.
-  `watoots replay` and `watoots fuzz` also skip the check, since a trace carries
-  the manifest but not the signature.
-
-- `ErrorKind::SignatureInvalid` / `WT_ERR_SIGNATURE_INVALID` (9), distinct from
-  `PermissionDenied`: one means the plugin asked for something it was not
-  granted, the other that the bytes are not from a publisher you trust, and they
-  send a reader to different halves of the manifest.
-
-### Fixed (security)
-
-- **A new `ErrorKind` reached C as "a bug on our side".** `From<ErrorKind> for
-  wt_status` needs a catch-all because `ErrorKind` is `#[non_exhaustive]`, and
-  that catch-all silently mapped `SignatureInvalid` to `WT_ERR_INTERNAL` with
-  nothing failing to compile. A C host would have been told a refused signature
-  was a watoots bug. `every_error_kind_has_its_own_status` now fails when a kind
-  falls through, since the compiler cannot.
-- **0.3's wall clock would have been classified as the monotonic one.** WASI 0.3
-  renames `wasi:clocks/wall-clock` to `system-clock` and adds `timezone`; the
-  capability table matched `wall-clock` by name and fell through on
-  `("clocks", _)` to `MonotonicClock`. A manifest saying `clocks = "monotonic"`
-  — the setting chosen precisely to keep real time away from a plugin — would
-  have admitted the real-time clock. `clocks` is the only WASI package split
-  across two different capabilities, which is why a fallthrough there
-  over-grants where the `filesystem` and `sockets` ones do not. The arm is now
-  exhaustive and an unread `clocks` interface denies.
-
-  Latent rather than exploitable: the host links wasip2 only, so a p3 component
-  fails at instantiation either way. But classification runs first, so
-  `watoots inspect` would have reported a p3 plugin as satisfying a monotonic-only
-  policy. Found by writing [ADR-0013](docs/adr/0013-wasi-p3-position.md), and
-  pinned by `crates/host/tests/wasip3_shape.rs`.
-
-### Removed
-
-- **The `permissions.net` host allowlist, which never worked and could not.**
-  `net` is now `"deny"` (the default) or `"linked"`, and never a list. A
-  non-empty list was already refused at host-build time as "not enforced yet";
-  the promise cannot be kept at this layer, because `wasmtime-wasi`'s
-  `socket_addr_check` is handed a resolved `SocketAddr` and never the hostname
-  that produced it. A manifest key that reads as a restriction and enforces
-  nothing is worse than no key — it misleads the person reviewing a policy
-  before installing a plugin, which is what the manifest is *for*. Hostname
-  policy belongs to whatever the application serves behind `wasi:http`, where
-  the name still exists. [ADR-0012](docs/adr/0012-no-net-allowlist.md).
-
-  **Migrating:** `net = []` becomes `net = "linked"`; drop any named hosts and
-  apply the rule in your own `wasi:http` implementation. `net = ["example.com"]`
-  never granted `example.com` in any released version. `Permissions::net` is now
-  a `NetGrant` rather than an `Option<Vec<String>>`, and `is_granted()` replaces
-  `is_some()`.
 
 ### Not built
 
@@ -305,6 +328,7 @@ First release. Both halves of the project work end to end.
 See [docs/SECURITY.md](docs/SECURITY.md) for what the sandbox does and does not
 protect against.
 
+[Unreleased]: https://github.com/vchance/watoots/compare/v0.3.0...HEAD
 [0.3.0]: https://github.com/vchance/watoots/releases/tag/v0.3.0
 [0.2.0]: https://github.com/vchance/watoots/releases/tag/v0.2.0
 [0.1.0]: https://github.com/vchance/watoots/releases/tag/v0.1.0
