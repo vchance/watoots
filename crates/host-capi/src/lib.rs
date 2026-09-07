@@ -605,7 +605,14 @@ pub unsafe extern "C" fn wt_host_builder_var(
     })
 }
 
-/// Cache compiled components under this directory. Must be a trusted path.
+/// Cache compiled components under this directory. Must be a trusted path:
+/// entries are machine code loaded without re-validation, so write access to it
+/// is equivalent to code execution in this process. There is no default.
+///
+/// A host already reuses a component it compiled earlier in the same run, so
+/// this is what makes the *first* load of the next run cheap. That matters for
+/// a large guest — an interpreter-based plugin can take seconds to compile —
+/// and barely at all for a small one.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn wt_host_builder_cache_dir(
     builder: *mut wt_host_builder_t,

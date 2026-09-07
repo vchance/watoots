@@ -1,11 +1,12 @@
 //! The engine, the policy, and loading plugins under it.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::RwLock;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -130,6 +131,25 @@ impl fmt::Debug for HostCall<'_> {
 ///
 /// Cloning a `Host` shares the engine, its compiled-code cache, and the epoch
 /// ticker.
+///
+/// # Running many plugins
+///
+/// One host serves any number of plugins, including many instances of the same
+/// component: [`Host::load`] takes `&self`, and each [`Plugin`] it returns owns
+/// a separate `Store`, so instances share compiled code and share no state.
+/// Two instances of the same component cannot see each other's memory, globals
+/// or tables, and a trap in one does not touch the other. A [`Registry`] is the
+/// same thing with names attached, and it refuses a duplicate *name* — two
+/// instances of one component are ordinary, two plugins called `lint` are a
+/// mistake worth an error.
+///
+/// A `Host` is `Send + Sync` and a `Plugin` is `Send` but not `Sync`, so the
+/// threading model is: share the host, move a plugin to the thread that will
+/// call it. A plugin reachable from two threads at once would need a lock
+/// anyway — `Plugin::call` takes `&mut self` because a component instance is a
+/// single thread of execution.
+///
+/// [`Registry`]: crate::Registry
 #[derive(Clone)]
 pub struct Host {
     inner: Arc<HostInner>,
@@ -142,6 +162,24 @@ struct HostInner {
     host_funcs: BTreeMap<String, BTreeMap<String, HostFunc>>,
     vars: BTreeMap<String, String>,
     cache_dir: Option<PathBuf>,
+    /// Components this host has already compiled, by cache key.
+    ///
+    /// Loading the same component twice is the normal shape of a plugin host —
+    /// one instance per document, per tab, per worker — and each instance needs
+    /// its own `Store`, not its own compilation. `Component` is `Arc`-backed, so
+    /// a hit here costs a clone; a miss with a cache directory costs a
+    /// `deserialize_file`; a miss without one costs a full compile, which for an
+    /// 18MB interpreter guest is seconds.
+    ///
+    /// The key is a content hash, so a host that loads one plugin a thousand
+    /// times holds one entry. Distinct components are the case that needs a
+    /// bound: a host that reloads on every file change sees new bytes every
+    /// time, and without eviction a morning's editing would accumulate every
+    /// build it ever compiled. Hence [`COMPILED_CACHE_CAPACITY`] and
+    /// `insertion_order`.
+    compiled: RwLock<CompiledCache>,
+    /// How many components this host actually built, as opposed to reused.
+    compiles: AtomicU64,
     trace: Option<Arc<dyn TraceHook>>,
     audit: Option<Arc<dyn AuditHook>>,
     log_sink: Option<LogSink>,
@@ -164,6 +202,61 @@ pub(crate) enum LoadKind {
     /// [`Plugin::reload`], once the replacement has actually taken over.
     Reload,
 }
+
+/// How many distinct components a host keeps compiled code for.
+///
+/// Sized for the case this cache exists to serve — a host with a handful of
+/// plugins, instantiated many times each — rather than for the case that needs
+/// the bound. Every realistic plugin set fits, and a host that has genuinely
+/// churned through this many distinct components has told us the oldest are
+/// not coming back.
+const COMPILED_CACHE_CAPACITY: usize = 32;
+
+/// Compiled components, keyed by content hash, bounded and evicted oldest-first.
+///
+/// Not an LRU: a load is not a use worth reordering the queue for, and reading
+/// under a shared lock is worth more than eviction precision. The distinction
+/// only matters once a host exceeds the capacity, which is already the unusual
+/// case this exists to survive rather than to optimise.
+#[derive(Default)]
+struct CompiledCache {
+    by_key: BTreeMap<String, Component>,
+    insertion_order: VecDeque<String>,
+}
+
+impl CompiledCache {
+    fn get(&self, key: &str) -> Option<&Component> {
+        self.by_key.get(key)
+    }
+
+    fn insert(&mut self, key: String, component: Component) {
+        if self.by_key.insert(key.clone(), component).is_some() {
+            // Already present and already queued: two threads compiled the same
+            // bytes at once. Queueing the key twice would evict a live entry
+            // early and leave a dangling name behind it.
+            return;
+        }
+        self.insertion_order.push_back(key);
+        while self.insertion_order.len() > COMPILED_CACHE_CAPACITY {
+            if let Some(oldest) = self.insertion_order.pop_front() {
+                self.by_key.remove(&oldest);
+            }
+        }
+    }
+}
+
+/// The threading model in `Host`'s documentation, enforced rather than
+/// described: a shared host, and a plugin that moves to one thread.
+///
+/// `Plugin: !Sync` is not an oversight to be fixed later — it falls out of
+/// `wasmtime_wasi`'s stream trait objects — so a change here is a change to
+/// what callers were told, and should be deliberate.
+const _: () = {
+    const fn require_send_sync<T: Send + Sync>() {}
+    const fn require_send<T: Send>() {}
+    require_send_sync::<Host>();
+    require_send::<crate::Plugin>();
+};
 
 impl Host {
     /// Start building a host.
@@ -461,11 +554,42 @@ impl Host {
 
     /// Compile a component, going through the precompile cache when one is set.
     fn compile(&self, wasm: &[u8]) -> Result<Component> {
+        let key = self.cache_key(wasm);
+
+        // Before the file cache and before compiling: the same bytes are the
+        // same machine code, and the only thing an extra instance actually
+        // needs is a fresh `Store`.
+        if let Ok(compiled) = self.inner.compiled.read()
+            && let Some(component) = compiled.get(&key)
+        {
+            return Ok(component.clone());
+        }
+
+        let component = self.compile_uncached(wasm, &key)?;
+        if let Ok(mut compiled) = self.inner.compiled.write() {
+            compiled.insert(key, component.clone());
+        }
+        Ok(component)
+    }
+
+    /// How many components this host has built — compiled, or read back from
+    /// the `.cwasm` cache.
+    ///
+    /// Loading the same component twice must not move this. It is the cheapest
+    /// way to notice a missing `cache_dir`, or that something is handing you
+    /// bytes that differ when you believed they did not.
+    #[must_use]
+    pub fn compiles(&self) -> u64 {
+        self.inner.compiles.load(Ordering::Relaxed)
+    }
+
+    fn compile_uncached(&self, wasm: &[u8], key: &str) -> Result<Component> {
+        self.inner.compiles.fetch_add(1, Ordering::Relaxed);
         let Some(dir) = &self.inner.cache_dir else {
             return self.compile_fresh(wasm);
         };
 
-        let path = dir.join(format!("{}.cwasm", self.cache_key(wasm)));
+        let path = dir.join(format!("{key}.cwasm"));
 
         if path.is_file() {
             // SAFETY: the cache key includes the engine's own compatibility
@@ -646,9 +770,24 @@ impl HostBuilder {
 
     /// Cache compiled components as `.cwasm` files under this directory.
     ///
+    /// This is the cache that survives the process. A [`Host`] already avoids
+    /// rebuilding a component it has compiled before, so repeat loads within
+    /// one run are cheap either way; what a directory buys is the *first* load
+    /// of the next run, and that is where the cost is. A `wasm32-wasip2` Rust
+    /// guest compiles in milliseconds, but an interpreter guest is a different
+    /// order of magnitude — the sample Python plugin is 18 MB of CPython and
+    /// takes seconds. A long-lived server will not notice; a command-line tool
+    /// pays it on every invocation.
+    ///
     /// The directory must be trusted: entries are machine code that the engine
     /// loads without re-validating, so write access to it is equivalent to code
-    /// execution in the host process. There is deliberately no default.
+    /// execution in the host process. There is deliberately no default —
+    /// picking a shared location on the user's behalf is picking who may
+    /// execute code in their process.
+    ///
+    /// A corrupt or truncated entry costs a recompile rather than an error, and
+    /// the key includes the engine's compatibility hash, so a Wasmtime upgrade
+    /// invalidates entries rather than loading incompatible machine code.
     #[must_use]
     pub fn cache_dir(mut self, dir: impl Into<PathBuf>) -> Self {
         self.cache_dir = Some(dir.into());
@@ -802,6 +941,8 @@ impl HostBuilder {
 
         Ok(Host {
             inner: Arc::new(HostInner {
+                compiled: RwLock::new(CompiledCache::default()),
+                compiles: AtomicU64::new(0),
                 engine,
                 manifest: self.manifest,
                 host_provided: self.host_provided,

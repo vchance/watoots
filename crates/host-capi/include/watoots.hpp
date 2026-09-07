@@ -731,7 +731,10 @@ class HostBuilder {
     return Apply(wt_host_builder_manifest_from_string, toml);
   }
 
-  /// Cache compiled components under this directory. Must be trusted.
+  /// Cache compiled components under this directory. Must be trusted: entries
+  /// are machine code loaded without re-validation. A host already reuses a
+  /// component it compiled earlier in the same run, so this is what makes the
+  /// first load of the *next* run cheap.
   Result<void> CacheDir(const std::string& dir) {
     return Apply(wt_host_builder_cache_dir, dir);
   }
