@@ -31,6 +31,28 @@ jobs:
           cargo build -p watoots-capi
           git diff --exit-code -- crates/host-capi/include/watoots.h
 
+  # `rust-version` in Cargo.toml is a promise to anyone depending on watoots,
+  # and every other job here runs on stable, so nothing was checking it. A
+  # dependency bump can raise the real floor silently -- cranelift sets it
+  # today -- and the first person to find out would otherwise be a consumer
+  # whose build broke. `check` rather than `test`: this asks whether the code
+  # compiles on the oldest toolchain we claim, which is the promise made.
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read the MSRV from Cargo.toml
+        id: msrv
+        run: |
+          version=$(sed -n 's/^rust-version = "\(.*\)"/\1/p' Cargo.toml)
+          test -n "$version" || { echo "no rust-version in Cargo.toml"; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.msrv.outputs.version }}
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check --workspace --all-targets
+
   cpp:
     runs-on: ubuntu-latest
     env:

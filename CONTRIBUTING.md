@@ -18,7 +18,7 @@ Everyone taking part is expected to follow the
 
 | | |
 |---|---|
-| Rust | 1.95 or newer (MSRV, set by Wasmtime 48) |
+| Rust | 1.95 or newer (MSRV, set by Wasmtime 48; CI checks it) |
 | `wasm32-wasip2` target | `rustup target add wasm32-wasip2` |
 | CMake | 3.28+, and Ninja |
 | LLVM | **22**, for clang-format and clang-tidy |
@@ -51,6 +51,13 @@ tools/format.sh --check          # clang-format
 cmake --preset dev && cmake --build --preset dev && ctest --preset dev
 tools/tidy.sh                    # clang-tidy
 ```
+
+CI additionally runs `cargo check` on the MSRV in `Cargo.toml`, which is the
+one gate you cannot usefully reproduce without installing that toolchain
+(`rustup toolchain install 1.95 && cargo +1.95 check --workspace --all-targets`
+if you want to). It exists because `rust-version` is a promise to anyone
+depending on watoots and every other job runs on stable, so a dependency bump
+could otherwise raise the real floor with nobody noticing.
 
 `tools/format.sh` with no argument rewrites in place. `tools/tidy.sh`
 reconfigures its own build tree every run: clang-tidy parses with its own

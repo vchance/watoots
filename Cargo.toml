@@ -5,7 +5,10 @@ members = ["crates/host", "crates/host-capi", "crates/trace", "crates/cli"]
 [workspace.package]
 version = "0.3.0"
 edition = "2024"
-# MSRV is whatever Wasmtime 48 requires (ADR-0002 line in CLAUDE.md).
+# MSRV is whatever Wasmtime 48 requires -- cranelift sets the floor, and
+# CLAUDE.md's conventions say to track it. The `msrv` CI job is what keeps
+# this number honest; without it a dependency bump moves the real floor and
+# only a consumer finds out. (ADR-0002 is the licence, not this.)
 rust-version = "1.95"
 license = "Apache-2.0 WITH LLVM-exception"
 repository = "https://github.com/vchance/watoots"
