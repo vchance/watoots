@@ -70,7 +70,7 @@ impl Guest {
     /// `clocks = "monotonic"`; `cpp-asset.toml` needs `"wall"`, because
     /// wasi-libc links a clock Rust's `std` does not; `js-asset.toml` needs
     /// `"wall"` and, alone among the four, no `env` at all; and `py-asset.toml`
-    /// needs `random` and a `net = []` besides, because CPython seeds its hash
+    /// needs `random` and a `net = "linked"` besides, because CPython seeds its hash
     /// randomisation and links the socket interfaces unconditionally. Identical
     /// behaviour, four different bills, written by whoever built the guest.
     fn manifest(&self) -> Manifest {
@@ -1213,7 +1213,7 @@ fn every_shipped_policy_grants_exactly_what_its_component_asks_for() {
     // The grant is asserted per guest and not compared across them, which is
     // the point of having four: `cpp-asset.toml` needs `clocks = "wall"` where
     // `rust-asset.toml` needs only `monotonic`, because wasi-libc links a clock
-    // Rust's `std` does not; `py-asset.toml` needs `random` and `net = []` on
+    // Rust's `std` does not; `py-asset.toml` needs `random` and `net = "linked"` on
     // top; and `js-asset.toml` is the only one that needs no `env`. Identical
     // behaviour, four different bills. The `fs.read` line is the one thing
     // every asset guest owes, so that is what is compared.

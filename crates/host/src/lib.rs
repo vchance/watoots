@@ -25,11 +25,15 @@
 //!
 //! # Status
 //!
-//! M1. The engine, manifest, import-intersection check, and per-call limits
-//! work. Not yet here: typed host APIs (so a component importing an
-//! application's own interface passes [`Host::inspect`] but cannot instantiate),
-//! the precompile cache, the registry, WAVE calls, and network-allowlist
-//! enforcement.
+//! Pre-1.0: the API can still move. The engine, manifest, import-intersection
+//! check, per-call limits, precompile cache, registry, WAVE calls, reload,
+//! profiling and the trace and audit hooks are all here.
+//!
+//! What is deliberately not here: a `permissions.net` host allowlist, which
+//! cannot be enforced at this layer (see [`NetGrant`] and ADR-0012);
+//! same-binary checkpoint/restore, which Wasmtime 48 does not expose the state
+//! for (ADR-0010); and recording of resource handles, which cannot be replayed
+//! meaningfully.
 
 #![warn(missing_docs)]
 
@@ -50,7 +54,7 @@ pub use error::{Error, ErrorKind, Result};
 pub use host::{Host, HostBuilder, HostCall, HostFunc, ImportedFunction, LogRecord, LogSink};
 pub use imports::{GrantReport, ImportDecision, Requirement};
 pub use manifest::{
-    Clocks, DEFAULT_TRANSFER_BYTES, FsGrants, Limits, LogLevel, Manifest, Permissions,
+    Clocks, DEFAULT_TRANSFER_BYTES, FsGrants, Limits, LogLevel, Manifest, NetGrant, Permissions,
 };
 pub use plugin::{Plugin, PluginStats, RESTORE_STATE_EXPORT, ReloadReport, SAVE_STATE_EXPORT};
 pub use profile::{FunctionKind, FunctionProfile, PluginProfile, Profiling};

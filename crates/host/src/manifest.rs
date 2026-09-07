@@ -4,6 +4,7 @@
 //! library exists to enforce what a manifest says.
 
 use std::collections::BTreeMap;
+use std::fmt;
 use std::path::Path;
 use std::time::Duration;
 
@@ -92,20 +93,11 @@ impl Default for Determinism {
 pub struct Permissions {
     /// Filesystem grants.
     pub fs: FsGrants,
-    /// Whether the plugin may see the socket interfaces, and which hosts it
-    /// may reach.
+    /// Whether the plugin may *import* the socket interfaces.
     ///
-    /// Three states, because importing an interface and being able to use it
-    /// are different questions:
-    ///
-    /// - absent — `wasi:sockets` and `wasi:http` are denied outright, and a
-    ///   component importing them fails to load.
-    /// - `net = []` — the interfaces are available and *every* connection is
-    ///   refused. This is what a CPython or JS guest needs: their runtimes link
-    ///   the socket interfaces whether or not the plugin opens one.
-    /// - `net = ["example.com"]` — an allowlist, which nothing enforces yet, so
-    ///   building a host with one is refused rather than silently over-granted.
-    pub net: Option<Vec<String>>,
+    /// Two states, because that is how many watoots can tell apart. There is
+    /// no host allowlist: see [`NetGrant`] and ADR-0012.
+    pub net: NetGrant,
     /// Environment variables handed to the guest, by name and value. The guest
     /// sees exactly this map and nothing inherited from the host process.
     ///
@@ -126,13 +118,111 @@ pub struct Permissions {
     /// a component importing `wasi:logging` fails to load — the same rule as
     /// every other permission.
     ///
-    /// Deliberately *not* tri-state the way `net` and `env` are. Those have a
-    /// third state because a runtime links their interfaces whether or not the
-    /// plugin uses them, so "may import, may not reach anything" is a situation
-    /// that really occurs. Nothing links `wasi:logging` behind an author's
+    /// Deliberately *not* tri-state the way `env` is, and not two-state the way
+    /// `net` is. Those have their extra state because a runtime links their
+    /// interfaces whether or not the plugin uses them, so "may import, may not
+    /// reach anything" is a situation that really occurs. Nothing links
+    /// `wasi:logging` behind an author's
     /// back — it is not part of WASI 0.2 — and "granted but restricted" is
     /// already what a level says, so a fourth spelling would mean nothing new.
     pub logging: Option<LogLevel>,
+}
+
+/// Whether a plugin may import `wasi:sockets` and `wasi:http`.
+///
+/// Not an allowlist, and deliberately so. watoots sits at the component
+/// boundary, where `wasmtime-wasi`'s `socket_addr_check` is handed a resolved
+/// [`SocketAddr`](std::net::SocketAddr) and never the name that produced it —
+/// so a rule about `api.example.com` has nothing here to match on. A manifest
+/// key that looks like it restricts something and does not is worse than no key
+/// at all, so there is no key. ADR-0012 has the full argument, and
+/// `docs/SECURITY.md` says where hostname policy does belong.
+///
+/// This does not mean a granted plugin reaches the network. `wasmtime-wasi`
+/// refuses every connection unless the embedder installs a check, and watoots
+/// installs none — so [`Linked`](Self::Linked) means the imports resolve and
+/// every connection still fails.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub enum NetGrant {
+    /// `wasi:sockets` and `wasi:http` are denied outright: a component
+    /// importing either fails to load. The default, and what an absent `net`
+    /// key means.
+    #[default]
+    Deny,
+    /// The interfaces resolve and every connection is refused.
+    ///
+    /// This exists for the guests that leave no choice. CPython links
+    /// `wasi:sockets` whether or not the plugin opens a socket, and a
+    /// JavaScript runtime does the same, so denying the import means the plugin
+    /// cannot load at all. Granting it costs nothing while no check is
+    /// installed: there is no reachable host either way.
+    Linked,
+}
+
+impl NetGrant {
+    /// Whether the socket interfaces may be imported at all.
+    #[must_use]
+    pub fn is_granted(self) -> bool {
+        self != Self::Deny
+    }
+
+    /// The spelling a manifest uses for this grant.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Deny => "deny",
+            Self::Linked => "linked",
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for NetGrant {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        struct GrantVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for GrantVisitor {
+            type Value = NetGrant;
+
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str(r#"`"deny"` or `"linked"`"#)
+            }
+
+            fn visit_str<E: serde::de::Error>(
+                self,
+                value: &str,
+            ) -> std::result::Result<NetGrant, E> {
+                match value {
+                    "deny" => Ok(NetGrant::Deny),
+                    "linked" => Ok(NetGrant::Linked),
+                    other => Err(E::custom(format!(
+                        r#"unknown net grant {other:?}; expected "deny" or "linked""#
+                    ))),
+                }
+            }
+
+            // Every manifest written before 0.3 spells this as a list, so the
+            // error has to say what to write instead. serde's own message for
+            // a sequence where a string was wanted would send the reader to
+            // the type rather than to the change.
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                _: A,
+            ) -> std::result::Result<NetGrant, A::Error> {
+                Err(serde::de::Error::custom(
+                    "permissions.net is no longer a list of hosts: nothing at this \
+                     layer could enforce one, so the allowlist was removed rather \
+                     than left looking enforced. Write `net = \"linked\"` for what \
+                     `net = []` meant - the socket interfaces resolve and every \
+                     connection is refused - and see docs/SECURITY.md for where \
+                     hostname policy belongs.",
+                ))
+            }
+        }
+
+        deserializer.deserialize_str(GrantVisitor)
+    }
 }
 
 /// A `wasi:logging` severity.
@@ -354,7 +444,6 @@ impl Manifest {
             .read
             .iter_mut()
             .chain(self.permissions.fs.write.iter_mut())
-            .chain(self.permissions.net.iter_mut().flatten())
         {
             *path = expand(path, vars)?;
         }
@@ -418,7 +507,7 @@ mod tests {
     fn empty_manifest_denies_everything() {
         let manifest = Manifest::parse("").unwrap();
         assert!(manifest.permissions.fs.is_empty());
-        assert!(manifest.permissions.net.is_none());
+        assert_eq!(manifest.permissions.net, NetGrant::Deny);
         assert!(manifest.permissions.env.is_none());
         assert_eq!(manifest.permissions.clocks, Clocks::None);
         assert!(!manifest.permissions.random);
@@ -478,7 +567,7 @@ mod tests {
             [permissions]
             fs.read  = ["${plugin_dir}", "${workspace}/**/*.md"]
             fs.write = ["${plugin_dir}/cache"]
-            net      = []
+            net      = "linked"
             clocks   = "monotonic"
             random   = true
 
@@ -559,12 +648,43 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_net_list_grants_the_interface_but_no_hosts() {
+    fn net_grants_the_import_and_never_a_host() {
         let denied = Manifest::parse("").unwrap();
-        assert!(denied.permissions.net.is_none());
+        assert_eq!(denied.permissions.net, NetGrant::Deny);
+        assert!(!denied.permissions.net.is_granted());
 
-        let interface_only = Manifest::parse("[permissions]\nnet = []\n").unwrap();
-        assert_eq!(interface_only.permissions.net, Some(Vec::new()));
+        let linked = Manifest::parse("[permissions]\nnet = \"linked\"\n").unwrap();
+        assert_eq!(linked.permissions.net, NetGrant::Linked);
+        assert!(linked.permissions.net.is_granted());
+
+        let explicit = Manifest::parse("[permissions]\nnet = \"deny\"\n").unwrap();
+        assert_eq!(explicit.permissions.net, NetGrant::Deny);
+    }
+
+    #[test]
+    fn a_net_list_is_refused_with_the_replacement_spelling() {
+        // Every manifest written before 0.3 spells this as a list. The error is
+        // the only place such a reader finds out what to write instead, so it
+        // has to carry the new spelling rather than serde's type mismatch.
+        for source in [
+            "[permissions]\nnet = []\n",
+            "[permissions]\nnet = [\"example.com\"]\n",
+        ] {
+            let err = Manifest::parse(source).unwrap_err();
+            let message = err.message();
+            assert!(message.contains("no longer a list"), "{message}");
+            assert!(message.contains(r#"net = "linked""#), "{message}");
+        }
+    }
+
+    #[test]
+    fn an_unknown_net_grant_names_the_ones_that_exist() {
+        let err = Manifest::parse("[permissions]\nnet = \"allow\"\n").unwrap_err();
+        assert!(
+            err.message().contains(r#""deny" or "linked""#),
+            "{}",
+            err.message()
+        );
     }
 
     #[test]

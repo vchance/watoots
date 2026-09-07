@@ -30,7 +30,7 @@
 clocks = "wall"         # CPython links both clocks; "wall" implies "monotonic"
 env    = {}             # its startup reads the environment
 random = true           # it seeds its hash randomisation before any code runs
-net    = []             # interfaces linked by CPython; nothing reachable
+net    = "linked"       # interfaces linked by CPython; nothing reachable
 
 # The one grant this example exists for.
 #

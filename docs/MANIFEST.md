@@ -51,19 +51,19 @@ gate.
 |---|---|---|
 | `fs.read` | list of paths | `wasi:filesystem`, preopened read-only |
 | `fs.write` | list of paths | `wasi:filesystem`, preopened read-write |
-| `net` | list of hosts | `wasi:sockets`, `wasi:http` |
+| `net` | `"deny"` \| `"linked"` | `wasi:sockets`, `wasi:http` |
 | `env` | table | `wasi:cli/environment` |
 | `clocks` | `"monotonic"` \| `"wall"` | `wasi:clocks` |
 | `random` | bool | `wasi:random` |
 | `logging` | `"trace"` … `"critical"` | `wasi:logging` |
 
-Absent keys deny. Two of them have a third state that matters:
+Absent keys deny.
 
-### `net` and `env`: present-but-empty is a grant
+### `net` and `env`: being allowed to look is its own grant
 
 ```toml
-net = []     # the interfaces exist; no host is reachable
-env = {}     # the guest may read its environment and find nothing
+net = "linked"   # the interfaces exist; no host is reachable
+env = {}         # the guest may read its environment and find nothing
 ```
 
 This is not pedantry. A CPython guest links `wasi:sockets` whether or not the
@@ -72,9 +72,16 @@ plugin opens a socket, and a JavaScript guest links `wasi:http`. Denying the
 wasmtime-wasi's own defaults refuse every connection is what actually matches
 the situation: the plugin can see the door and cannot open it.
 
-> **`net` with a non-empty list is refused.** Nothing enforces the allowlist
-> yet, and a manifest naming one host must not quietly hand over the whole
-> network. Use `net = []` until the allowlist lands.
+> **There is no host allowlist, and `net` never takes a list.** watoots sits at
+> the component boundary, where wasmtime-wasi's connection check is handed a
+> resolved `SocketAddr` and never the name that produced it — so a rule about
+> `api.example.com` would have nothing to match on. A key that looks like it
+> restricts something and does not is worse than no key, so `net` has exactly
+> two values. Hostname policy belongs to whatever your application puts behind
+> `wasi:http`. See [ADR-0012](adr/0012-no-net-allowlist.md).
+>
+> A manifest written before 0.3 spells this `net = []`; that is now a parse
+> error naming `net = "linked"` as the replacement.
 
 ### `clocks` is a ladder
 

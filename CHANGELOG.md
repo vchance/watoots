@@ -6,10 +6,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [0.3.0] — 2026-09-06
 
-Additive for manifests and plugins. **One C ABI change:** `wt_plugin_stats_t`
-gained a trailing `reloads` field, so a caller compiled against a 0.2.0 header
-reads a struct one field short. Nothing is published to crates.io, so nobody is
-holding a stale header — but it is an ABI change and this is where it is said.
+**One breaking manifest change:** `permissions.net` no longer takes a list of
+hosts, and a manifest using `net = []` will not parse. See *Removed* below;
+`net = "linked"` is the replacement, and the parse error says so.
+
+**One C ABI change:** `wt_plugin_stats_t` gained a trailing `reloads` field, so
+a caller compiled against a 0.2.0 header reads a struct one field short. Nothing
+is published to crates.io, so nobody is holding a stale header — but it is an
+ABI change and this is where it is said.
+
+Everything else is additive for manifests and plugins.
 
 ### Added
 
@@ -62,6 +68,25 @@ holding a stale header — but it is an ABI change and this is where it is said.
 - Failure prose in the asset world is explicitly **not** conformance surface.
   Pinning it made the second guest reproduce five behaviours of Rust's standard
   library; a host branches on the case.
+
+### Removed
+
+- **The `permissions.net` host allowlist, which never worked and could not.**
+  `net` is now `"deny"` (the default) or `"linked"`, and never a list. A
+  non-empty list was already refused at host-build time as "not enforced yet";
+  the promise cannot be kept at this layer, because `wasmtime-wasi`'s
+  `socket_addr_check` is handed a resolved `SocketAddr` and never the hostname
+  that produced it. A manifest key that reads as a restriction and enforces
+  nothing is worse than no key — it misleads the person reviewing a policy
+  before installing a plugin, which is what the manifest is *for*. Hostname
+  policy belongs to whatever the application serves behind `wasi:http`, where
+  the name still exists. [ADR-0012](docs/adr/0012-no-net-allowlist.md).
+
+  **Migrating:** `net = []` becomes `net = "linked"`; drop any named hosts and
+  apply the rule in your own `wasi:http` implementation. `net = ["example.com"]`
+  never granted `example.com` in any released version. `Permissions::net` is now
+  a `NetGrant` rather than an `Option<Vec<String>>`, and `is_granted()` replaces
+  `is_some()`.
 
 ### Not built
 

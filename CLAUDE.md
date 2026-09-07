@@ -59,7 +59,9 @@ same content as the published scoping page (read-only reference).
   ADR-0007 (link `wit-component`, don't shell out), ADR-0008 (proptest on
   stable; record/replay is the fuzzing oracle), ADR-0009 (profile at the
   boundary; the timeout outranks the sampler) and ADR-0010 (reload carries
-  state as WIT values; checkpoint is not buildable) are done.
+  state as WIT values; checkpoint is not buildable), ADR-0011 (an audit trail is
+  a third hook) and ADR-0012 (no `permissions.net` host allowlist; `net` is
+  `"deny"` or `"linked"`) are done.
 - Prefer `wasmtime::component::Val` + WAVE for dynamic calls; `bindgen!` only
   where the Rust host has a static world.
 - Tests live next to code; integration tests under `crates/*/tests/` use the
@@ -116,7 +118,8 @@ a `wasm32-wasip2` Rust guest imports `wasi:clocks/monotonic-clock` and
 `wasi:cli/environment` via `std` whether or not the author uses them; a WIT
 interface imported only for its types has no callable functions and is not a
 capability (`Requirement::TypesOnly`); CPython links `wasi:sockets`
-unconditionally, which is why `net` is tri-state — absent denies the import,
-`net = []` grants the interface with nothing reachable, and a non-empty
-allowlist is refused because nothing enforces it yet; and replay must serve
+unconditionally, which is why `net` grants the *import* separately from any
+reachability — `net = "deny"` (the default) refuses the import, `net = "linked"`
+allows it with nothing reachable, and there is no host allowlist because
+nothing at this layer could enforce one (ADR-0012); and replay must serve
 every import a component *declares*, not just the ones a recording exercised.

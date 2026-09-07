@@ -129,8 +129,8 @@ existing script already reads. What the ADR was actually protecting is that the
 does choose it: stderr, because stdout carries the call's return value.
 
 **The trail cannot see WASI's own runtime refusals, and that is the real gap.**
-`net = []` grants the socket interfaces and `wasmtime-wasi` then refuses every
-connection; a filesystem call outside a preopen is refused the same way. Those
+`net = []` (spelled `net = "linked"` since ADR-0012) grants the socket
+interfaces and `wasmtime-wasi` then refuses every connection; a filesystem call outside a preopen is refused the same way. Those
 are refusals in exactly this ADR's sense, and they happen inside
 `wasmtime-wasi`, which has no seam to hang a hook on. The trail therefore
 answers "what was this plugin *granted*" completely and "what was it *refused*"

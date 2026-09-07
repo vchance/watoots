@@ -75,10 +75,11 @@ Two consequences worth internalising:
 - **The import list reflects the toolchain, not the author.** A denial that
   looks wrong is usually the runtime, not the plugin.
 - **Importing an interface and being able to use it are different.**
-  `py-lint.toml` has `net = []`, which grants the socket *interfaces* CPython
-  links while leaving no host reachable — wasmtime-wasi refuses every
+  `py-lint.toml` has `net = "linked"`, which grants the socket *interfaces*
+  CPython links while leaving no host reachable — wasmtime-wasi refuses every
   connection. Denying the import outright would refuse CPython altogether;
-  pretending an allowlist works would be worse.
+  pretending an allowlist works would be worse, which is why there is no
+  spelling for one ([ADR-0012](../docs/adr/0012-no-net-allowlist.md)).
 
 `cpp-lint.toml` needs `clocks = "wall"` where `rust-lint.toml` needs only
 `monotonic`. Nothing in `lint.cc` asks for the time; wasi-libc links the wall

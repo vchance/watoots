@@ -87,7 +87,7 @@ let out: LintResult = plugin.call("lint", &input)?; // typed via bindgen or WAVE
 [permissions]
 fs.read  = ["${plugin_dir}", "${workspace}/**/*.md"]
 fs.write = ["${plugin_dir}/cache"]
-net      = []                 # denied (also Wasmtime 48's default)
+net      = "deny"             # denied (also Wasmtime 48's default)
 clocks   = "monotonic"        # no wall clock
 random   = true
 
@@ -126,7 +126,7 @@ Why this is different from Wasmtime's own `rr`: theirs records at the canonical-
 
 **In**
 - Load component from bytes/file; validate against the host's WIT world (`wasm-tools component targets` logic)
-- Manifest (TOML): fs ro/rw globs, net allowlist, env, clocks, random; memory/fuel/epoch limits
+- Manifest (TOML): fs ro/rw globs, net grant, env, clocks, random; memory/fuel/epoch limits
 - Import-intersection check at load: undeclared imports are a load error, not a runtime trap
 - WASI 0.2 wiring driven by the manifest
 - Typed calls two ways: re-exported `bindgen!` for Rust hosts; dynamic `Val` + WAVE for C and CLI

@@ -183,24 +183,28 @@ fn a_missing_file_reports_not_found() {
 }
 
 #[test]
-fn a_net_allowlist_is_refused_until_it_is_enforced() {
-    // Better to fail closed and say so than to hand over the whole network
-    // because the manifest named one host.
-    let err = Host::builder()
-        .manifest(Manifest::parse("[permissions]\nnet = [\"example.com\"]\n").unwrap())
-        .build()
-        .unwrap_err();
+fn a_net_allowlist_is_refused_at_the_manifest_and_not_at_the_host() {
+    // It used to build a host and fail there, because the list parsed and then
+    // had to be rejected for being unenforceable. Now the shape is gone, so the
+    // refusal happens where the mistake is: reading the manifest.
+    let err = Manifest::parse("[permissions]\nnet = [\"example.com\"]\n").unwrap_err();
     assert_eq!(err.kind(), ErrorKind::Manifest);
     assert!(
-        err.message().contains("not enforced yet"),
+        err.message().contains("no longer a list"),
         "{}",
         err.message()
     );
-    assert!(err.message().contains("net = []"), "{}", err.message());
+
+    // And the replacement is a host that builds, because there is nothing left
+    // for the builder to object to.
+    Host::builder()
+        .manifest(Manifest::parse("[permissions]\nnet = \"linked\"\n").unwrap())
+        .build()
+        .unwrap();
 }
 
 #[test]
-fn an_empty_net_list_admits_the_interface_with_nothing_reachable() {
+fn a_linked_net_grant_admits_the_interface_with_nothing_reachable() {
     // A CPython or JavaScript runtime links the socket interfaces whether or
     // not the plugin opens one. Denying the import would refuse those guests
     // outright; granting the import while wasmtime-wasi refuses every
@@ -208,7 +212,7 @@ fn an_empty_net_list_admits_the_interface_with_nothing_reachable() {
     let denied = host_with("");
     assert!(denied.load_binary("net", WANTS_NETWORK.as_bytes()).is_err());
 
-    let granted = host_with("[permissions]\nnet = []\n");
+    let granted = host_with("[permissions]\nnet = \"linked\"\n");
     let report = granted.inspect(WANTS_NETWORK.as_bytes()).unwrap();
     assert!(report.is_satisfied(), "{}", report.describe());
 }

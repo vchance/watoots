@@ -1452,9 +1452,11 @@ fn install_epoch_callback(store: &mut Store<State>) {
 ///
 /// Sockets are the exception, and the reason the two mechanisms both exist. A
 /// CPython or JavaScript guest links the socket interfaces whether or not the
-/// plugin opens one, so `net = []` grants the *import* while wasmtime-wasi 48's
-/// own defaults refuse every connection. We never call `allow_tcp` or
-/// `allow_udp`, so that stays true.
+/// plugin opens one, so `net = "linked"` grants the *import* while
+/// wasmtime-wasi 48's own defaults refuse every connection. We never call
+/// `allow_tcp` or `allow_udp`, so that stays true — and because we never
+/// install a `socket_addr_check` either, there is no allowlist to express
+/// (ADR-0012).
 fn build_wasi_ctx(manifest: &Manifest) -> Result<WasiCtx> {
     let permissions = &manifest.permissions;
     let mut builder = WasiCtx::builder();

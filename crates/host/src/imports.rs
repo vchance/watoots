@@ -8,7 +8,7 @@
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
 
-use crate::manifest::{Clocks, Permissions};
+use crate::manifest::{Clocks, NetGrant, Permissions};
 
 /// A parsed WIT interface name: `namespace:package/interface@version`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -85,10 +85,10 @@ pub enum Requirement {
     Filesystem,
     /// `wasi:sockets` and `wasi:http` — need `net` to be present at all.
     ///
-    /// Presence, not a non-empty allowlist: `net = []` grants the interfaces
-    /// with nothing reachable, which is what a CPython or JavaScript guest
-    /// needs. A non-empty allowlist is refused at host-build time because
-    /// nothing enforces it — see `docs/SECURITY.md`.
+    /// Whether the interfaces may be *imported*, which is the only question
+    /// watoots can answer: `net = "linked"` grants them with nothing reachable,
+    /// which is what a CPython or JavaScript guest needs. There is no host
+    /// allowlist — see [`NetGrant`](crate::manifest::NetGrant) and ADR-0012.
     Network,
     /// `wasi:clocks/monotonic-clock`.
     MonotonicClock,
@@ -354,12 +354,9 @@ impl GrantReport {
             }
             detail
         };
-        let net_detail = match &permissions.net {
-            None => String::from("no sockets, no HTTP"),
-            Some(hosts) if hosts.is_empty() => {
-                String::from("interfaces linked, every connection refused")
-            }
-            Some(hosts) => format!("allowlist: {}", hosts.join(", ")),
+        let net_detail = match permissions.net {
+            NetGrant::Deny => String::from("no sockets, no HTTP"),
+            NetGrant::Linked => String::from("interfaces linked, every connection refused"),
         };
         let env_detail = match &permissions.env {
             None => String::from("cannot read the environment"),
@@ -377,7 +374,7 @@ impl GrantReport {
             CapabilityRow::new(
                 "network",
                 wants(&[Requirement::Network]),
-                permissions.net.is_some(),
+                permissions.net.is_granted(),
                 net_detail,
             ),
             CapabilityRow::new(
@@ -500,7 +497,7 @@ fn is_granted(requirement: Requirement, permissions: &Permissions) -> bool {
         // Granted by the key being present at all. An empty list means the
         // guest may link the socket interfaces and reach nothing through them,
         // which is what a scripting-language runtime needs.
-        Requirement::Network => permissions.net.is_some(),
+        Requirement::Network => permissions.net.is_granted(),
         Requirement::MonotonicClock => permissions.clocks.allows_monotonic(),
         Requirement::WallClock => permissions.clocks.allows_wall(),
         Requirement::Random => permissions.random,
@@ -609,7 +606,7 @@ mod tests {
             r#"
             [permissions]
             random = true
-            net    = []
+            net    = "linked"
             "#,
         )
         .unwrap();

@@ -895,25 +895,6 @@ impl HostBuilder {
             ));
         }
 
-        // An empty `net` list is fine: it grants the socket interfaces while
-        // wasmtime-wasi's own default refuses every connection. A non-empty
-        // allowlist is not, because nothing enforces it yet, and the failure
-        // mode of pretending otherwise is handing a plugin the whole network
-        // because the manifest named one host.
-        if self
-            .manifest
-            .permissions
-            .net
-            .as_ref()
-            .is_some_and(|hosts| !hosts.is_empty())
-        {
-            return Err(Error::new(
-                ErrorKind::Manifest,
-                "a non-empty permissions.net allowlist is not enforced yet; \
-                 use `net = []` to grant the interfaces with no reachable hosts",
-            ));
-        }
-
         // Sampling is driven from the epoch deadline too, so it needs the
         // interruption machinery and the ticker even when no timeout asked for
         // them.

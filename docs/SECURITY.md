@@ -80,10 +80,16 @@ have to update.
 
 ## Known gaps in v0.1
 
-- **The `net` allowlist is not enforced.** A non-empty `permissions.net` is
-  refused at host-build time rather than silently over-granting. `net = []`
-  grants the socket interfaces while every connection is refused, which is what
-  a CPython or JavaScript guest needs. Naming reachable hosts comes later.
+- **There is no `net` allowlist, and there will not be one at this layer.**
+  `net` grants the socket *imports* or denies them; it never names a reachable
+  host. `net = "linked"` grants the interfaces while wasmtime-wasi refuses every
+  connection, which is what a CPython or JavaScript guest needs. The reason is
+  structural: `socket_addr_check` is handed a resolved `SocketAddr` and never
+  the hostname that produced it, so watoots cannot enforce a rule about a name,
+  and an unenforced allowlist in a manifest is worse than none — it reads as a
+  restriction. Hostname policy belongs to whatever your application serves
+  behind `wasi:http`, where the name still exists. See
+  [ADR-0012](adr/0012-no-net-allowlist.md).
 - **Filesystem grants are directory-granular.** WASI preopens directories, so a
   grant admits the tree beneath it. The glob in a manifest path is expanded as a
   path, not applied as a filter.
