@@ -120,16 +120,20 @@ M5 shipped: `docs/MANIFEST.md`, a root `SECURITY.md` (reporting policy)
 alongside `docs/SECURITY.md` (threat model), `CONTRIBUTING.md`,
 `CODE_OF_CONDUCT.md`, issue forms, a manifest-first README, `tools/demo.sh`,
 `CHANGELOG.md`. The repo is public at `github.com/vchance/watoots` and crate
-metadata points at it. Tags `v0.0.0`, `v0.1.0`, `v0.2.0` and `v0.3.0`
+metadata points at it. Tags `v0.0.0` through `v0.4.0`
 are all on the remote; **crates.io has only the `0.0.0` name placeholders** and
 no release is published there, so the README tells people to build from the tag.
 
-**`main` is ahead of `v0.3.0`.** Work landing after a tag goes in the
-CHANGELOG's `[Unreleased]` section, not the tagged one -- appending to a
-released version's entry claims things that version does not contain, which is
-how a breaking `permissions.net` change briefly came to be filed under an
-already-shipped release. The next release is **0.4.0**, not a patch, because of
-that change. `Cargo.toml`'s version is bumped at release time, not before.
+**Current release: v0.4.0** (2026-09-07), the first with a breaking manifest
+change -- `permissions.net` no longer takes a list.
+
+**Work landing after a tag goes in the CHANGELOG's `[Unreleased]` section, not
+the tagged one.** Appending to a released version's entry claims things that
+version does not contain, which is how a breaking change and a security fix
+briefly came to be filed under an already-shipped 0.3.0. Check `git tag` before
+editing a version heading. Releasing bumps `version` in `Cargo.toml` plus the
+four path dependencies, the README banner, SECURITY.md's supported line, and
+the CHANGELOG link refs; the tag is annotated.
 
 **Announcing is Von's call and is not to be raised.** It is the last M5 item on
 paper; do not offer it, recommend it, or list it as outstanding.

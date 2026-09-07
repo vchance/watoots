@@ -4,11 +4,25 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.4.0] — 2026-09-07
 
-Everything here landed **after** `v0.3.0` was tagged. The next release is
-**0.4.0** rather than a patch: `permissions.net` no longer accepts a list, so a
-manifest that parsed under 0.3.0 can fail under this.
+**One breaking manifest change:** `permissions.net` no longer accepts a list, so
+a manifest that parsed under 0.3.0 can fail under this one. That is why this is
+0.4.0 and not a patch. See *Removed* for what to write instead; the parse error
+says it too.
+
+**One security fix**, in a capability the manifest could already express: see
+*Fixed (security)*.
+
+**C ABI:** additive only, and `wt_status` gained
+`WT_ERR_SIGNATURE_INVALID = 9` appended, so no existing enumerator value moved.
+Three new functions — `wt_host_load_binary_signed`, `wt_plugin_reload_signed`,
+`wt_host_builder_audit_hook` — and five new types for the audit trail:
+`wt_audit_hook_t`, `wt_audit_event_t`, `wt_audit_kind`, `wt_audit_verdict`,
+`wt_ceiling`. A caller compiled against the 0.3.0 header keeps working; one
+compiled against this header needs this header. Nothing is published to
+crates.io, so nobody is holding a stale one, but it is an ABI change and this is
+where it is said.
 
 ### Added
 
@@ -328,7 +342,7 @@ First release. Both halves of the project work end to end.
 See [docs/SECURITY.md](docs/SECURITY.md) for what the sandbox does and does not
 protect against.
 
-[Unreleased]: https://github.com/vchance/watoots/compare/v0.3.0...HEAD
+[0.4.0]: https://github.com/vchance/watoots/releases/tag/v0.4.0
 [0.3.0]: https://github.com/vchance/watoots/releases/tag/v0.3.0
 [0.2.0]: https://github.com/vchance/watoots/releases/tag/v0.2.0
 [0.1.0]: https://github.com/vchance/watoots/releases/tag/v0.1.0
