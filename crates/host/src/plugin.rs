@@ -1067,11 +1067,17 @@ impl Plugin {
 /// wasmtime raises this as a private `HostcallFuelExhausted` with no public
 /// type to downcast to, so the rendering is the only signal there is.
 ///
-/// The fragility is real and is answered by a test rather than by accepting the
-/// wrong answer: `a_transfer_overrun_is_a_limit_and_not_a_trap` fails loudly if
-/// wasmtime ever rewords this. Reporting a ceiling as a trap is worse than
-/// depending on a string — it sends whoever installed the plugin to debug the
-/// plugin, when what they need to edit is their own manifest.
+/// The fragility is real and is answered by tests rather than by accepting the
+/// wrong answer. Two pin it, and both assert the message *and* the resulting
+/// `ErrorKind` so a reworded message cannot quietly turn a ceiling back into a
+/// trap: `state_is_bounded_by_limits_transfer_like_any_other_crossing` in
+/// `tests/reload.rs`, which is built from WAT and therefore always runs, and
+/// `a_return_over_the_transfer_budget_is_refused_and_the_manifest_can_raise_it`
+/// in `tests/asset_e2e.rs`, which needs a compiled guest and skips without one.
+///
+/// Reporting a ceiling as a trap is worse than depending on a string — it sends
+/// whoever installed the plugin to debug the plugin, when what they need to
+/// edit is their own manifest.
 fn exhausted_transfer_budget(err: &wasmtime::Error) -> bool {
     err.chain()
         .any(|cause| cause.to_string().contains("fuel allocated for hostcalls"))

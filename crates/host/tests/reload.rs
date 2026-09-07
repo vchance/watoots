@@ -428,11 +428,19 @@ fn state_is_bounded_by_limits_transfer_like_any_other_crossing() {
     let err = plugin
         .reload(COUNTER_HUGE_STATE.as_bytes())
         .expect_err("60kB of state against a 1kB ceiling");
-    // On the message rather than the kind, as `asset_e2e` does for the same
-    // ceiling: wasmtime reports an exhausted hostcall budget as a trap and
-    // watoots has no marker to reclassify it by, so `limits.transfer` lands as
-    // `Trap` where `fuel` and `timeout` land as `LimitExceeded`.
+    // Both the message and the kind. Wasmtime reports an exhausted hostcall
+    // budget as a trap carrying a private type, so watoots recognises it by
+    // matching the message — which makes this assertion the thing that notices
+    // if wasmtime ever rewords it. `asset_e2e` pins the same pair, but only
+    // when a guest has been built; this one is WAT and always runs, so it is
+    // the guard that holds in CI.
     assert!(err.message().contains("hostcall"), "{}", err.message());
+    assert_eq!(
+        err.kind(),
+        ErrorKind::LimitExceeded,
+        "a spent ceiling is a limit, not misbehaviour: {}",
+        err.message()
+    );
 
     // The plugin was not replaced — but this is the one failure that costs the
     // running instance anyway, and the test says so rather than claiming more

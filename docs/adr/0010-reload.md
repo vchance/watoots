@@ -167,3 +167,14 @@ does for `LogVolumeExceeded`. A ceiling reported as a misbehaviour is the wrong
 answer, and it is the same distinction ADR-0006 drew for log volume. Left alone
 here because it predates this work and belongs in its own change; recorded so it
 is not rediscovered.
+
+> **Fixed 2026-09-06.** It got its own change, as this note asked for.
+> `exhausted_transfer_budget` recognises the exhaustion by matching wasmtime's
+> message — there is still no public type to downcast to — and a transfer
+> overrun is now `ErrorKind::LimitExceeded` carrying `Ceiling::Transfer`, which
+> also means the audit trail sees it. Matching a rendered string is a real
+> fragility, so both tests that exercise the ceiling assert the resulting kind
+> as well as the message; the one in `tests/reload.rs` is built from WAT and
+> runs even when no sample guest has been compiled. This paragraph is left
+> standing rather than edited because the note doing its job — being found and
+> acted on — is the argument for writing such notes at all.

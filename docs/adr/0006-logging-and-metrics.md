@@ -108,6 +108,27 @@ subsystem.
 - Anyone wanting guest-emitted metrics is told no, in writing, with a reason
   they can evaluate. That is the point of the "don't build" list.
 
+## What would change this
+
+Named the way ADR-0005 and ADR-0012 name theirs, so the decision can be
+re-examined without re-deriving it. Neither is a date; both are checkable.
+
+- **`wasi:logging` losing its draft version.** watoots matches
+  `wasi:logging/logging@0.1.0-draft`, and the interface name is pinned by name
+  rather than by package precisely so a second interface appearing in a later
+  revision denies until someone has read it. When the package stops being a
+  draft, that is the breaking adjustment this ADR budgeted for, and the moment
+  to check whether the shape we bet on survived.
+- **A guest-emitted metrics interface actually standardising.** The "no" here
+  rests on there being nothing to implement — `wasi-otel` and `wasi-observe`
+  were both early when this was written. If one of them reaches the phase
+  `wasi:logging` was at when we adopted it, the argument in this ADR stops
+  applying, because it was never "metrics are wrong" but "there is no standard
+  and inventing one is worse than waiting".
+
+The second is the one to watch. The first is a maintenance event; the second
+would mean this decision was right for a reason that has expired.
+
 [wasi-logging]: https://github.com/WebAssembly/wasi-logging
 [wasi-otel]: https://github.com/WebAssembly/wasi-otel
 [wasi-observe]: https://github.com/WebAssembly/wasi-observe
