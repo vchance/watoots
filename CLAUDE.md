@@ -12,9 +12,14 @@ same content as the published scoping page (read-only reference).
 
 ## Hard constraints
 - Engine: **Wasmtime 48.x** (LTS line). Do not bump majors without an ADR.
-- Guest target: **WASI 0.2.x** for v0.1. Keep the permission model 0.3-shaped
-  (per-interface grants; no `wasi:io` assumptions) but do not depend on
-  `wasmtime-wasi::p3` — it is documented as not production-ready.
+- Guest target: **WASI 0.2.x**. Do not depend on `wasmtime-wasi::p3`: it
+  documents that security fixes limited to wasip3 get no patch release, which a
+  sandbox cannot take. ADR-0013 records the two conditions that would change
+  this, so check it rather than re-arguing. The permission model stays
+  0.3-shaped (per-interface grants; no `wasi:io` assumptions) and
+  `crates/host/tests/wasip3_shape.rs` enforces that against wasmtime-wasi 48's
+  own p3 WIT — note that `clocks` is the one package split across two
+  capabilities, so its match arm is exhaustive on purpose.
 - **C API is a v0.1 deliverable**, not a follow-on. Every public Rust API
   should be designed with a C surface in mind (opaque handles, no generics
   across the boundary, error codes + message strings).
@@ -61,7 +66,8 @@ same content as the published scoping page (read-only reference).
   boundary; the timeout outranks the sampler) and ADR-0010 (reload carries
   state as WIT values; checkpoint is not buildable), ADR-0011 (an audit trail is
   a third hook) and ADR-0012 (no `permissions.net` host allowlist; `net` is
-  `"deny"` or `"linked"`) are done.
+  `"deny"` or `"linked"`) and ADR-0013 (stay on WASI 0.2; conditions for p3)
+  are done.
 - Prefer `wasmtime::component::Val` + WAVE for dynamic calls; `bindgen!` only
   where the Rust host has a static world.
 - Tests live next to code; integration tests under `crates/*/tests/` use the

@@ -192,8 +192,26 @@ pub fn classify(import: ComponentImport<'_>, host_provided: &BTreeSet<String>) -
         // interface appearing in a later revision denies until we have looked
         // at it, instead of riding in on the grant for this one.
         ("logging", "logging") => Requirement::Logging,
-        ("clocks", "wall-clock") => Requirement::WallClock,
-        ("clocks", _) => Requirement::MonotonicClock,
+        // Named exhaustively, and this is the one package where that matters.
+        // `clocks` is the only WASI package split across two *different*
+        // capabilities, so a fallthrough here does not merely mis-label an
+        // unknown interface — it hands it to whichever of the two the
+        // fallthrough happens to name. It named `monotonic`, the setting people
+        // choose precisely to keep real time away from a plugin.
+        //
+        // WASI 0.3 renames `wall-clock` to `system-clock` and adds `timezone`.
+        // Under a fallthrough both landed on `MonotonicClock`, so a manifest
+        // saying `clocks = "monotonic"` would have admitted the real-time clock
+        // the moment a p3 guest appeared. `wasip3_shape.rs` pins all four.
+        ("clocks", "monotonic-clock") => Requirement::MonotonicClock,
+        ("clocks", "wall-clock" | "system-clock") => Requirement::WallClock,
+        // Timezone converts an instant to a human calendar offset and reveals
+        // where the host thinks it is. That is wall-clock territory, and it is
+        // certainly not monotonic.
+        ("clocks", "timezone") => Requirement::WallClock,
+        // Anything else under `clocks` denies until someone has read it, the
+        // same rule `logging` follows below.
+        ("clocks", _) => Requirement::Unrecognized,
         ("random", _) => Requirement::Random,
         _ => Requirement::Unrecognized,
     }

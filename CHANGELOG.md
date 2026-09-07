@@ -63,11 +63,40 @@ Everything else is additive for manifests and plugins.
 
 ### Changed
 
+- **A written WASI p3 position, replacing an open question in the spec.**
+  [ADR-0013](docs/adr/0013-wasi-p3-position.md): the host stays on 0.2, and the
+  two conditions for adopting p3 are written down and checkable. The
+  disqualifying one is that `wasmtime-wasi`'s p3 module states security fixes
+  limited to wasip3 get no patch release. Two claims in `docs/SPEC.md` were
+  re-checked and corrected — `wasm32-wasip3` is still Tier 3 in the rustc book
+  (the promotion proposal was accepted, which is not the same), and it is Spin
+  4.1.0 rather than 4.0 that ships p3 on Wasmtime 48.
+- "The permission model is 0.3-shaped" is now a test rather than an intention:
+  `crates/host/tests/wasip3_shape.rs` classifies the p3 interface set read from
+  `wasmtime-wasi` 48.0.1's own WIT.
 - `examples/wit/` now holds one directory per world, because a WIT directory is
   a single package and two worlds cannot share one.
 - Failure prose in the asset world is explicitly **not** conformance surface.
   Pinning it made the second guest reproduce five behaviours of Rust's standard
   library; a host branches on the case.
+
+### Fixed (security)
+
+- **0.3's wall clock would have been classified as the monotonic one.** WASI 0.3
+  renames `wasi:clocks/wall-clock` to `system-clock` and adds `timezone`; the
+  capability table matched `wall-clock` by name and fell through on
+  `("clocks", _)` to `MonotonicClock`. A manifest saying `clocks = "monotonic"`
+  — the setting chosen precisely to keep real time away from a plugin — would
+  have admitted the real-time clock. `clocks` is the only WASI package split
+  across two different capabilities, which is why a fallthrough there
+  over-grants where the `filesystem` and `sockets` ones do not. The arm is now
+  exhaustive and an unread `clocks` interface denies.
+
+  Latent rather than exploitable: the host links wasip2 only, so a p3 component
+  fails at instantiation either way. But classification runs first, so
+  `watoots inspect` would have reported a p3 plugin as satisfying a monotonic-only
+  policy. Found by writing [ADR-0013](docs/adr/0013-wasi-p3-position.md), and
+  pinned by `crates/host/tests/wasip3_shape.rs`.
 
 ### Removed
 
