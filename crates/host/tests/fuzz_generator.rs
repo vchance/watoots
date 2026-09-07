@@ -167,6 +167,8 @@ fn entropy() -> impl Strategy<Value = Vec<u8>> {
 /// for any set of two or more flags whose declaration order is not
 /// alphabetical: `{write, exec}` parses back as `["exec", "write"]`.
 ///
+/// Reported upstream as
+/// [wasm-tools#2640](https://github.com/bytecodealliance/wasm-tools/issues/2640).
 /// It is left alone rather than corrected here. It is upstream of watoots — a
 /// wrapper is all `crates/host/src/wave.rs` is meant to be, per ADR-0004 — and
 /// it changes nothing that record/replay depends on: a trace stores the
@@ -380,10 +382,12 @@ fn wave_sorts_a_flag_set_on_the_way_back_in() {
     // order they were written or declared. `Val` compares flags positionally,
     // so the round trip is not the identity.
     //
-    // Left alone deliberately: it is upstream, and nothing watoots does
-    // depends on the order — a trace compares rendered text, and lowering a
-    // flag set into a guest maps labels to bits. If a future wasm-wave stops
-    // sorting, this test fails and `values_agree` can lose its exception.
+    // Left alone deliberately: it is upstream (reported as wasm-tools#2640),
+    // and nothing watoots does depends on the order — a trace compares
+    // rendered text, and lowering a flag set into a guest maps labels to bits.
+    // If a future wasm-wave stops sorting, this test fails and `values_agree`
+    // can lose its exception. That failure is the signal the issue was fixed,
+    // so read it as news rather than as a regression.
     let ty = zoo_types()
         .iter()
         .find(|ty| {
