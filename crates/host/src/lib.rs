@@ -46,6 +46,7 @@ pub mod manifest;
 mod plugin;
 mod profile;
 mod registry;
+pub mod signature;
 pub mod trace;
 pub mod wave;
 

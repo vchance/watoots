@@ -31,6 +31,8 @@ wasmtime = { version = "48", features = ["wave", "call-hook"] }
 wit-component = "0.254"
 wit-parser = "0.254"
 wasmtime-wasi = "48"
+p256 = { version = "0.14", default-features = false, features = ["ecdsa", "pem", "std"] }
+base64ct = { version = "1.8", default-features = false, features = ["std", "alloc"] }
 
 [dev-dependencies]
 # Only the tests need WAT as *binary*: most pass the text straight to

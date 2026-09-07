@@ -47,6 +47,40 @@ pub struct Manifest {
     pub limits: Limits,
     /// How reproducible its execution has to be.
     pub determinism: Determinism,
+    /// Who is allowed to have signed it.
+    pub signature: SignaturePolicy,
+}
+
+/// Which publishers a plugin loaded under this manifest may come from.
+///
+/// **The one part of a manifest where absence does not deny.** Everywhere else
+/// an omitted key refuses the capability; here an omitted `[signature]` section
+/// means signatures are not checked, because the alternative is that upgrading
+/// watoots stops every existing plugin from loading. `docs/MANIFEST.md` calls
+/// the asymmetry out rather than leaving a reader to assume the usual rule.
+///
+/// Once `keys` is non-empty the usual posture returns: a plugin with no
+/// signature, or one no listed key verifies, does not load. There is no warn
+/// mode and no trust-on-first-use — see ADR-0014.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct SignaturePolicy {
+    /// PEM `PUBLIC KEY` blocks, any one of which may have signed the plugin.
+    ///
+    /// More than one because that is what a rotation looks like: the old key
+    /// and the new one are both trusted for as long as it takes to re-sign.
+    ///
+    /// The key is P-256, which is `cosign`'s default and what
+    /// `cosign public-key` or `openssl ec -pubout` writes.
+    pub keys: Vec<String>,
+}
+
+impl SignaturePolicy {
+    /// Whether a plugin has to be signed to load under this manifest.
+    #[must_use]
+    pub fn is_required(&self) -> bool {
+        !self.keys.is_empty()
+    }
 }
 
 /// Knobs that make two runs of the same plugin agree.

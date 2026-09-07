@@ -127,6 +127,29 @@ fn the_manifest_travels_with_the_trace() {
 }
 
 #[test]
+fn a_signed_plugins_trace_is_still_replayable() {
+    // A trace carries the manifest but not the signature, so replaying a
+    // recording made under a `[signature]` policy would be impossible if replay
+    // enforced it — and a bug report is worth most exactly when something has
+    // stopped working. Replay clears the signature policy and keeps every
+    // permission and limit. See ADR-0014.
+    let (mut trace, wasm) = record_a_session();
+    trace.header.manifest_toml.push_str(
+        "\n[signature]\nkeys = [\"\"\"\n\
+         -----BEGIN PUBLIC KEY-----\n\
+         MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEzuhbtxgdBr7pXOlkrACLK8+PXkOL\n\
+         WmxJSG+8X0cSE6TaYhzhil1GgjEIbsI9QoDGb1DR6/EBuxvg2E4ejBuqDg==\n\
+         -----END PUBLIC KEY-----\n\"\"\"]\n",
+    );
+    // The policy really is in the header, so this is not vacuous.
+    let parsed = Manifest::parse(&trace.header.manifest_toml).unwrap();
+    assert!(parsed.signature.is_required());
+
+    let report = replay(&trace, &wasm).expect("replay must not demand a signature");
+    assert!(report.is_faithful(), "{}", report.describe());
+}
+
+#[test]
 fn replay_reproduces_the_session_without_the_application() {
     let (trace, wasm) = record_a_session();
 

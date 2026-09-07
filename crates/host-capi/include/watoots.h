@@ -31,6 +31,7 @@ typedef enum wt_status {
   WT_ERR_TRAP = 6,
   WT_ERR_LIMIT_EXCEEDED = 7,
   WT_ERR_INTERNAL = 8,
+  WT_ERR_SIGNATURE_INVALID = 9,
 } wt_status;
 
 // Severity of a `wasi:logging` message.
@@ -524,6 +525,23 @@ enum wt_status wt_host_load_binary(const struct wt_host_t *host,
                                    struct wt_plugin_t **plugin_out,
                                    struct wt_error_t **error_out);
 
+// Load a component from memory together with the signature that vouches for it.
+//
+// `signature` is base64, as `cosign sign-blob --output-signature` writes it,
+// and is checked against the manifest's `signature.keys` before the component
+// is compiled. When the manifest lists no keys the argument is ignored rather
+// than rejected, so a caller may pass one unconditionally.
+//
+// Fails with `WT_ERR_SIGNATURE_INVALID` if no trusted key verifies the bytes.
+enum wt_status wt_host_load_binary_signed(const struct wt_host_t *host,
+                                          const char *name,
+                                          const uint8_t *wasm,
+                                          size_t wasm_len,
+                                          const uint8_t *signature,
+                                          size_t signature_len,
+                                          struct wt_plugin_t **plugin_out,
+                                          struct wt_error_t **error_out);
+
 // Describe what a component would be granted, without instantiating it.
 //
 // Answers "what can this plugin do", resolved against the manifest: a granted
@@ -622,6 +640,20 @@ enum wt_status wt_plugin_reload(struct wt_plugin_t *plugin,
                                 size_t wasm_len,
                                 struct wt_reload_report_t *report_out,
                                 struct wt_error_t **error_out);
+
+// Replace a plugin's code with a component the signature vouches for.
+//
+// As [`wt_plugin_reload`], with the same check `wt_host_load_binary_signed`
+// runs. A reload re-verifies deliberately: the moment the code changes is the
+// moment publisher identity matters most, and a replacement that does not
+// verify is refused before the running instance is entered.
+enum wt_status wt_plugin_reload_signed(struct wt_plugin_t *plugin,
+                                       const uint8_t *wasm,
+                                       size_t wasm_len,
+                                       const uint8_t *signature,
+                                       size_t signature_len,
+                                       struct wt_reload_report_t *report_out,
+                                       struct wt_error_t **error_out);
 
 // Replace a plugin's code with a component read from `path`.
 //

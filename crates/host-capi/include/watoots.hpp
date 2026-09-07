@@ -485,6 +485,27 @@ class Plugin {
     return report;
   }
 
+  /// Replace this plugin's code with a component the signature vouches for.
+  ///
+  /// The same check `Host::LoadBinarySigned` runs. A reload re-verifies on
+  /// purpose: the moment the code changes is the moment publisher identity
+  /// matters most.
+  [[nodiscard]] Result<wt_reload_report_t> ReloadSigned(
+      std::span<const std::byte> wasm, std::span<const std::byte> signature) {
+    wt_reload_report_t report{};
+    wt_error_t* error = nullptr;
+    const wt_status status = wt_plugin_reload_signed(
+        handle_.Get(),
+        reinterpret_cast<const uint8_t*>(wasm.data()),  // NOLINT
+        wasm.size(),
+        reinterpret_cast<const uint8_t*>(signature.data()),  // NOLINT
+        signature.size(), &report, &error);
+    if (status != WT_OK) {
+      return unexpected(internal::TakeError(status, error));
+    }
+    return report;
+  }
+
   /// Replace this plugin's code with a component read from `path`.
   ///
   /// As `Reload`, and additionally re-points `${plugin_dir}` at the directory
@@ -566,6 +587,29 @@ class Host {
         handle_.Get(), name.c_str(),
         reinterpret_cast<const uint8_t*>(wasm.data()),  // NOLINT
         wasm.size(), &plugin, &error);
+    if (status != WT_OK) {
+      return unexpected(internal::TakeError(status, error));
+    }
+    return Plugin(plugin);
+  }
+
+  /// Load a component from memory with the signature that vouches for it.
+  ///
+  /// `signature` is base64, as `cosign sign-blob --output-signature` writes it,
+  /// and is checked against the manifest's `signature.keys` before the
+  /// component is compiled. With no keys configured it is ignored rather than
+  /// rejected, so it can be passed unconditionally.
+  [[nodiscard]] Result<Plugin> LoadBinarySigned(
+      const std::string& name, std::span<const std::byte> wasm,
+      std::span<const std::byte> signature) const {
+    wt_plugin_t* plugin = nullptr;
+    wt_error_t* error = nullptr;
+    const wt_status status = wt_host_load_binary_signed(
+        handle_.Get(), name.c_str(),
+        reinterpret_cast<const uint8_t*>(wasm.data()),  // NOLINT
+        wasm.size(),
+        reinterpret_cast<const uint8_t*>(signature.data()),  // NOLINT
+        signature.size(), &plugin, &error);
     if (status != WT_OK) {
       return unexpected(internal::TakeError(status, error));
     }

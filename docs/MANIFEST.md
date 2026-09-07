@@ -213,6 +213,73 @@ manifest travels inside a recorded trace**, so replay rebuilds the same engine
 configuration. Otherwise a divergence report could be a statement about the
 engine rather than about the plugin.
 
+## `[signature]`
+
+Who is allowed to have signed the plugin. Everything above says what a plugin
+may *do*; this says who it may come *from*.
+
+```toml
+[signature]
+keys = ["""
+-----BEGIN PUBLIC KEY-----
+MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEzuhbtxgdBr7pXOlkrACLK8+PXkOL
+WmxJSG+8X0cSE6TaYhzhil1GgjEIbsI9QoDGb1DR6/EBuxvg2E4ejBuqDg==
+-----END PUBLIC KEY-----
+"""]
+```
+
+> **This is the one place absence does not deny.** Every other key in this file
+> refuses the capability when omitted. An omitted `[signature]` section means
+> signatures are not checked at all — because the alternative is that upgrading
+> watoots stops every plugin anyone already has from loading. Do not read the
+> "absent denies" rule into this section.
+
+Once `keys` is non-empty the usual posture returns, with no middle setting: a
+plugin that is unsigned, or signed by a key not listed, does not load. There is
+no warn mode and no trust-on-first-use.
+
+More than one key is what a rotation looks like — the old and the new are both
+trusted for as long as it takes to re-sign everything.
+
+### Producing the signature
+
+The format is what `cosign` writes, so that a signing tool already exists:
+
+```sh
+cosign sign-blob --key cosign.key --output-signature plugin.wasm.sig plugin.wasm
+```
+
+`Host::load("plugin.wasm")` reads `plugin.wasm.sig` from beside it. Loading from
+memory takes the signature as an argument (`load_binary_signed`,
+`wt_host_load_binary_signed`), because there is no file to look next to.
+
+Under the hood that is ECDSA P-256 over SHA-256, base64-encoded, which is
+cosign's default; `openssl dgst -sha256 -sign` produces the same thing, and the
+key is an ordinary PEM `PUBLIC KEY` block from `cosign public-key` or
+`openssl ec -pubout`.
+
+**Reload re-verifies.** A reload already re-runs the capability check so a
+plugin cannot gain a permission by being updated; it re-runs this one for the
+same reason, and the check cannot be skipped by reloading.
+
+### What this does not do
+
+It answers "was this signed by a key I already trust", and nothing else. It is
+**not** Sigstore keyless verification: no identity, no certificate chain, no
+transparency-log inclusion. Those need Fulcio, Rekor, network access at load and
+a trust root somebody keeps fresh, none of which belongs inside a sandbox
+library's `load`. If you need them, verify the bundle where you *fetch* the
+plugin, then hand watoots the bytes and a pinned key.
+
+`watoots replay` and `watoots fuzz` do **not** check signatures. A trace carries
+the manifest but not the signature, so enforcing it would make a signed plugin's
+bug report unreplayable; both keep every permission and limit and skip only the
+publisher question, which you answered by choosing the file to replay.
+
+Key distribution, rotation and revocation are likewise yours. The manifest pins
+keys; it does not know when one should stop being trusted. See
+[ADR-0014](adr/0014-signature-verification.md).
+
 ## Variables
 
 `${name}` in any path or environment value is expanded at load time.

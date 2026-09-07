@@ -90,6 +90,15 @@ have to update.
   restriction. Hostname policy belongs to whatever your application serves
   behind `wasi:http`, where the name still exists. See
   [ADR-0012](adr/0012-no-net-allowlist.md).
+- **Signature verification is pinned-key only, and off unless configured.**
+  `[signature]` in the manifest checks that the bytes were signed by a key you
+  listed. It does not check identity, certificate chains, or transparency-log
+  inclusion — that is Sigstore keyless verification, which needs network access
+  and a maintained trust root at load time, and watoots does neither. Verify a
+  bundle where you fetch the plugin if you need that. Note also that a manifest
+  with no `[signature]` section verifies nothing: unlike every permission, this
+  one is off by default, so that upgrading does not break existing plugins.
+  Key rotation and revocation are the deployment's problem, not watoots'.
 - **Filesystem grants are directory-granular.** WASI preopens directories, so a
   grant admits the tree beneath it. The glob in a manifest path is expanded as a
   path, not applied as a filter.

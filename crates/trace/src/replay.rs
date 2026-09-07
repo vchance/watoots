@@ -191,7 +191,20 @@ pub fn replay(trace: &Trace, wasm: &[u8]) -> Result<ReplayReport> {
         report: ReplayReport::default(),
     }));
 
-    let manifest = Manifest::parse(&trace.header.manifest_toml).map_err(Error::from)?;
+    let mut manifest = Manifest::parse(&trace.header.manifest_toml).map_err(Error::from)?;
+
+    // Replay does not check signatures, and cannot: a trace carries the
+    // manifest but not the signature, so a recording made under a
+    // `[signature]` policy would be unreplayable — the one situation where a
+    // bug report is worth the most is the one where it stopped working.
+    //
+    // Dropping it is safe in the way that matters and is worth being explicit
+    // about. Every *permission* still applies, and the recorded limits and
+    // determinism knobs still apply, which is why the manifest travels at all.
+    // What is skipped is only "who published this", a question the person
+    // replaying has already answered by choosing which bytes to hand the
+    // replayer. See ADR-0014.
+    manifest.signature.keys.clear();
 
     // Serve every host import the component *declares*, not just the ones the
     // recording happened to exercise. A plugin that declares an interface it

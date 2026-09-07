@@ -24,7 +24,9 @@ same content as the published scoping page (read-only reference).
   should be designed with a C surface in mind (opaque handles, no generics
   across the boundary, error codes + message strings).
 - Default-deny everything: no network, no filesystem, no wall clock unless
-  the manifest grants it.
+  the manifest grants it. **The single exception is `[signature]`**, which is
+  off when absent so that upgrading does not break existing plugins (ADR-0014);
+  everywhere else, absence denies.
 - We complement Wasmtime's `rr` feature, which records at the *same* level we
   do — wasmtime#11284's goal is "to purely capture guest-host boundary
   crossings". What it names as a non-goal is a human-readable trace format,
@@ -66,7 +68,8 @@ same content as the published scoping page (read-only reference).
   boundary; the timeout outranks the sampler) and ADR-0010 (reload carries
   state as WIT values; checkpoint is not buildable), ADR-0011 (an audit trail is
   a third hook) and ADR-0012 (no `permissions.net` host allowlist; `net` is
-  `"deny"` or `"linked"`) and ADR-0013 (stay on WASI 0.2; conditions for p3)
+  `"deny"` or `"linked"`) ADR-0013 (stay on WASI 0.2; conditions for p3) and
+  ADR-0014 (pinned-key signature verification at load; no Sigstore keyless)
   are done.
 - Prefer `wasmtime::component::Val` + WAVE for dynamic calls; `bindgen!` only
   where the Rust host has a static world.

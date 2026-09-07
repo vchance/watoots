@@ -561,9 +561,24 @@ impl Plugin {
     /// guest profiles do not survive at all — the sampler is bound to one
     /// compiled component — so call [`Plugin::write_guest_profile`] before
     /// reloading if you want them.
+    /// Under a manifest with `signature.keys` this refuses, because a reload is
+    /// exactly where an unverified replacement must not slip in; use
+    /// [`Plugin::reload_signed`].
     pub fn reload(&mut self, wasm: &[u8]) -> Result<ReloadReport> {
         let vars = self.vars.clone();
-        self.reload_with(wasm, vars)
+        self.reload_with(wasm, vars, None)
+    }
+
+    /// Replace this plugin's code with a component the signature vouches for.
+    ///
+    /// The check is the same one `Host::load` runs, on the same path, which is
+    /// the point: ADR-0010 made reload re-run the capability check because a
+    /// plugin must not gain a capability by being updated, and ADR-0014 extends
+    /// that to publisher identity. A replacement is refused before the running
+    /// instance is touched.
+    pub fn reload_signed(&mut self, wasm: &[u8], signature: &[u8]) -> Result<ReloadReport> {
+        let vars = self.vars.clone();
+        self.reload_with(wasm, vars, Some(signature))
     }
 
     /// Replace this plugin's code with a component read from disk.
@@ -572,12 +587,15 @@ impl Plugin {
     /// directory the replacement came from. The plugin keeps the name it was
     /// registered under even when the file is named differently — a reload
     /// replaces code, not identity.
+    /// Reads the signature from `<path>.sig` when the manifest asks for one,
+    /// exactly as [`Host::load`] does.
     pub fn reload_from_file(&mut self, path: impl AsRef<Path>) -> Result<ReloadReport> {
         let path = path.as_ref();
         let wasm = read_component(path)?;
+        let signature = self.host.read_signature_beside(path)?;
         let mut vars = self.vars.clone();
         vars.extend(plugin_dir_var(path));
-        self.reload_with(&wasm, vars)
+        self.reload_with(&wasm, vars, signature.as_deref())
     }
 
     /// The one place a running plugin is replaced.
@@ -587,7 +605,12 @@ impl Plugin {
     /// belongs *above* that assignment; nothing below it is allowed to be
     /// fallible, which is what keeps "the old instance survives" a property of
     /// the shape rather than of remembering to be careful.
-    fn reload_with(&mut self, wasm: &[u8], vars: BTreeMap<String, String>) -> Result<ReloadReport> {
+    fn reload_with(
+        &mut self,
+        wasm: &[u8],
+        vars: BTreeMap<String, String>,
+        signature: Option<&[u8]>,
+    ) -> Result<ReloadReport> {
         // Hashed here as well as inside `instantiate_plugin`, and only when a
         // hook is installed: the reload's own verdict is reached after that
         // function has returned, and "which bytes am I running now" is the whole
@@ -605,9 +628,9 @@ impl Plugin {
         //    First, deliberately: a reload refused for asking too much has then
         //    not so much as called into the running plugin. That refusal is
         //    reported from in there, where the deciding import is known.
-        let mut fresh = self
-            .host
-            .instantiate_plugin(&self.name, wasm, vars, LoadKind::Reload)?;
+        let mut fresh =
+            self.host
+                .instantiate_plugin(&self.name, wasm, vars, LoadKind::Reload, signature)?;
 
         // 2. Ask the outgoing instance for its state, if it has any to give.
         let saved = match self.save_state() {

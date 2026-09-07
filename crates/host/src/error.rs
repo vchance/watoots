@@ -25,6 +25,14 @@ pub enum ErrorKind {
     LimitExceeded = 7,
     /// A bug on our side.
     Internal = 8,
+    /// The component is not signed by any key the manifest trusts.
+    ///
+    /// Distinct from [`Self::PermissionDenied`] deliberately: that one means
+    /// the plugin asked for a capability it was not granted, and points at the
+    /// manifest's `[permissions]`. This one means the bytes are not from a
+    /// publisher the manifest trusts, and points at `[signature]`. Conflating
+    /// them would send a reader to the wrong half of the file.
+    SignatureInvalid = 9,
 }
 
 impl ErrorKind {
@@ -43,6 +51,7 @@ impl ErrorKind {
             "WT_ERR_TRAP" => Self::Trap,
             "WT_ERR_LIMIT_EXCEEDED" => Self::LimitExceeded,
             "WT_ERR_INTERNAL" => Self::Internal,
+            "WT_ERR_SIGNATURE_INVALID" => Self::SignatureInvalid,
             _ => return None,
         })
     }
@@ -59,6 +68,7 @@ impl ErrorKind {
             Self::Trap => "WT_ERR_TRAP",
             Self::LimitExceeded => "WT_ERR_LIMIT_EXCEEDED",
             Self::Internal => "WT_ERR_INTERNAL",
+            Self::SignatureInvalid => "WT_ERR_SIGNATURE_INVALID",
         }
     }
 }

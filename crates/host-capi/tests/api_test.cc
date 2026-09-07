@@ -106,10 +106,62 @@ wt::Host BuildHost(const char* manifest = "") {
   return std::move(host).value();
 }
 
+// The public half of a throwaway openssl P-256 keypair, the same one
+// crates/host/tests/fixtures/signing uses. Only its ability to *not* match
+// matters here: these tests check that the C surface reports a refusal, which
+// needs no valid signature at all.
+constexpr const char* kSigningManifest = R"TOML(
+[signature]
+keys = ["""
+-----BEGIN PUBLIC KEY-----
+MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEzuhbtxgdBr7pXOlkrACLK8+PXkOL
+WmxJSG+8X0cSE6TaYhzhil1GgjEIbsI9QoDGb1DR6/EBuxvg2E4ejBuqDg==
+-----END PUBLIC KEY-----
+"""]
+)TOML";
+
 TEST(CApi, ReportsItsVersion) {
   EXPECT_STRNE(wt_version_string(), "");
   EXPECT_STREQ(wt_status_name(WT_OK), "WT_OK");
   EXPECT_STREQ(wt_status_name(WT_ERR_MANIFEST), "WT_ERR_MANIFEST");
+  EXPECT_STREQ(wt_status_name(WT_ERR_SIGNATURE_INVALID),
+               "WT_ERR_SIGNATURE_INVALID");
+}
+
+TEST(CApi, AnUnsignedLoadIsRefusedWhenTheManifestListsKeys) {
+  const wt::Host host = BuildHost(kSigningManifest);
+  const std::string wasm = kSelfContained;
+
+  // The plain path cannot carry a signature, so under a signing manifest it
+  // must refuse rather than quietly load.
+  auto plugin = host.LoadBinary("unsigned", AsBytes(wasm));
+  ASSERT_FALSE(plugin.has_value());
+  EXPECT_EQ(plugin.error().Code(), WT_ERR_SIGNATURE_INVALID);
+}
+
+TEST(CApi, ASignatureThatDoesNotVerifyIsRefusedAsASignatureProblem) {
+  const wt::Host host = BuildHost(kSigningManifest);
+  const std::string wasm = kSelfContained;
+  const std::string signature = "bm90IGEgc2lnbmF0dXJl";
+
+  auto plugin =
+      host.LoadBinarySigned("wrong", AsBytes(wasm), AsBytes(signature));
+  ASSERT_FALSE(plugin.has_value());
+  // Not WT_ERR_INTERNAL: a refused signature is not a bug on our side, and the
+  // catch-all in `From<ErrorKind>` used to make it look like one.
+  EXPECT_EQ(plugin.error().Code(), WT_ERR_SIGNATURE_INVALID);
+}
+
+TEST(CApi, ASignatureIsIgnoredWhenNoKeysAreConfigured) {
+  // Absence does not deny here, uniquely. An application may pass a signature
+  // unconditionally and let the manifest decide whether it matters.
+  const wt::Host host = BuildHost();
+  const std::string wasm = kSelfContained;
+  const std::string signature = "not even base64 !!";
+
+  auto plugin =
+      host.LoadBinarySigned("unchecked", AsBytes(wasm), AsBytes(signature));
+  ASSERT_TRUE(plugin.has_value()) << plugin.error().Message();
 }
 
 TEST(CApi, LoadsAndCallsAComponent) {

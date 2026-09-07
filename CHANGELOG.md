@@ -80,8 +80,43 @@ Everything else is additive for manifests and plugins.
   Pinning it made the second guest reproduce five behaviours of Rust's standard
   library; a host branches on the case.
 
+### Added
+
+- **Signature verification at load.** A new `[signature]` section names public
+  keys, and a component that is not signed by one of them does not load, is not
+  compiled, and is not cached. The format is what `cosign sign-blob` writes —
+  ECDSA P-256 over SHA-256, base64 — so a signing tool already exists;
+  `Host::load` reads `<plugin>.wasm.sig` from beside the component, and
+  `load_binary_signed` / `wt_host_load_binary_signed` take it as an argument.
+  **Reload re-verifies**, which is the argument for doing this in watoots at
+  all: a check the application runs before calling `load` is a check that reload
+  silently skips, and the moment the code changes is the moment publisher
+  identity matters most. [ADR-0014](docs/adr/0014-signature-verification.md).
+
+  Scope is deliberately narrow: pinned keys only. No Sigstore keyless identity,
+  no certificate chains, no transparency-log inclusion — those need network
+  access and a maintained trust root inside `Host::load`, which a sandbox
+  library should not have. Verify a bundle where you fetch the plugin instead.
+
+  **`[signature]` is the one part of a manifest where absence does not deny**,
+  because otherwise upgrading would stop every existing plugin from loading.
+  `docs/MANIFEST.md` calls that out; do not read the usual rule into it.
+  `watoots replay` and `watoots fuzz` also skip the check, since a trace carries
+  the manifest but not the signature.
+
+- `ErrorKind::SignatureInvalid` / `WT_ERR_SIGNATURE_INVALID` (9), distinct from
+  `PermissionDenied`: one means the plugin asked for something it was not
+  granted, the other that the bytes are not from a publisher you trust, and they
+  send a reader to different halves of the manifest.
+
 ### Fixed (security)
 
+- **A new `ErrorKind` reached C as "a bug on our side".** `From<ErrorKind> for
+  wt_status` needs a catch-all because `ErrorKind` is `#[non_exhaustive]`, and
+  that catch-all silently mapped `SignatureInvalid` to `WT_ERR_INTERNAL` with
+  nothing failing to compile. A C host would have been told a refused signature
+  was a watoots bug. `every_error_kind_has_its_own_status` now fails when a kind
+  falls through, since the compiler cannot.
 - **0.3's wall clock would have been classified as the monotonic one.** WASI 0.3
   renames `wasi:clocks/wall-clock` to `system-clock` and adds `timezone`; the
   capability table matched `wall-clock` by name and fell through on

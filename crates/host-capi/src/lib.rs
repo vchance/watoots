@@ -46,6 +46,7 @@ pub enum wt_status {
     WT_ERR_TRAP = 6,
     WT_ERR_LIMIT_EXCEEDED = 7,
     WT_ERR_INTERNAL = 8,
+    WT_ERR_SIGNATURE_INVALID = 9,
 }
 
 impl From<ErrorKind> for wt_status {
@@ -58,6 +59,12 @@ impl From<ErrorKind> for wt_status {
             ErrorKind::Load => Self::WT_ERR_LOAD,
             ErrorKind::Trap => Self::WT_ERR_TRAP,
             ErrorKind::LimitExceeded => Self::WT_ERR_LIMIT_EXCEEDED,
+            ErrorKind::SignatureInvalid => Self::WT_ERR_SIGNATURE_INVALID,
+            // `ErrorKind` is `#[non_exhaustive]`, so this arm cannot be
+            // removed — but it is a trapdoor: a kind added upstream and not
+            // added here reaches C as "a bug on our side", silently and with
+            // nothing failing to compile. `every_error_kind_has_its_own_status`
+            // is what notices.
             _ => Self::WT_ERR_INTERNAL,
         }
     }
@@ -403,6 +410,7 @@ pub extern "C" fn wt_status_name(status: wt_status) -> *const c_char {
         wt_status::WT_ERR_TRAP => c"WT_ERR_TRAP",
         wt_status::WT_ERR_LIMIT_EXCEEDED => c"WT_ERR_LIMIT_EXCEEDED",
         wt_status::WT_ERR_INTERNAL => c"WT_ERR_INTERNAL",
+        wt_status::WT_ERR_SIGNATURE_INVALID => c"WT_ERR_SIGNATURE_INVALID",
     }
     .as_ptr()
 }
@@ -1180,6 +1188,39 @@ pub unsafe extern "C" fn wt_host_load_binary(
     })
 }
 
+/// Load a component from memory together with the signature that vouches for it.
+///
+/// `signature` is base64, as `cosign sign-blob --output-signature` writes it,
+/// and is checked against the manifest's `signature.keys` before the component
+/// is compiled. When the manifest lists no keys the argument is ignored rather
+/// than rejected, so a caller may pass one unconditionally.
+///
+/// Fails with `WT_ERR_SIGNATURE_INVALID` if no trusted key verifies the bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wt_host_load_binary_signed(
+    host: *const wt_host_t,
+    name: *const c_char,
+    wasm: *const u8,
+    wasm_len: usize,
+    signature: *const u8,
+    signature_len: usize,
+    plugin_out: *mut *mut wt_plugin_t,
+    error_out: *mut *mut wt_error_t,
+) -> wt_status {
+    guard(error_out, || {
+        let host = unsafe { borrow_host(host) }?;
+        let name = unsafe { borrow_str(name, "name") }?;
+        if wasm.is_null() || signature.is_null() || plugin_out.is_null() {
+            return Err(Error::invalid_argument(
+                "wasm, signature and plugin_out must not be NULL",
+            ));
+        }
+        let bytes = unsafe { std::slice::from_raw_parts(wasm, wasm_len) };
+        let sig = unsafe { std::slice::from_raw_parts(signature, signature_len) };
+        wrap_plugin(host.load_binary_signed(name, bytes, sig)?, plugin_out)
+    })
+}
+
 /// Describe what a component would be granted, without instantiating it.
 ///
 /// Answers "what can this plugin do", resolved against the manifest: a granted
@@ -1460,6 +1501,36 @@ pub unsafe extern "C" fn wt_plugin_reload(
         }
         let bytes = unsafe { std::slice::from_raw_parts(wasm, wasm_len) };
         let report = unsafe { (*plugin).inner.reload(bytes) }?;
+        write_reload_report(&report, report_out);
+        Ok(())
+    })
+}
+
+/// Replace a plugin's code with a component the signature vouches for.
+///
+/// As [`wt_plugin_reload`], with the same check `wt_host_load_binary_signed`
+/// runs. A reload re-verifies deliberately: the moment the code changes is the
+/// moment publisher identity matters most, and a replacement that does not
+/// verify is refused before the running instance is entered.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wt_plugin_reload_signed(
+    plugin: *mut wt_plugin_t,
+    wasm: *const u8,
+    wasm_len: usize,
+    signature: *const u8,
+    signature_len: usize,
+    report_out: *mut wt_reload_report_t,
+    error_out: *mut *mut wt_error_t,
+) -> wt_status {
+    guard(error_out, || {
+        if plugin.is_null() || wasm.is_null() || signature.is_null() {
+            return Err(Error::invalid_argument(
+                "plugin, wasm and signature must not be NULL",
+            ));
+        }
+        let bytes = unsafe { std::slice::from_raw_parts(wasm, wasm_len) };
+        let sig = unsafe { std::slice::from_raw_parts(signature, signature_len) };
+        let report = unsafe { (*plugin).inner.reload_signed(bytes, sig) }?;
         write_reload_report(&report, report_out);
         Ok(())
     })
@@ -1771,4 +1842,64 @@ pub unsafe extern "C" fn wt_plugin_call(
             ))),
         }
     })
+}
+
+#[cfg(test)]
+mod status_tests {
+    use super::*;
+
+    /// Every `ErrorKind` must map to its own `wt_status`.
+    ///
+    /// `From<ErrorKind> for wt_status` needs a catch-all because `ErrorKind` is
+    /// `#[non_exhaustive]`, and that catch-all is a trapdoor: a new kind that
+    /// nobody adds an arm for reaches C as `WT_ERR_INTERNAL` — "a bug on our
+    /// side" — with nothing failing to compile. It happened: `SignatureInvalid`
+    /// was added and silently landed there until this test existed.
+    ///
+    /// Listed by hand on purpose. Adding a kind means adding it here, which is
+    /// the moment to notice it needs a status too.
+    #[test]
+    fn every_error_kind_has_its_own_status() {
+        let mapped = [
+            (
+                ErrorKind::InvalidArgument,
+                wt_status::WT_ERR_INVALID_ARGUMENT,
+            ),
+            (ErrorKind::NotFound, wt_status::WT_ERR_NOT_FOUND),
+            (ErrorKind::Manifest, wt_status::WT_ERR_MANIFEST),
+            (
+                ErrorKind::PermissionDenied,
+                wt_status::WT_ERR_PERMISSION_DENIED,
+            ),
+            (ErrorKind::Load, wt_status::WT_ERR_LOAD),
+            (ErrorKind::Trap, wt_status::WT_ERR_TRAP),
+            (ErrorKind::LimitExceeded, wt_status::WT_ERR_LIMIT_EXCEEDED),
+            (ErrorKind::Internal, wt_status::WT_ERR_INTERNAL),
+            (
+                ErrorKind::SignatureInvalid,
+                wt_status::WT_ERR_SIGNATURE_INVALID,
+            ),
+        ];
+
+        for (kind, want) in mapped {
+            assert_eq!(wt_status::from(kind), want, "{kind:?}");
+        }
+
+        // Only `Internal` may be `WT_ERR_INTERNAL`. Anything else landing there
+        // is the trapdoor having swallowed a kind.
+        for (kind, status) in mapped {
+            if status == wt_status::WT_ERR_INTERNAL {
+                assert_eq!(kind, ErrorKind::Internal, "{kind:?} fell through");
+            }
+        }
+    }
+
+    /// The discriminants are the C ABI: `ErrorKind as i32` and the matching
+    /// `wt_status` have to agree, because `error.rs` says a C caller can rely
+    /// on it without a translation table.
+    #[test]
+    fn the_discriminants_line_up_with_error_kind() {
+        assert_eq!(ErrorKind::SignatureInvalid as i32, 9);
+        assert_eq!(wt_status::WT_ERR_SIGNATURE_INVALID as i32, 9);
+    }
 }

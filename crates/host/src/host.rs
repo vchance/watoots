@@ -20,6 +20,7 @@ use crate::imports::{self, GrantReport, ImportDecision};
 use crate::manifest::{LogLevel, Manifest};
 use crate::plugin::{Plugin, Wiring};
 use crate::profile::Profiling;
+use crate::signature::{self, TrustedKey};
 use crate::trace::TraceHook;
 use crate::{Error, ErrorKind, Result};
 
@@ -158,6 +159,12 @@ pub struct Host {
 struct HostInner {
     engine: Engine,
     manifest: Manifest,
+    /// `manifest.signature.keys`, parsed once.
+    ///
+    /// Parsed at build time rather than per load: a key that will not parse is
+    /// a broken manifest, and discovering that on the first plugin would report
+    /// a configuration mistake as if the plugin were at fault.
+    trusted_keys: Vec<TrustedKey>,
     host_provided: BTreeSet<String>,
     host_funcs: BTreeMap<String, BTreeMap<String, HostFunc>>,
     vars: BTreeMap<String, String>,
@@ -412,22 +419,70 @@ impl Host {
     ///
     /// `${plugin_dir}` expands to the directory the component was loaded from,
     /// on top of any variables set on the builder.
+    ///
+    /// If the manifest lists `signature.keys`, the signature is read from
+    /// `<path>.sig` — the file `cosign sign-blob --output-signature` writes —
+    /// and a missing or unverifiable one refuses the load. With no keys
+    /// configured no signature is looked for.
     pub fn load(&self, path: impl AsRef<Path>) -> Result<Plugin> {
         let path = path.as_ref();
         let wasm = read_component(path)?;
+        let signature = self.read_signature_beside(path)?;
         let name = path.file_stem().map_or_else(
             || path.display().to_string(),
             |s| s.to_string_lossy().into(),
         );
-        self.instantiate_plugin(&name, &wasm, plugin_dir_var(path), LoadKind::Load)
+        self.instantiate_plugin(
+            &name,
+            &wasm,
+            plugin_dir_var(path),
+            LoadKind::Load,
+            signature.as_deref(),
+        )
     }
 
     /// Load a component already in memory.
     ///
     /// `${plugin_dir}` is not defined for this path — there is no directory to
     /// point it at — so a manifest using it must be loaded with [`Host::load`].
+    ///
+    /// There is no file to read a signature from either, so under a manifest
+    /// with `signature.keys` this refuses; use [`Host::load_binary_signed`].
     pub fn load_binary(&self, name: &str, wasm: &[u8]) -> Result<Plugin> {
-        self.instantiate_plugin(name, wasm, BTreeMap::new(), LoadKind::Load)
+        self.instantiate_plugin(name, wasm, BTreeMap::new(), LoadKind::Load, None)
+    }
+
+    /// Load a component from memory, with the signature that vouches for it.
+    ///
+    /// `signature` is base64, as `cosign sign-blob --output-signature` writes
+    /// it. Verified against `signature.keys` before the component is compiled;
+    /// with no keys configured the argument is ignored rather than rejected, so
+    /// an application can pass one unconditionally and let the manifest decide
+    /// whether it matters.
+    pub fn load_binary_signed(&self, name: &str, wasm: &[u8], signature: &[u8]) -> Result<Plugin> {
+        self.instantiate_plugin(name, wasm, BTreeMap::new(), LoadKind::Load, Some(signature))
+    }
+
+    /// Read `<path>.sig`, when the manifest gives us a reason to want one.
+    ///
+    /// Absent when no keys are configured, so a host that does not verify never
+    /// touches the filesystem looking for a file that need not exist. A missing
+    /// file when keys *are* configured is not reported here — it becomes the
+    /// "no signature was supplied" refusal, which says what to do about it.
+    pub(crate) fn read_signature_beside(&self, path: &Path) -> Result<Option<Vec<u8>>> {
+        if self.inner.trusted_keys.is_empty() {
+            return Ok(None);
+        }
+        let mut sig_path = path.as_os_str().to_os_string();
+        sig_path.push(".sig");
+        match std::fs::read(PathBuf::from(sig_path)) {
+            Ok(bytes) => Ok(Some(bytes)),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(err) => Err(Error::new(
+                ErrorKind::SignatureInvalid,
+                format!("reading {}.sig: {err}", path.display()),
+            )),
+        }
     }
 
     /// Compile, check against the manifest, and instantiate.
@@ -449,6 +504,7 @@ impl Host {
         wasm: &[u8],
         extra_vars: BTreeMap<String, String>,
         kind: LoadKind,
+        signature: Option<&[u8]>,
     ) -> Result<Plugin> {
         let audit = self.inner.audit.as_ref();
         // "From what bytes" is the question a plugin's name cannot answer, and
@@ -485,6 +541,14 @@ impl Host {
             }
             err
         };
+
+        // Before `compile`, and therefore before anything is cached: bytes that
+        // do not verify must never become machine code, in memory or on disk.
+        // It is also the cheap order — a hash and one curve operation instead
+        // of a compilation.
+        if let Err(err) = self.check_signature(wasm, signature) {
+            return Err(refused(None, err));
+        }
 
         let component = self.compile(wasm).map_err(|err| refused(None, err))?;
 
@@ -550,6 +614,28 @@ impl Host {
             });
         }
         Ok(plugin)
+    }
+
+    /// Refuse a component the manifest's `[signature]` keys do not vouch for.
+    ///
+    /// A no-op when no keys are configured. That is the one place a watoots
+    /// manifest does not default to deny, and ADR-0014 explains why: every
+    /// existing embedder would stop loading plugins on upgrade. Once a key is
+    /// listed the usual posture returns, including for a load that supplied no
+    /// signature at all.
+    fn check_signature(&self, wasm: &[u8], signature: Option<&[u8]>) -> Result<()> {
+        if self.inner.trusted_keys.is_empty() {
+            return Ok(());
+        }
+        let Some(signature) = signature else {
+            return Err(Error::new(
+                ErrorKind::SignatureInvalid,
+                "this manifest lists signature.keys, so a plugin must be signed, and \
+                 no signature was supplied. `Host::load` reads one from \
+                 `<plugin>.wasm.sig`; loading from memory takes it as an argument",
+            ));
+        };
+        signature::verify(wasm, signature, &self.inner.trusted_keys).map(|_| ())
     }
 
     /// Compile a component, going through the precompile cache when one is set.
@@ -925,6 +1011,7 @@ impl HostBuilder {
                 compiled: RwLock::new(CompiledCache::default()),
                 compiles: AtomicU64::new(0),
                 engine,
+                trusted_keys: signature::parse_keys(&self.manifest.signature.keys)?,
                 manifest: self.manifest,
                 host_provided: self.host_provided,
                 host_funcs: self.host_funcs,

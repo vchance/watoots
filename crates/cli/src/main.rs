@@ -826,7 +826,14 @@ fn run_session(
     seed: u64,
     calls: usize,
 ) -> Result<Session, String> {
-    let manifest = Manifest::parse(manifest_toml).map_err(|err| err.message().to_string())?;
+    let mut manifest = Manifest::parse(manifest_toml).map_err(|err| err.message().to_string())?;
+    // Same reasoning as `replay`: this runs a component the operator pointed at
+    // by name, over and over, to find a crash. The signature policy answers
+    // "who published this", which they have already answered by naming the
+    // file, and enforcing it here would refuse to fuzz a signed plugin from
+    // memory while the permissions and limits that shape the search still
+    // apply. See ADR-0014.
+    manifest.signature.keys.clear();
 
     let recorder = Arc::new(Recorder::new(Header {
         component_sha256: Trace::hash_component(wasm),
