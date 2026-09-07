@@ -894,3 +894,114 @@ fn reload_re_runs_the_grant_check_against_the_new_bytes() {
     assert!(log.contains("wasi:sockets"), "{log}");
     assert!(log.contains("not granted"), "{log}");
 }
+
+// ---------------------------------------------------------------------------
+// `watoots diff`: what changed between two builds, and would it still load.
+
+#[test]
+fn diff_of_a_build_against_itself_is_quiet_and_succeeds() {
+    let plugin = sample_plugin().display().to_string();
+    let output = watoots(&["diff", &plugin, &plugin, "-m", &policy()]);
+
+    let text = stdout(&output);
+    assert!(text.contains("imports\n  (unchanged)"), "{text}");
+    assert!(text.contains("exports\n  (unchanged)"), "{text}");
+    assert!(text.contains("needs no new grants"), "{text}");
+    assert!(output.status.success(), "{text}");
+}
+
+#[test]
+fn diff_names_the_manifest_key_a_new_import_would_need() {
+    // The lint policy against the asset build: a different world, so the
+    // "update" wants the filesystem the lint policy never granted. Contrived as
+    // a pair, exact as a check -- this is the reload refusal, previewed.
+    let previous = sample_plugin().display().to_string();
+    let current = asset_plugin().to_string();
+    let output = watoots(&["diff", &previous, &current, "-m", &policy()]);
+
+    let text = stdout(&output);
+    assert!(text.contains("+ wasi:filesystem/types"), "{text}");
+    // Not merely "denied": the line an operator would edit.
+    assert!(text.contains("permissions.fs.read"), "{text}");
+    assert!(text.contains("reload would refuse this build"), "{text}");
+    // Non-zero, so it works in a gate.
+    assert!(!output.status.success(), "{text}");
+}
+
+#[test]
+fn diff_reports_a_removed_export_as_breaking_callers() {
+    let previous = sample_plugin().display().to_string();
+    let current = asset_plugin().to_string();
+    let output = watoots(&["diff", &previous, &current, "-m", &policy()]);
+
+    let text = stdout(&output);
+    assert!(text.contains("- lint"), "{text}");
+    assert!(text.contains("callers of this break"), "{text}");
+    assert!(text.contains("export(s) removed"), "{text}");
+}
+
+#[test]
+fn diff_does_not_file_an_application_interface_as_a_permission_problem() {
+    // `watoots:asset/log` is the application's to serve. Reporting it as a
+    // denied permission would send someone to edit the wrong file -- the same
+    // rule `inspect` follows.
+    let previous = sample_plugin().display().to_string();
+    let current = asset_plugin().to_string();
+    let output = watoots(&["diff", &previous, &current, "-m", &policy()]);
+
+    let text = stdout(&output);
+    assert!(text.contains("watoots:asset/log"), "{text}");
+    assert!(
+        text.contains("your application must serve"),
+        "an application interface must not be reported as a denial: {text}"
+    );
+    let log_line = text
+        .lines()
+        .find(|line| line.contains("watoots:asset/log"))
+        .unwrap_or_default();
+    assert!(
+        !log_line.contains("NOT GRANTED"),
+        "not a permission problem: {log_line}"
+    );
+}
+
+#[test]
+fn diff_without_a_manifest_reports_changes_without_judging_them() {
+    let previous = sample_plugin().display().to_string();
+    let current = asset_plugin().to_string();
+    let output = watoots(&["diff", &previous, &current]);
+
+    let text = stdout(&output);
+    // It still says what changed...
+    assert!(text.contains("+ wasi:filesystem/types"), "{text}");
+    // ...and says how to find out whether that matters, rather than guessing.
+    assert!(text.contains("pass -m"), "{text}");
+}
+
+#[test]
+fn a_lost_import_is_news_and_the_two_failure_kinds_stay_separate() {
+    // Fewer capabilities is the safe direction, so dropping imports must not
+    // read as a permission problem. Run the pair backwards to see losses on
+    // their own.
+    let output = watoots(&[
+        "diff",
+        asset_plugin(),
+        &sample_plugin().display().to_string(),
+        "-m",
+        asset_policy(),
+        "--provide",
+        "watoots:example/log",
+    ]);
+
+    let text = stdout(&output);
+    assert!(text.contains("- wasi:filesystem/types"), "{text}");
+    assert!(text.contains("no longer needed"), "{text}");
+    // The import side is clean: giving up capabilities needs no new grant.
+    assert!(text.contains("this update needs no new grants"), "{text}");
+
+    // It still fails, and for the other reason entirely -- the exports changed.
+    // The two are reported and counted separately because they are fixed in
+    // different places, and this is what pins that apart.
+    assert!(text.contains("export(s) removed"), "{text}");
+    assert!(!output.status.success(), "{text}");
+}

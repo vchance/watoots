@@ -82,6 +82,21 @@ Everything else is additive for manifests and plugins.
 
 ### Added
 
+- **`watoots diff old.wasm new.wasm`** — what changed between two builds of a
+  plugin, and whether the update would still load. `Plugin::reload` already
+  re-runs the grant check and refuses a replacement that wants more (ADR-0010);
+  this is that refusal previewed, before the update ships. New imports are
+  reported with the manifest key that would grant them, removed exports as
+  breaking callers, and the two are counted separately because they are fixed
+  in different places. Exits non-zero on either, so it works as a gate.
+
+  Not a reimplementation of `wasm-tools component semver-check`, which compares
+  two WIT *packages* structurally and which watoots wraps as
+  `watoots wit semver-check` (ADR-0007). This compares two compiled
+  *components* against a policy, which is the question only watoots can answer.
+  An application-served interface is reported as one, not as a denied
+  permission — the same rule `inspect` follows.
+
 - **Signature verification at load.** A new `[signature]` section names public
   keys, and a component that is not signed by one of them does not load, is not
   compiled, and is not cached. The format is what `cosign sign-blob` writes —

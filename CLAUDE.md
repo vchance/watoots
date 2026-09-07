@@ -101,7 +101,7 @@ engine, manifest, import-intersection check, per-call limits, registry,
 precompile cache, dynamic `Val`/WAVE calls, determinism knobs and the trace
 hook; `crates/host-capi` has the cbindgen C API, the C++ RAII header and an
 installable CMake package; `crates/trace` has the trace format (text + binary),
-recorder and replay runner; `crates/cli` has `watoots inspect|run|record|replay|
+recorder and replay runner; `crates/cli` has `watoots inspect|diff|run|record|replay|
 trace fmt`. `examples/` has two WIT worlds: `lint` (small, hermetic, the smoke test) and
 `asset` (an image pipeline with variants, a result, large `list<u8>` payloads
 and a filesystem capability). Four guests implement each, eight policies derived

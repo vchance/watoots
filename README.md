@@ -134,6 +134,36 @@ canonical-ABI level for bit-exact engine determinism in a binary format that is
 explicitly not meant to be read. This is at the WIT level: diffable in review,
 editable by hand. The two compose.
 
+## Before you ship an update
+
+A plugin update that quietly wants more than the last one is the failure this
+project exists to catch. `Plugin::reload` re-runs the whole grant check and
+refuses a replacement that asks for more — correct, and also the worst moment to
+find out. `watoots diff` is that refusal, previewed:
+
+```console
+$ watoots diff deployed.wasm candidate.wasm -m policy.toml
+imports
+  + wasi:filesystem/types@0.2.9                      NOT GRANTED -> permissions.fs.read / permissions.fs.write
+  - wasi:random/random@0.2.9                         no longer needed
+
+exports
+  - lint                                             callers of this break
+
+1 new import(s) the manifest does not grant; reload would refuse this build
+1 export(s) removed; a host calling them breaks
+```
+
+Non-zero exit, so it works as a gate. The two problems are counted separately
+because they are fixed in different places: a new capability is a line in your
+manifest, a removed export is a change to the plugin or its callers.
+
+This is not `wasm-tools component semver-check`, which compares two WIT
+*packages* for structural compatibility and which watoots wraps rather than
+reimplements as `watoots wit semver-check`. `diff` compares two compiled
+*components* and answers the question about your policy.
+
+
 See it all in 90 seconds: `tools/demo.sh`.
 
 ## Any guest language, one host

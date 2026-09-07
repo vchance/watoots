@@ -24,3 +24,8 @@ Cargo.lock.orig
 /examples/plugins/py-*/componentize_py_runtime.pyi
 __pycache__/
 *.pyc
+
+# Scratch lookup tables written by `asset_e2e`. `Scratch` removes them on drop,
+# but a run killed mid-test cannot -- and the leftovers sit in a tracked
+# directory where `git add -A` would sweep them into a commit.
+/examples/plugins/*-asset/luts/scratch-*.lut

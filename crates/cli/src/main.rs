@@ -3,12 +3,14 @@
 //! Inspect what a plugin would be granted, run one, record a session, and
 //! replay a recording in CI.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::{Arc, Mutex};
 
 use clap::{Args, Parser, Subcommand};
 use watoots::fuzz::Generator;
+use watoots::imports::{ImportDecision, Requirement};
 use watoots::{
     AuditEvent, AuditHook, FunctionKind, FunctionProfile, Host, HostBuilder, Manifest,
     PluginProfile, PluginStats, Profiling, TraceHook,
@@ -38,6 +40,8 @@ enum Command {
     Replay(ReplayArgs),
     /// Call a plugin with generated arguments and check it records and replays.
     Fuzz(FuzzArgs),
+    /// Compare two builds of a plugin: what changed, and would it still load.
+    Diff(DiffArgs),
     /// Convert a trace between the text and binary encodings.
     #[command(subcommand)]
     Trace(TraceCommand),
@@ -97,6 +101,23 @@ struct InspectArgs {
     /// declares exactly one.
     #[arg(long, value_name = "NAME", requires = "targets")]
     world: Option<String>,
+}
+
+#[derive(Args)]
+struct DiffArgs {
+    /// The build already deployed.
+    previous: PathBuf,
+    /// The build proposed to replace it.
+    current: PathBuf,
+    /// Manifest the plugin runs under. With one, this answers the question that
+    /// actually matters: would the update still load, or would reload refuse
+    /// it? Without one, capability changes are reported but not judged.
+    #[arg(short, long)]
+    manifest: Option<PathBuf>,
+    /// An interface the application serves, so it is not reported as a denial.
+    /// Repeat for each one.
+    #[arg(long = "provide", value_name = "INTERFACE")]
+    provide: Vec<String>,
 }
 
 /// What `run` and `record` share.
@@ -271,6 +292,7 @@ fn run(cli: Cli) -> Result<ExitCode, String> {
         Command::Record(args) => record(&args),
         Command::Replay(args) => do_replay(&args),
         Command::Fuzz(args) => fuzz(&args),
+        Command::Diff(args) => diff(&args),
         Command::Wit(WitCommand::SemverCheck(args)) => semver_check(&args),
         Command::Trace(TraceCommand::Fmt {
             input,
@@ -325,6 +347,173 @@ fn inspect(args: &InspectArgs) -> Result<ExitCode, String> {
                 ok = false;
             }
         }
+    }
+
+    Ok(if ok {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    })
+}
+
+/// Whether an import is the application's to serve rather than the manifest's
+/// to grant.
+///
+/// Same predicate `GrantReport::summarize` uses: a non-WASI interface that
+/// is host-provided or unrecognised is one the embedding application supplies, so
+/// reporting it as a denied permission would send a reader to edit the wrong
+/// file. It is still a reason the build will not load as configured.
+fn serves_it_yourself(decision: &ImportDecision) -> bool {
+    matches!(
+        decision.requirement,
+        Requirement::HostProvided | Requirement::Unrecognized
+    ) && !decision.import.starts_with("wasi:")
+}
+
+/// Compare two builds of the same plugin.
+///
+/// Deliberately not `wit semver-check`, which compares two WIT *packages* for
+/// structural compatibility and is wrapped rather than reimplemented (ADR-0007).
+/// This compares two compiled *components* and answers the question watoots is
+/// uniquely placed to answer: does the new build ask for capabilities the old
+/// one did not, and would the manifest it runs under still let it load?
+///
+/// That is the reload refusal, previewed. `Plugin::reload` re-runs the grant
+/// check and refuses a replacement that wants more (ADR-0010), which is correct
+/// and also the worst possible moment to find out.
+fn diff(args: &DiffArgs) -> Result<ExitCode, String> {
+    let previous = read(&args.previous)?;
+    let current = read(&args.current)?;
+
+    let mut builder = Host::builder().manifest(read_manifest(args.manifest.as_deref())?);
+    for interface in &args.provide {
+        builder = builder.provide_interface(interface.clone());
+    }
+    let host = builder.build().map_err(|err| err.message().to_string())?;
+
+    let describe = |wasm: &[u8]| -> Result<(Vec<ImportDecision>, Vec<String>), String> {
+        let report = host
+            .inspect(wasm)
+            .map_err(|err| err.message().to_string())?;
+        let exports = host
+            .export_functions(wasm)
+            .map_err(|err| err.message().to_string())?;
+        Ok((report.decisions, exports))
+    };
+
+    let (previous_imports, previous_exports) = describe(&previous)?;
+    let (current_imports, current_exports) = describe(&current)?;
+
+    let names = |decisions: &[ImportDecision]| -> BTreeSet<String> {
+        decisions.iter().map(|d| d.import.clone()).collect()
+    };
+    let (before, after) = (names(&previous_imports), names(&current_imports));
+
+    // Requirement and grant come from the *current* build's report, because the
+    // question is what the update needs, not what the old one was allowed.
+    let decision_for = |name: &str| current_imports.iter().find(|d| d.import == *name);
+
+    let gained: Vec<&ImportDecision> = after
+        .difference(&before)
+        .filter_map(|name| decision_for(name))
+        .collect();
+    let lost: Vec<&String> = before.difference(&after).collect();
+
+    println!("imports");
+    if gained.is_empty() && lost.is_empty() {
+        println!("  (unchanged)");
+    }
+    for decision in &gained {
+        // Three outcomes, not two, and they are fixed in different places. An
+        // application interface is not a permission problem and must not be
+        // filed as one -- the same rule `inspect` follows.
+        if decision.granted {
+            println!("  + {:<48} already granted", decision.import);
+        } else if serves_it_yourself(decision) {
+            println!(
+                "  + {:<48} your application must serve this",
+                decision.import
+            );
+        } else {
+            // The grant key, not just the requirement: someone reading this is
+            // about to edit a manifest and wants the line to write.
+            println!(
+                "  + {:<48} NOT GRANTED -> {}",
+                decision.import,
+                decision.requirement.grant_key()
+            );
+        }
+    }
+
+    for name in &lost {
+        println!("  - {name:<48} no longer needed");
+    }
+
+    let before_exports: BTreeSet<&String> = previous_exports.iter().collect();
+    let after_exports: BTreeSet<&String> = current_exports.iter().collect();
+    let added: Vec<&&String> = after_exports.difference(&before_exports).collect();
+    let removed: Vec<&&String> = before_exports.difference(&after_exports).collect();
+
+    println!("\nexports");
+    if added.is_empty() && removed.is_empty() {
+        println!("  (unchanged)");
+    }
+    for name in &added {
+        println!("  + {name}");
+    }
+    for name in &removed {
+        println!("  - {name:<48} callers of this break");
+    }
+
+    // Two independent ways an update can be a problem, reported separately
+    // because they are fixed in different places: a new capability is a
+    // manifest edit, a removed export is a change to the plugin or its callers.
+    let ungranted: Vec<&&ImportDecision> = gained
+        .iter()
+        .filter(|d| !d.granted && !serves_it_yourself(d))
+        .collect();
+    let to_serve: Vec<&&ImportDecision> = gained
+        .iter()
+        .filter(|d| !d.granted && serves_it_yourself(d))
+        .collect();
+    println!();
+    let mut ok = true;
+
+    if !to_serve.is_empty() {
+        // Counted separately because the fix is a `provide_interface` call
+        // in the application, not a line in the manifest.
+        println!(
+            "{} new interface(s) your application must serve",
+            to_serve.len()
+        );
+        ok = false;
+    }
+
+    if args.manifest.is_some() {
+        if ungranted.is_empty() {
+            println!("this update needs no new grants");
+        } else {
+            println!(
+                "{} new import(s) the manifest does not grant; reload would refuse this build",
+                ungranted.len()
+            );
+            ok = false;
+        }
+    } else if gained.is_empty() {
+        println!("no new imports; pass -m to check the update against a manifest");
+    } else {
+        println!(
+            "{} new import(s); pass -m to find out whether a manifest grants them",
+            gained.len()
+        );
+    }
+
+    if !removed.is_empty() {
+        println!(
+            "{} export(s) removed; a host calling them breaks",
+            removed.len()
+        );
+        ok = false;
     }
 
     Ok(if ok {
