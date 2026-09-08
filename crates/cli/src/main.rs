@@ -309,6 +309,45 @@ fn read_manifest(path: Option<&Path>) -> Result<Manifest, String> {
     }
 }
 
+/// Say plainly, on stderr, that nothing checked who wrote this plugin.
+///
+/// Not behind `--audit`. The audit trail is a record for later; this is a
+/// warning for the person running the command now, and a warning nobody sees
+/// by default is the theatre ADR-0011 argues against. stderr rather than
+/// stdout, because stdout carries the call's return value.
+///
+/// It names the risk rather than the setting. "signature verification is off"
+/// tells a reader nothing they can act on; "anyone who can replace this file
+/// gets everything the policy grants" tells them what it costs.
+fn warn_if_unverified(manifest: &Manifest, component: &Path) {
+    if manifest.signature.is_required() {
+        return;
+    }
+    // The component is named once, by its file name rather than its full path:
+    // repeating a long path three times buries the sentence that matters.
+    let name = component.file_name().map_or_else(
+        || component.display().to_string(),
+        |n| n.to_string_lossy().into(),
+    );
+    // Only claim the policy opted in to this if it actually did. A manifest
+    // built inline states no posture at all, and telling someone their file
+    // says something it does not is worse than saying nothing.
+    let posture = if manifest.signature.required == Some(false) {
+        "The policy says `required = false`, so this is deliberate."
+    } else {
+        "No policy file stated a signature posture."
+    };
+    eprintln!(
+        "warning: {name} is running unverified -- nothing checked who produced it.\n\
+         \x20 The sandbox still holds: the plugin gets only what the policy grants. But\n\
+         \x20 anyone able to replace that file gets all of it, and nothing here can tell a\n\
+         \x20 replacement from the original.\n\
+         \x20 To fix: cosign sign-blob --key cosign.key --output-signature {name}.sig {name}\n\
+         \x20 then list the public key under [signature] in the policy.\n\
+         \x20 {posture}"
+    );
+}
+
 fn inspect(args: &InspectArgs) -> Result<ExitCode, String> {
     let wasm = read(&args.component)?;
     let mut builder = Host::builder().manifest(read_manifest(args.manifest.as_deref())?);
@@ -604,8 +643,11 @@ fn build_host(
     hook: Option<Arc<dyn TraceHook>>,
     profiling: Option<Profiling>,
 ) -> Result<Host, String> {
-    let mut builder: HostBuilder =
-        Host::builder().manifest(read_manifest(invocation.manifest.as_deref())?);
+    let manifest = read_manifest(invocation.manifest.as_deref())?;
+    // Every subcommand that actually runs a plugin comes through here, so this
+    // is the one place the warning has to be for none of them to miss it.
+    warn_if_unverified(&manifest, &invocation.component);
+    let mut builder: HostBuilder = Host::builder().manifest(manifest);
 
     // `record` and `profile` are separate subcommands precisely so this cannot
     // be asked for; the host would refuse it anyway.

@@ -871,7 +871,9 @@ TEST(CApi, AuditNamesAreStableAndMatchTheRenderedLine) {
   auto plugin = host->LoadBinary("answer", AsBytes(wasm));
   ASSERT_TRUE(plugin.has_value()) << plugin.error().Message();
 
-  ASSERT_EQ(trail.size(), 1U);
+  // Two events: the load, and the fact that nobody checked who wrote it. This
+  // manifest lists no signature keys, so the second is not optional.
+  ASSERT_EQ(trail.size(), 2U);
   const wt::AuditEvent& loaded = trail.front();
   EXPECT_EQ(loaded.kind, WT_AUDIT_LOADED);
   EXPECT_EQ(loaded.imports, 0U);
@@ -879,6 +881,15 @@ TEST(CApi, AuditNamesAreStableAndMatchTheRenderedLine) {
   // to agree about what happened.
   EXPECT_EQ(loaded.line.rfind(wt_audit_kind_name(loaded.kind), 0), 0U)
       << loaded.line;
+
+  const wt::AuditEvent& unverified = trail.back();
+  EXPECT_EQ(unverified.kind, WT_AUDIT_LOADED_UNVERIFIED);
+  EXPECT_STREQ(wt_audit_kind_name(WT_AUDIT_LOADED_UNVERIFIED),
+               "loaded-unverified");
+  // The rendered line has to carry the risk, not just the label: a C host
+  // forwarding this to its own logger forwards the line.
+  EXPECT_NE(unverified.line.find("risk=publisher-unchecked"), std::string::npos)
+      << unverified.line;
 }
 
 TEST(CApi, ANullAuditHookIsRejected) {

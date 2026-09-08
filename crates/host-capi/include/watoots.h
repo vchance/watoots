@@ -69,6 +69,10 @@ typedef enum wt_audit_kind {
   WT_AUDIT_LOG_SUPPRESSED = 6,
   // A `[limits]` ceiling was spent.
   WT_AUDIT_CEILING_SPENT = 7,
+  // A plugin ran without its publisher being checked, because the manifest
+  // lists no `signature.keys`. Substituted bytes would have loaded with
+  // every grant the policy gives.
+  WT_AUDIT_LOADED_UNVERIFIED = 8,
 } wt_audit_kind;
 
 // How one import resolved at load.

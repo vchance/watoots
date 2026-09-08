@@ -24,6 +24,33 @@ bold "Building"
 cargo build --release -p watoots-cli >/dev/null 2>&1
 dim "$($watoots --version), plugin $(wc -c <"$plugin" | tr -d ' ') bytes"
 
+# Sign the plugin, so the rest of the demo runs verified rather than printing a
+# warning at every step. This is also the shortest honest demonstration of the
+# feature: the same key that makes step 1 quiet makes step 8 refuse a tamper.
+#
+# openssl produces exactly what `cosign sign-blob --key` does -- ECDSA P-256
+# over SHA-256, base64 -- and is far likelier to be installed. If it is missing
+# the demo still runs; it just runs unsigned, and says so, which is the true
+# state of affairs rather than a hidden fallback.
+signed=""
+if command -v openssl >/dev/null 2>&1; then
+  openssl ecparam -name prime256v1 -genkey -noout -out "$work/demo.key" 2>/dev/null
+  openssl ec -in "$work/demo.key" -pubout -out "$work/demo.pub" 2>/dev/null
+  openssl dgst -sha256 -sign "$work/demo.key" -out "$work/plugin.der" "$plugin" 2>/dev/null
+  openssl base64 -A -in "$work/plugin.der" -out "$plugin.sig" 2>/dev/null
+  {
+    # The shipped policy ends with its own `[signature] required = false`;
+    # drop it rather than appending a second section and colliding.
+    sed '/^\[signature\]/,$d' "$policy"
+    printf '\n[signature]\nkeys = ["""\n'
+    cat "$work/demo.pub"
+    printf '"""]\n'
+  } > "$work/signed.toml"
+  policy="$work/signed.toml"
+  signed=yes
+  trap 'rm -rf "$work" "$plugin.sig"' EXIT
+fi
+
 # ---------------------------------------------------------------------------
 step "1. Load a plugin and call it"
 dim "\$ watoots run $plugin -m $policy -c lint -- '\"notes.md\"' ..."
@@ -124,6 +151,30 @@ if [ -f "$cpp" ]; then
   dim "so the reload is refused and the Rust plugin is still the one running."
 else
   dim "(build the C++ guest to see this: tools/build-plugins.sh cpp)"
+fi
+
+# ---------------------------------------------------------------------------
+if [ -n "$signed" ]; then
+  step "8. And it has to be the plugin you signed"
+  dim "Every step above ran verified -- the plugin was signed with a throwaway"
+  dim "key and the policy lists its public half. Change one byte and:"
+  echo
+  cp "$plugin" "$work/tampered.wasm"
+  cp "$plugin.sig" "$work/tampered.wasm.sig"
+  # Flip a byte in the middle, well past the header. The point is that the
+  # signature covers the bytes, not that this particular edit is meaningful.
+  printf 'X' | dd of="$work/tampered.wasm" bs=1 seek=4096 conv=notrunc 2>/dev/null
+  dim "\$ watoots run tampered.wasm -m signed.toml -c name"
+  echo
+  if $watoots run "$work/tampered.wasm" -m "$policy" \
+    --answer 'watoots:example/log@0.1.0#emit=' -c name 2>&1 | head -2; then
+    echo
+    echo "UNEXPECTED: a tampered plugin should not load"
+    exit 1
+  fi
+  echo
+  dim "The permission model would have let it run: it asks for nothing new."
+  dim "Only the signature can tell that these are not the bytes you approved."
 fi
 
 bold "That is the whole product."

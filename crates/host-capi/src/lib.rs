@@ -122,6 +122,10 @@ pub enum wt_audit_kind {
     WT_AUDIT_LOG_SUPPRESSED = 6,
     /// A `[limits]` ceiling was spent.
     WT_AUDIT_CEILING_SPENT = 7,
+    /// A plugin ran without its publisher being checked, because the manifest
+    /// lists no `signature.keys`. Substituted bytes would have loaded with
+    /// every grant the policy gives.
+    WT_AUDIT_LOADED_UNVERIFIED = 8,
 }
 
 /// How one import resolved at load.
@@ -444,6 +448,7 @@ pub extern "C" fn wt_audit_kind_name(kind: wt_audit_kind) -> *const c_char {
         wt_audit_kind::WT_AUDIT_LOG_ADMITTED => c"log-admitted",
         wt_audit_kind::WT_AUDIT_LOG_SUPPRESSED => c"log-suppressed",
         wt_audit_kind::WT_AUDIT_CEILING_SPENT => c"ceiling-spent",
+        wt_audit_kind::WT_AUDIT_LOADED_UNVERIFIED => c"loaded-unverified",
     }
     .as_ptr()
 }
@@ -890,6 +895,10 @@ fn dispatch_audit(auditor: &Auditor, event: &AuditEvent<'_>) {
             fields.kind = wt_audit_kind::WT_AUDIT_LOADED;
             sha256 = Some(audit_string(digest));
             fields.imports = *count as u64;
+        }
+        AuditEvent::LoadedUnverified { sha256: digest, .. } => {
+            fields.kind = wt_audit_kind::WT_AUDIT_LOADED_UNVERIFIED;
+            sha256 = Some(audit_string(digest));
         }
         AuditEvent::LoadRefused {
             sha256: digest,

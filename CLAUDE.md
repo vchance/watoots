@@ -24,9 +24,12 @@ same content as the published scoping page (read-only reference).
   should be designed with a C surface in mind (opaque handles, no generics
   across the boundary, error codes + message strings).
 - Default-deny everything: no network, no filesystem, no wall clock unless
-  the manifest grants it. **The single exception is `[signature]`**, which is
-  off when absent so that upgrading does not break existing plugins (ADR-0014);
-  everywhere else, absence denies.
+  the manifest grants it. `[signature]` has no default at all: a policy *file*
+  must state `keys` or `required = false`, because an opt-in security control
+  nobody opts into protects nobody (ADR-0014 and its addendum). `Manifest::parse`
+  stays permissive on purpose -- traces embed their manifest and replay by
+  parsing it back -- so running unsigned warns on stderr and emits a
+  `loaded-unverified` audit event instead.
 - We complement Wasmtime's `rr` feature, which records at the *same* level we
   do — wasmtime#11284's goal is "to purely capture guest-host boundary
   crossings". What it names as a non-goal is a human-readable trace format,

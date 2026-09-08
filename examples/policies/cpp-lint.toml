@@ -17,3 +17,11 @@ env    = {}             # and the environment, via the C runtime's startup
 memory  = "64MiB"
 fuel    = 200_000_000
 timeout = "5s"
+
+# These samples are built from source by `tools/build-plugins.sh`, not shipped
+# by a publisher, so there is nobody to verify against and no key to list. A
+# real deployment lists `keys` here instead; this file has to say which it is,
+# because "nobody thought about signing" and "we decided not to" must not look
+# the same to whoever reviews the policy.
+[signature]
+required = false

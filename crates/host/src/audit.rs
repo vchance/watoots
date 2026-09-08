@@ -150,6 +150,24 @@ pub enum AuditEvent<'a> {
         /// How many imports the component declares.
         imports: usize,
     },
+    /// A plugin ran without its publisher being checked.
+    ///
+    /// Emitted on every load and reload under a manifest with no trusted keys,
+    /// which is a decision in exactly ADR-0011's sense: the host decided not to
+    /// ask who wrote this code. It carries no argument values, so it is safe to
+    /// keep for as long as an incident takes.
+    ///
+    /// Loud on purpose. The permission model can say what a plugin may do and
+    /// cannot say that the plugin is the one you think it is — swap the file on
+    /// disk and the replacement inherits every grant the manifest gave. This
+    /// event is the only record that nothing stood between those two cases.
+    LoadedUnverified {
+        /// The name it was loaded under.
+        plugin: &'a str,
+        /// SHA-256 of the bytes that ran, lowercase hex. With no signature to
+        /// vouch for them this is the only identity they have.
+        sha256: &'a str,
+    },
     /// A load was refused, and the plugin never ran.
     LoadRefused {
         /// The name it would have been loaded under.
@@ -252,6 +270,7 @@ impl AuditEvent<'_> {
     pub fn plugin(&self) -> &str {
         match self {
             Self::Loaded { plugin, .. }
+            | Self::LoadedUnverified { plugin, .. }
             | Self::LoadRefused { plugin, .. }
             | Self::ImportDecided { plugin, .. }
             | Self::Reloaded { plugin, .. }
@@ -270,6 +289,7 @@ impl AuditEvent<'_> {
     pub fn name(&self) -> &'static str {
         match self {
             Self::Loaded { .. } => "loaded",
+            Self::LoadedUnverified { .. } => "loaded-unverified",
             Self::LoadRefused { .. } => "load-refused",
             Self::ImportDecided { .. } => "import",
             Self::Reloaded { .. } => "reloaded",
@@ -300,6 +320,15 @@ impl fmt::Display for AuditEvent<'_> {
             Self::Loaded {
                 sha256, imports, ..
             } => write!(f, " sha256={sha256} imports={imports}"),
+            // The risk is spelled out rather than left to the reader. This line
+            // is the one a security reviewer is most likely to be scanning for,
+            // and "loaded-unverified" alone does not say why it matters.
+            Self::LoadedUnverified { sha256, .. } => write!(
+                f,
+                " sha256={sha256} risk=publisher-unchecked \
+                 (no signature.keys in the manifest, so substituted bytes would \
+                 load with every grant this policy gives)"
+            ),
             Self::LoadRefused {
                 sha256,
                 import,

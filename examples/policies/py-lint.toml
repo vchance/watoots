@@ -19,3 +19,11 @@ net     = "linked"      # interfaces linked by CPython; nothing reachable
 memory  = "256MiB"      # a CPython image needs considerably more room
 fuel    = 5_000_000_000
 timeout = "30s"
+
+# These samples are built from source by `tools/build-plugins.sh`, not shipped
+# by a publisher, so there is nobody to verify against and no key to list. A
+# real deployment lists `keys` here instead; this file has to say which it is,
+# because "nobody thought about signing" and "we decided not to" must not look
+# the same to whoever reviews the policy.
+[signature]
+required = false

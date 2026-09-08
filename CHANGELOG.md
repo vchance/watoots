@@ -4,6 +4,46 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **A policy file must now state whether plugins have to be signed.** Omit
+  `[signature]` from a file and it does not parse; the error says to add `keys`
+  or `required = false`. Breaking for any policy file written against 0.4.0.
+
+  0.4.0 shipped signing off-by-default, which meant a deployment could end up
+  unverified because nobody considered it — and an opt-in security control that
+  nobody opts into protects nobody. There is now no default: "we did not think
+  about signing" and "we decided not to" cannot look the same in a file someone
+  reviews before installing a plugin. A contradictory policy (`required = false`
+  alongside `keys`) and an unsatisfiable one (`required = true` with no keys)
+  are refused rather than silently resolved.
+
+  **`Manifest::parse` is deliberately exempt** — only `Manifest::from_file`
+  enforces it. A recorded trace carries its manifest as TOML and replays by
+  parsing it back, so enforcing this in `parse` would make every trace recorded
+  before this change unreplayable, and a bug report matters most once something
+  has already broken. Inline manifests are covered by the warning below, which
+  no construction path can dodge.
+
+- **Running unsigned is loud.** `watoots run`, `record`, `profile` and `reload`
+  print a warning to stderr naming the risk in plain terms — the sandbox holds,
+  but anyone able to replace the file gets everything the policy grants, and
+  nothing can tell a replacement from the original. Not behind `--audit`: a
+  warning nobody sees by default is not a control.
+
+### Added
+
+- `AuditEvent::LoadedUnverified` / `WT_AUDIT_LOADED_UNVERIFIED` (8), emitted on
+  every load and reload under a manifest with no trusted keys. It carries the
+  plugin name and digest and spells out the risk in its rendered line, so the
+  fact that nobody checked the publisher is in the record and not only on
+  screen.
+- `SignaturePolicy::required` and `SignaturePolicy::states_a_posture()`, plus
+  `SignaturePolicy::validate()` for callers that build a manifest themselves and
+  want the same rule.
+
 ## [0.4.0] — 2026-09-07
 
 **One breaking manifest change:** `permissions.net` no longer accepts a list, so
@@ -342,6 +382,7 @@ First release. Both halves of the project work end to end.
 See [docs/SECURITY.md](docs/SECURITY.md) for what the sandbox does and does not
 protect against.
 
+[Unreleased]: https://github.com/vchance/watoots/compare/v0.4.0...HEAD
 [0.4.0]: https://github.com/vchance/watoots/releases/tag/v0.4.0
 [0.3.0]: https://github.com/vchance/watoots/releases/tag/v0.3.0
 [0.2.0]: https://github.com/vchance/watoots/releases/tag/v0.2.0

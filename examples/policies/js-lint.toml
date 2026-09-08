@@ -18,3 +18,11 @@ fs.read = ["${plugin_dir}"]
 memory  = "128MiB"   # a JS engine needs more room than a Rust binary
 fuel    = 2_000_000_000
 timeout = "10s"
+
+# These samples are built from source by `tools/build-plugins.sh`, not shipped
+# by a publisher, so there is nobody to verify against and no key to list. A
+# real deployment lists `keys` here instead; this file has to say which it is,
+# because "nobody thought about signing" and "we decided not to" must not look
+# the same to whoever reviews the policy.
+[signature]
+required = false

@@ -127,3 +127,45 @@ verification, and a format nobody else can produce has none.
   worth supporting alongside this — the verification core would be reused and
   only the "where does the signature come from" step changes. This ADR is the
   place that says so.
+
+## Addendum — 2026-09-07, on the default being wrong
+
+This ADR argued that `[signature]` should be absent-means-off, so that upgrading
+would not stop every existing plugin loading. That reasoning was sound and the
+conclusion was wrong, and it took one question to see it: *then what is the
+point of signing at all?*
+
+**An opt-in security control that nobody opts into protects nobody.** The
+Consequences above call the asymmetry "a real asymmetry with the rest of the
+manifest" and ask `docs/MANIFEST.md` to flag it. Flagging is not a control. The
+same paragraph in ADR-0011 that says "a security feature nobody enables is
+theatre" applies here and was not applied.
+
+**What changed.** A policy *file* must now say which it is: list `keys`, or say
+`required = false`. Neither is a default; omitting both is a parse error naming
+both. "We did not think about signing" and "we decided not to" can no longer
+look the same in a file someone reviews before installing a plugin. A
+contradictory policy (`required = false` beside `keys`) and an unsatisfiable one
+(`required = true` with no keys) are refused rather than resolved by guessing.
+
+**What did not change, and why.** `Manifest::parse` stays permissive. A recorded
+trace carries its manifest as TOML and replays by parsing it back, so enforcing
+this in `parse` would make every trace recorded before the change unreplayable —
+and a bug report matters most once something has already broken. The rule
+therefore lives in `Manifest::from_file`, which is the path a policy file takes,
+and the gap is closed from the other side: every load without verification emits
+`AuditEvent::LoadedUnverified` and the CLI prints the risk on stderr, on every
+run, not behind `--audit`. No construction path avoids that.
+
+**The upgrade cost the original argument was protecting.** Every policy file
+written against 0.4.0 now fails to parse until it states a posture. That is
+exactly the breakage this ADR set out to avoid — and it is worth paying, because
+0.4.0 was one day old with no crates.io release. Had this been noticed a year
+later the answer might honestly have been different, which is the argument for
+questioning a default while it is still cheap to change.
+
+**A smaller thing this got right by accident.** Because the check is on the
+shared load path, `reload` re-verifies, and because the *warning* is on the
+shared CLI path, `run`, `record`, `profile` and `reload` all emit it without
+each remembering to. Putting both on the one function they share is the same
+move ADR-0010 made for the grant check, and for the same reason.

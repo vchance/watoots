@@ -73,6 +73,12 @@ pub struct SignaturePolicy {
     /// The key is P-256, which is `cosign`'s default and what
     /// `cosign public-key` or `openssl ec -pubout` writes.
     pub keys: Vec<String>,
+    /// `false` states, in the file, that this deployment runs unsigned plugins.
+    ///
+    /// It exists so that "we did not think about signing" and "we decided not
+    /// to" stop looking identical. A policy *file* must say one or the other;
+    /// see [`SignaturePolicy::validate`].
+    pub required: Option<bool>,
 }
 
 impl SignaturePolicy {
@@ -80,6 +86,50 @@ impl SignaturePolicy {
     #[must_use]
     pub fn is_required(&self) -> bool {
         !self.keys.is_empty()
+    }
+
+    /// Whether the manifest said anything at all about signing.
+    #[must_use]
+    pub fn states_a_posture(&self) -> bool {
+        self.is_required() || self.required.is_some()
+    }
+
+    /// Refuse a policy file that has not said whether plugins must be signed.
+    ///
+    /// Applied by [`Manifest::from_file`] and deliberately *not* by
+    /// [`Manifest::parse`]. A recorded trace carries its manifest as TOML and
+    /// replays by parsing it back, so enforcing this in `parse` would make
+    /// every trace recorded before this existed unreplayable — and a bug report
+    /// matters most once something has already broken. Manifests built inline
+    /// in application code are covered by the warning at load instead, which no
+    /// construction path can dodge.
+    pub fn validate(&self) -> Result<()> {
+        match (self.keys.is_empty(), self.required) {
+            // Said nothing at all. The case this exists to catch.
+            (true, None) => Err(Error::new(
+                ErrorKind::Manifest,
+                "this policy file does not say whether plugins must be signed. \
+                 Add a `[signature]` section with `keys = [\"<PEM public key>\"]` \
+                 to require a signature, or `required = false` to state that this \
+                 deployment runs unsigned plugins. There is no default, because \
+                 \"nobody thought about it\" and \"we decided not to\" must not \
+                 look the same in a file someone reviews",
+            )),
+            // Trusted keys, and also opted out of using them.
+            (false, Some(false)) => Err(Error::new(
+                ErrorKind::Manifest,
+                "signature.required = false contradicts signature.keys. Remove \
+                 the keys to run unsigned, or drop `required = false` to verify \
+                 against them",
+            )),
+            // Required, with nothing that could ever satisfy it.
+            (true, Some(true)) => Err(Error::new(
+                ErrorKind::Manifest,
+                "signature.required = true but signature.keys is empty, so no \
+                 plugin could ever load. List at least one PEM public key",
+            )),
+            _ => Ok(()),
+        }
     }
 }
 
@@ -463,7 +513,14 @@ impl Manifest {
                 format!("cannot read manifest {}: {err}", path.display()),
             )
         })?;
-        Self::parse(&text)
+        let manifest = Self::parse(&text)?;
+        manifest.signature.validate().map_err(|err| {
+            Error::new(
+                ErrorKind::Manifest,
+                format!("{}: {}", path.display(), err.message()),
+            )
+        })?;
+        Ok(manifest)
     }
 
     /// Expand `${name}` references in filesystem paths and environment values.

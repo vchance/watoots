@@ -95,10 +95,14 @@ have to update.
   listed. It does not check identity, certificate chains, or transparency-log
   inclusion — that is Sigstore keyless verification, which needs network access
   and a maintained trust root at load time, and watoots does neither. Verify a
-  bundle where you fetch the plugin if you need that. Note also that a manifest
-  with no `[signature]` section verifies nothing: unlike every permission, this
-  one is off by default, so that upgrading does not break existing plugins.
-  Key rotation and revocation are the deployment's problem, not watoots'.
+  bundle where you fetch the plugin if you need that. A policy *file* must state which it
+  is — `keys`, or `required = false` — so a deployment cannot end up unverified
+  because nobody considered it. Running unsigned warns on stderr and emits a
+  `loaded-unverified` audit event on every load and reload. Manifests built
+  inline in application code are exempt from the file rule, because a trace
+  replays by parsing its own embedded manifest and that has to keep working;
+  they are covered by the warning instead. Key rotation and revocation are the
+  deployment's problem, not watoots'.
 - **Filesystem grants are directory-granular.** WASI preopens directories, so a
   grant admits the tree beneath it. The glob in a manifest path is expanded as a
   path, not applied as a filter.

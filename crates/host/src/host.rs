@@ -613,6 +613,17 @@ impl Host {
                 imports,
             });
         }
+
+        // Emitted for reloads too, and from the shared path, so no route into a
+        // running plugin can avoid recording that nobody checked who wrote it.
+        if let Some(hook) = audit
+            && self.inner.trusted_keys.is_empty()
+        {
+            hook.on_event(&AuditEvent::LoadedUnverified {
+                plugin: name,
+                sha256: &digest,
+            });
+        }
         Ok(plugin)
     }
 

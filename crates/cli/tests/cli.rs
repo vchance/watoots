@@ -406,10 +406,13 @@ fn rolling_plugin(determinism: bool) -> (tempfile::TempDir, String, String, Stri
     std::fs::write(&component, ROLLS).unwrap();
     std::fs::write(
         &manifest,
+        // A policy *file* has to state a signature posture, which is the point
+        // of the rule: this one is a fixture, not a deployment, and says so.
         if determinism {
-            "[permissions]\nrandom = true\n"
+            "[permissions]\nrandom = true\n\n[signature]\nrequired = false\n"
         } else {
-            "[permissions]\nrandom = true\n\n[determinism]\nenabled = false\n"
+            "[permissions]\nrandom = true\n\n[determinism]\nenabled = false\n\n\
+             [signature]\nrequired = false\n"
         },
     )
     .unwrap();
@@ -1004,4 +1007,31 @@ fn a_lost_import_is_news_and_the_two_failure_kinds_stay_separate() {
     // different places, and this is what pins that apart.
     assert!(text.contains("export(s) removed"), "{text}");
     assert!(!output.status.success(), "{text}");
+}
+
+#[test]
+fn running_an_unverified_plugin_says_so_loudly_and_says_why() {
+    // Not behind --audit. A warning nobody sees by default is theatre, which is
+    // the argument ADR-0011 makes for the audit trail and applies here too.
+    let output = watoots(&[
+        "run",
+        &sample_plugin().display().to_string(),
+        "-m",
+        &policy(),
+        "--answer",
+        "watoots:example/log#emit=",
+        "-c",
+        "name",
+    ]);
+
+    let text = String::from_utf8_lossy(&output.stderr);
+    assert!(text.contains("running unverified"), "{text}");
+    // The risk, not the setting: "verification is off" is not actionable.
+    assert!(text.contains("replace that file"), "{text}");
+    // And the way out.
+    assert!(text.contains("cosign sign-blob"), "{text}");
+
+    // stderr, not stdout: `watoots run ... > out` has to keep working.
+    let out = stdout(&output);
+    assert!(!out.contains("running unverified"), "{out}");
 }

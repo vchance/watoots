@@ -228,18 +228,56 @@ WmxJSG+8X0cSE6TaYhzhil1GgjEIbsI9QoDGb1DR6/EBuxvg2E4ejBuqDg==
 """]
 ```
 
-> **This is the one place absence does not deny.** Every other key in this file
-> refuses the capability when omitted. An omitted `[signature]` section means
-> signatures are not checked at all — because the alternative is that upgrading
-> watoots stops every plugin anyone already has from loading. Do not read the
-> "absent denies" rule into this section.
+or, to state that this deployment runs unsigned plugins:
 
-Once `keys` is non-empty the usual posture returns, with no middle setting: a
-plugin that is unsigned, or signed by a key not listed, does not load. There is
-no warn mode and no trust-on-first-use.
+```toml
+[signature]
+required = false
+```
+
+or, to state that this deployment runs unsigned plugins:
+
+```toml
+[signature]
+required = false
+```
+
+> **A policy file must say which.** Omit `[signature]` from a file and it does
+> not parse — the error tells you to add `keys` or `required = false`. There is
+> no default, because "nobody thought about signing" and "we decided not to"
+> must not look the same to whoever reviews the policy before installing a
+> plugin.
+>
+> A manifest built inline in application code is exempt from that rule: a
+> recorded trace carries its manifest as TOML and replays by parsing it back, so
+> enforcing it there would make every trace recorded before this existed
+> unreplayable. Inline manifests are covered by the warning below instead.
+
+Once `keys` is non-empty there is no middle setting: a plugin that is unsigned,
+or signed by a key not listed, does not load. There is no warn mode and no
+trust-on-first-use.
 
 More than one key is what a rotation looks like — the old and the new are both
 trusted for as long as it takes to re-sign everything.
+
+### Running unsigned is loud
+
+Whenever a plugin runs without a signature check, watoots says so — every time,
+not once:
+
+- `watoots run`, `record`, `profile` and `reload` print a warning to stderr
+  naming the risk in plain terms: the sandbox still holds, but anyone able to
+  replace the file gets everything the policy grants, and nothing can tell a
+  replacement from the original. It is **not** behind `--audit`; a warning
+  nobody sees by default is not a control.
+- The audit trail carries a `loaded-unverified` event per load and reload
+  (`WT_AUDIT_LOADED_UNVERIFIED` in C), so it is in the record as well as on the
+  screen. Like every audit event it carries names and a digest, never argument
+  values.
+
+The library itself prints nothing — an embedding application chooses its own
+destination, per ADR-0011 — so a host that installs no audit hook gets no
+warning. That is worth knowing before assuming silence means verified.
 
 ### Producing the signature
 

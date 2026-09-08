@@ -208,6 +208,9 @@ enum Fact {
         plugin: String,
         import: Option<String>,
     },
+    LoadedUnverified {
+        plugin: String,
+    },
     Import {
         import: String,
         verdict: Verdict,
@@ -246,6 +249,9 @@ impl AuditHook for Audit {
             AuditEvent::LoadRefused { plugin, import, .. } => Fact::LoadRefused {
                 plugin: (*plugin).to_string(),
                 import: import.map(str::to_string),
+            },
+            AuditEvent::LoadedUnverified { plugin, .. } => Fact::LoadedUnverified {
+                plugin: (*plugin).to_string(),
             },
             AuditEvent::ImportDecided {
                 import, verdict, ..
@@ -394,6 +400,13 @@ fn every_import_gets_a_verdict_and_a_granted_one_says_so() {
                     })
                     .unwrap(),
                 imports: 1,
+            },
+            // This manifest lists no signature keys, so the trail says the
+            // plugin ran with nobody having checked who wrote it. It follows
+            // `Loaded` rather than replacing it: the load did succeed, and what
+            // is missing is the publisher check, not the load.
+            Fact::LoadedUnverified {
+                plugin: "chatty".to_string(),
             },
         ],
         "{}",

@@ -82,3 +82,11 @@ timeout = "10s"
 # image goes in fine. 512MiB buys roughly 11MB of pixels, which covers a 1920x1920
 # frame. It is a DoS ceiling, so raise it deliberately rather than by habit.
 transfer = "512MiB"
+
+# These samples are built from source by `tools/build-plugins.sh`, not shipped
+# by a publisher, so there is nobody to verify against and no key to list. A
+# real deployment lists `keys` here instead; this file has to say which it is,
+# because "nobody thought about signing" and "we decided not to" must not look
+# the same to whoever reviews the policy.
+[signature]
+required = false

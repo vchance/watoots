@@ -189,3 +189,120 @@ fn a_key_that_will_not_parse_fails_the_host_and_not_the_first_plugin() {
         err.message()
     );
 }
+
+// ---------------------------------------------------------------------------
+// A policy file must say whether plugins have to be signed.
+
+fn write_policy(dir: &std::path::Path, toml: &str) -> PathBuf {
+    let path = dir.join("policy.toml");
+    std::fs::write(&path, toml).unwrap();
+    path
+}
+
+#[test]
+fn a_policy_file_that_says_nothing_about_signing_is_refused() {
+    // The whole point: "nobody thought about it" and "we decided not to" must
+    // not look the same in a file someone reviews before installing a plugin.
+    let dir = tempfile::tempdir().unwrap();
+    let path = write_policy(dir.path(), "[permissions]\nrandom = true\n");
+
+    let err = Manifest::from_file(&path).expect_err("no signature posture stated");
+    assert_eq!(err.kind(), ErrorKind::Manifest);
+    // It has to say what to write, or it is just an obstacle.
+    assert!(
+        err.message().contains("required = false"),
+        "{}",
+        err.message()
+    );
+    assert!(err.message().contains("keys"), "{}", err.message());
+    // And name the file, since a host may load several.
+    assert!(err.message().contains("policy.toml"), "{}", err.message());
+}
+
+#[test]
+fn an_explicit_opt_out_is_accepted_and_verifies_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = write_policy(
+        dir.path(),
+        "[permissions]\nrandom = true\n\n[signature]\nrequired = false\n",
+    );
+
+    let manifest = Manifest::from_file(&path).expect("the file states its posture");
+    assert!(!manifest.signature.is_required());
+    assert!(manifest.signature.states_a_posture());
+}
+
+#[test]
+fn keys_alone_state_the_posture_without_a_required_flag() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = write_policy(
+        dir.path(),
+        &format!(
+            "[signature]\nkeys = [\"\"\"\n{}\"\"\"]\n",
+            SIGNER.trim_start()
+        ),
+    );
+
+    let manifest = Manifest::from_file(&path).expect("listing a key is stating a posture");
+    assert!(manifest.signature.is_required());
+}
+
+#[test]
+fn a_contradictory_policy_is_refused_rather_than_silently_resolved() {
+    // Keys listed *and* opted out. Picking a winner would mean guessing which
+    // half the author meant, and guessing wrong is either a false sense of
+    // verification or an unexplained refusal.
+    let dir = tempfile::tempdir().unwrap();
+    let path = write_policy(
+        dir.path(),
+        &format!(
+            "[signature]\nrequired = false\nkeys = [\"\"\"\n{}\"\"\"]\n",
+            SIGNER.trim_start()
+        ),
+    );
+
+    let err = Manifest::from_file(&path).expect_err("required = false contradicts keys");
+    assert!(err.message().contains("contradicts"), "{}", err.message());
+}
+
+#[test]
+fn requiring_signatures_with_no_keys_is_refused_because_nothing_could_load() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = write_policy(dir.path(), "[signature]\nrequired = true\n");
+
+    let err = Manifest::from_file(&path).expect_err("required, but nothing to verify against");
+    assert!(
+        err.message().contains("no plugin could ever load"),
+        "{}",
+        err.message()
+    );
+}
+
+#[test]
+fn parsing_a_string_is_deliberately_not_subject_to_the_rule() {
+    // Load-bearing asymmetry, not an oversight. A recorded trace carries its
+    // manifest as TOML and replays by parsing it back, so enforcing this in
+    // `parse` would make every trace recorded before the rule existed
+    // unreplayable — and a bug report matters most once something has broken.
+    let manifest = Manifest::parse("[permissions]\nrandom = true\n")
+        .expect("inline manifests stay permissive");
+    assert!(!manifest.signature.states_a_posture());
+}
+
+#[test]
+fn every_shipped_policy_states_a_signature_posture() {
+    // These are the files the rule exists for, and they are also what people
+    // copy when writing their first policy.
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/policies");
+    let mut checked = 0;
+    for entry in std::fs::read_dir(&dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().is_none_or(|e| e != "toml") {
+            continue;
+        }
+        Manifest::from_file(&path)
+            .unwrap_or_else(|err| panic!("{}: {}", path.display(), err.message()));
+        checked += 1;
+    }
+    assert_eq!(checked, 8, "expected eight shipped policies");
+}
