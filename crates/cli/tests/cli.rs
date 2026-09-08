@@ -1035,3 +1035,21 @@ fn running_an_unverified_plugin_says_so_loudly_and_says_why() {
     let out = stdout(&output);
     assert!(!out.contains("running unverified"), "{out}");
 }
+
+#[test]
+fn inspect_reports_the_signature_posture_alongside_the_capabilities() {
+    // `inspect` is the read-this-before-you-install tool. A report that lists
+    // every permission and silently omits who may have signed the plugin is
+    // incomplete in the one section a reviewer most needs.
+    let plugin = sample_plugin().display().to_string();
+    let output = watoots(&["inspect", &plugin, "-m", &policy()]);
+
+    let text = stdout(&output);
+    assert!(text.contains("publisher"), "{text}");
+    assert!(text.contains("signature"), "{text}");
+    // The consequence, not just the setting.
+    assert!(text.contains("any bytes at this path load"), "{text}");
+    // WARN rather than DENY: nothing asked for a signature, so nothing was
+    // refused. `DENY` has to keep meaning "requested and refused".
+    assert!(text.contains("signature    WARN"), "{text}");
+}

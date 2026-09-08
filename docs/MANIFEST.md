@@ -35,6 +35,9 @@ capabilities
   random       -      not requested, not granted
   logging      -      not requested, not granted
 
+publisher
+  signature    WARN   not verified - any bytes at this path load, with everything granted above
+
 1 import(s) are not granted
 ```
 

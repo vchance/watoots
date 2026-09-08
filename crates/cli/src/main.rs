@@ -363,7 +363,7 @@ fn inspect(args: &InspectArgs) -> Result<ExitCode, String> {
     if args.imports {
         print!("{}", report.describe());
     } else {
-        print!("{}", report.summarize(&host.manifest().permissions));
+        print!("{}", report.summarize(host.manifest()));
     }
 
     // Imports and exports are separate questions, so they get separate lines

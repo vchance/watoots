@@ -1256,7 +1256,7 @@ pub unsafe extern "C" fn wt_host_inspect(
         }
         let bytes = unsafe { std::slice::from_raw_parts(wasm, wasm_len) };
         let report = host.inspect(bytes)?;
-        let text = report.summarize(&host.manifest().permissions);
+        let text = report.summarize(host.manifest());
         unsafe { *report_out = into_c_string(&text)? };
         Ok(())
     })

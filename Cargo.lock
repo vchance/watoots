@@ -2692,7 +2692,7 @@ dependencies = [
 
 [[package]]
 name = "watoots"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "base64ct",
  "bytesize",
@@ -2713,7 +2713,7 @@ dependencies = [
 
 [[package]]
 name = "watoots-capi"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "cbindgen",
  "watoots",
@@ -2721,7 +2721,7 @@ dependencies = [
 
 [[package]]
 name = "watoots-cli"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "clap",
  "tempfile",
@@ -2733,7 +2733,7 @@ dependencies = [
 
 [[package]]
 name = "watoots-trace"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "proptest",
  "sha2 0.11.0",

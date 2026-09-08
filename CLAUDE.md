@@ -123,12 +123,13 @@ M5 shipped: `docs/MANIFEST.md`, a root `SECURITY.md` (reporting policy)
 alongside `docs/SECURITY.md` (threat model), `CONTRIBUTING.md`,
 `CODE_OF_CONDUCT.md`, issue forms, a manifest-first README, `tools/demo.sh`,
 `CHANGELOG.md`. The repo is public at `github.com/vchance/watoots` and crate
-metadata points at it. Tags `v0.0.0` through `v0.4.0`
+metadata points at it. Tags `v0.0.0` through `v0.5.0`
 are all on the remote; **crates.io has only the `0.0.0` name placeholders** and
 no release is published there, so the README tells people to build from the tag.
 
-**Current release: v0.4.0** (2026-09-07), the first with a breaking manifest
-change -- `permissions.net` no longer takes a list.
+**Current release: v0.5.0** (2026-09-08). 0.4.0 shipped signature verification
+off by default and 0.5.0 corrects it: a policy file must state `keys` or
+`required = false`. Anyone on 0.4.0 should move.
 
 **Work landing after a tag goes in the CHANGELOG's `[Unreleased]` section, not
 the tagged one.** Appending to a released version's entry claims things that

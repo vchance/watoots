@@ -4,7 +4,16 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.5.0] — 2026-09-08
+
+**One breaking manifest change and it is the point of the release:** a policy
+file must now state whether plugins have to be signed. 0.4.0 shipped signature
+verification off by default, so a deployment could end up unverified because
+nobody considered it — an opt-in security control nobody opts into protects
+nobody. Anyone on 0.4.0 should move.
+
+Also breaking for Rust callers: `GrantReport::summarize` takes `&Manifest`
+rather than `&Permissions`.
 
 ### Changed
 
@@ -34,6 +43,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   warning nobody sees by default is not a control.
 
 ### Added
+
+- **`watoots inspect` reports the signature posture**, in a `publisher` section
+  beside the capability table. It listed every permission and said nothing about
+  who may have signed the plugin, which is incomplete in the one section a
+  reviewer most needs — and `inspect` is the read-this-before-you-install tool.
+  It names the consequence rather than the setting: *not verified — any bytes at
+  this path load, with everything granted above*.
+
+  `GrantReport::summarize` now takes `&Manifest` rather than `&Permissions`,
+  since the report is about the whole policy and not one section of it.
 
 - `AuditEvent::LoadedUnverified` / `WT_AUDIT_LOADED_UNVERIFIED` (8), emitted on
   every load and reload under a manifest with no trusted keys. It carries the
@@ -382,7 +401,7 @@ First release. Both halves of the project work end to end.
 See [docs/SECURITY.md](docs/SECURITY.md) for what the sandbox does and does not
 protect against.
 
-[Unreleased]: https://github.com/vchance/watoots/compare/v0.4.0...HEAD
+[0.5.0]: https://github.com/vchance/watoots/releases/tag/v0.5.0
 [0.4.0]: https://github.com/vchance/watoots/releases/tag/v0.4.0
 [0.3.0]: https://github.com/vchance/watoots/releases/tag/v0.3.0
 [0.2.0]: https://github.com/vchance/watoots/releases/tag/v0.2.0

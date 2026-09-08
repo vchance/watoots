@@ -8,7 +8,7 @@
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
 
-use crate::manifest::{Clocks, NetGrant, Permissions};
+use crate::manifest::{Clocks, Manifest, NetGrant, Permissions};
 
 /// A parsed WIT interface name: `namespace:package/interface@version`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -266,11 +266,41 @@ impl GrantReport {
     ///   the application is expected to serve is not a permission problem, and
     ///   telling an operator to edit their manifest about it wastes their time.
     #[must_use]
-    pub fn summarize(&self, permissions: &Permissions) -> String {
+    pub fn summarize(&self, manifest: &Manifest) -> String {
+        let permissions = &manifest.permissions;
         let mut out = String::new();
         out.push_str("capabilities\n");
         for row in self.capabilities(permissions) {
             let _ = writeln!(out, "  {:<12} {:<6} {}", row.name, row.mark, row.detail);
+        }
+
+        // Who the plugin may come from, beside what it may do. Not a
+        // capability row: no import asks for a signature, and the question is
+        // about the bytes rather than anything they declare. It is here because
+        // this report is what someone reads before installing a plugin, and a
+        // report that silently omits a section of the manifest is not one.
+        out.push_str("\npublisher\n");
+        let keys = manifest.signature.keys.len();
+        if keys > 0 {
+            let _ = writeln!(
+                out,
+                "  {:<12} {:<6} must be signed by one of {keys} trusted key(s)",
+                "signature", "ok"
+            );
+        } else {
+            let _ = writeln!(
+                out,
+                "  {:<12} {:<6} not verified - any bytes at this path load, with \
+                 everything granted above",
+                // `WARN`, not `DENY`. In the table above `DENY` means the
+                // plugin asked for something and the manifest refused it, and
+                // callers read it that way -- `AHostFunctionCanCaptureApplicationState`
+                // asserts a clean report contains no `DENY` at all. Nothing
+                // requested a signature, so nothing was denied; what is missing
+                // is a check, and that needs its own word.
+                "signature",
+                "WARN"
+            );
         }
 
         let application: Vec<&ImportDecision> = self
@@ -596,7 +626,7 @@ mod tests {
         .unwrap();
         let imports = [callable("wasi:filesystem/types@0.2.9")];
         let report = check(imports, &manifest.permissions, &provided(&[]));
-        let summary = report.summarize(&manifest.permissions);
+        let summary = report.summarize(&manifest);
         assert!(summary.contains("reads /srv/docs"), "{summary}");
         assert!(summary.contains("writes /tmp/cache"), "{summary}");
     }
@@ -608,7 +638,7 @@ mod tests {
         let manifest = Manifest::default();
         let imports = [callable("watoots:example/log@0.1.0")];
         let report = check(imports, &manifest.permissions, &provided(&[]));
-        let summary = report.summarize(&manifest.permissions);
+        let summary = report.summarize(&manifest);
         assert!(summary.contains("your application must serve"), "{summary}");
         assert!(summary.contains("watoots:example/log@0.1.0"), "{summary}");
         // No capability row should claim the operator can grant it.
@@ -631,7 +661,7 @@ mod tests {
         let imports = [callable("wasi:io/streams@0.2.9")];
         let report = check(imports, &manifest.permissions, &provided(&[]));
         assert!(report.is_satisfied());
-        let summary = report.summarize(&manifest.permissions);
+        let summary = report.summarize(&manifest);
         assert!(
             summary.contains("2 capability(ies) granted but never imported"),
             "{summary}"
