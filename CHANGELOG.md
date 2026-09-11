@@ -4,6 +4,21 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **Wasmtime 48.0.1 → 48.0.2.** No security fix in it — it vendors
+  `cap-primitives` into Wasmtime and fixes `bindgen!` output against a Rust
+  nightly — but the point of pinning an LTS line is taking its patches rather
+  than judging each one. No advisory has been published against Wasmtime since
+  2026-08-20, and both of those were fixed in 48.0.0.
+
+  ADR-0012 and ADR-0013 each asked for a claim to be re-checked at an engine
+  bump, and both were: the p3 module still states that security fixes limited to
+  wasip3 get no patch release, and `AllowedNetworkUses` still derives `Default`,
+  so no socket use is enabled unless an embedder opts in.
+
 ## [0.5.0] — 2026-09-08
 
 **One breaking manifest change and it is the point of the release:** a policy
@@ -401,6 +416,7 @@ First release. Both halves of the project work end to end.
 See [docs/SECURITY.md](docs/SECURITY.md) for what the sandbox does and does not
 protect against.
 
+[Unreleased]: https://github.com/vchance/watoots/compare/v0.5.0...HEAD
 [0.5.0]: https://github.com/vchance/watoots/releases/tag/v0.5.0
 [0.4.0]: https://github.com/vchance/watoots/releases/tag/v0.4.0
 [0.3.0]: https://github.com/vchance/watoots/releases/tag/v0.3.0

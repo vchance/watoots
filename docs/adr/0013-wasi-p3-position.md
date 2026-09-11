@@ -147,3 +147,27 @@ wrong.
   author migrate on the same day. Worth its own ADR when condition 1 above
   clears; the capability model is ready for it either way, because grants are
   matched with the version stripped and `wasip3_shape.rs` now proves that.
+
+## Addendum — 2026-09-11, re-checked at an engine bump
+
+The Consequences above ask for the "connections do not succeed" claim to be
+re-checked at an engine bump, and ADR-0012 asks the same of its own. Wasmtime
+48.0.2 (2026-09-10) is the first bump since, so both were checked against it
+rather than assumed to carry over:
+
+- `wasmtime-wasi` 48.0.2's `src/p3/mod.rs` still says *"Bug and security fixes
+  limited to wasip3 will not be given patch releases."* That sentence is the
+  whole of this ADR's decision, so it is the one to look at first, and it has
+  not moved.
+- `AllowedNetworkUses` still derives `Default`, so `tcp`, `udp` and
+  `ip_name_lookup` remain `false` unless an embedder opts in. ADR-0012's
+  strongest claim survives the bump.
+
+48.0.2 itself carries no security fix — it vendors `cap-primitives` into
+Wasmtime and fixes `bindgen!` output against a Rust nightly. It was taken
+anyway, because the point of pinning an LTS line is taking its patches rather
+than deciding case by case which ones look important.
+
+The version numbers in the body above are left as they were. They record what
+was read on the day, and rewriting them to the current release would turn a
+dated observation into a claim about the present.
