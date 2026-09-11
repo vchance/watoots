@@ -120,6 +120,35 @@ fn crossing(c: &mut Criterion) {
 /// 100k iterations of a counting loop, with and without each limit. The gap is
 /// the per-instruction overhead, which is the only form it takes -- none of
 /// these cost anything per *crossing*.
+/// Is the spread in `crossing/` really per-`Engine` variance?
+///
+/// `crossing/` reports fuel as faster than no limits, which is not possible, and
+/// `docs/PERFORMANCE.md` blamed separate `Engine`s compiling the same guest
+/// differently. That was a guess. This is the control that settles it: two hosts
+/// built from *identical* manifests, so the only difference between them is that
+/// they are different `Engine` instances.
+///
+/// If these two differ by about as much as `no-limits` and `fuel` do, the
+/// spread is the harness and not the limits. If they agree closely, the guess
+/// was wrong and something real is going on in `crossing/`.
+fn control(c: &mut Criterion) {
+    let mut group = c.benchmark_group("control");
+
+    let first = host("");
+    let mut p = plugin(&first, NOOP);
+    group.bench_function("identical-config/a", |b| {
+        b.iter(|| black_box(p.call("answer", &[]).expect("call")));
+    });
+
+    let second = host("");
+    let mut p = plugin(&second, NOOP);
+    group.bench_function("identical-config/b", |b| {
+        b.iter(|| black_box(p.call("answer", &[]).expect("call")));
+    });
+
+    group.finish();
+}
+
 fn metering(c: &mut Criterion) {
     let mut group = c.benchmark_group("metering");
 
@@ -190,5 +219,5 @@ fn loading(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, crossing, metering, marshalling, loading);
+criterion_group!(benches, crossing, control, metering, marshalling, loading);
 criterion_main!(benches);

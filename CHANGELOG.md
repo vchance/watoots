@@ -24,8 +24,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
   The document says plainly what the measurement cannot support as well as what
   it can: in the per-crossing group fuel appears *faster* than no limits, which
-  is not possible, so that whole group resolves to "about 330 ns" and nothing
-  finer. Not a CI gate — microbenchmarks on shared runners are noise.
+  is not possible. A `control/` group settles why — two hosts built from
+  identical manifests differ by 11 ns, and swapping their order moves the
+  slowness with the position rather than the host, so the first benchmark in a
+  group pays a warmup criterion does not absorb. That group therefore resolves
+  to "about 330 ns" and nothing finer, while the metering gaps (µs on ns bias)
+  survive easily. Not a CI gate — microbenchmarks on shared runners are noise.
 
 ### Changed
 

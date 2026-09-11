@@ -28,11 +28,30 @@ crossing/call/fuel+timeout   317 ns
 **Read this as "about 330 ns, and the limits make no measurable difference."**
 
 Do not read the ordering. Fuel cannot make a call faster, and it appears to here
-in every run — the spread is about 5%, it is reproducible rather than random,
-and the likely cause is that each case builds its own `Engine` with its own
-`Config`, so the guest is compiled differently and lands differently in cache.
-Whatever the cause, a difference that points the wrong way is a difference the
-measurement cannot resolve.
+in every run — reproducibly, by about 5%.
+
+The cause is measured rather than guessed, because the first guess was wrong.
+`control/` runs the same benchmark twice against two hosts built from
+**identical** manifests, so the only difference is that they are different
+`Engine` instances:
+
+```
+control/identical-config/a   335 ns      measured first
+control/identical-config/b   324 ns      measured second
+```
+
+Eleven nanoseconds apart with nothing to tell them apart. Swapping which one is
+registered first moves the slowness with the *position*, not the host: the case
+that read 324 ns when second reads 336 ns when first. So the first benchmark in
+a group pays a warmup cost that criterion's three seconds does not fully absorb
+— frequency ramp, caches, allocator — and `crossing/call/no-limits` is slowest
+because it is measured first, not because it lacks limits.
+
+An earlier version of this file blamed separate `Engine`s compiling the guest
+differently. That was plausible and untested, and the control refuted it. The
+control stays in the benchmark as the harness's own noise floor: any difference
+in `crossing/` smaller than the gap between two identical configs means
+nothing.
 
 The useful conclusion is the one that survives: **`[limits]` costs nothing per
 crossing.** Its cost is per *instruction*, which is why it needs its own
@@ -49,6 +68,12 @@ metering/spin/timeout       40.6 µs      ~1.7x
 ```
 
 Fuel roughly doubles guest execution time. An epoch deadline adds about 70%.
+
+These gaps are large enough to survive the first-position effect above — an
+11 ns bias on a 24 µs measurement is four thousandths of a percent — which is
+the difference between a benchmark whose result means something and one whose
+result is its own ordering. `no-limits` is measured first here too, which if
+anything understates the gap.
 
 **Both figures are close to a worst case.** A tight counting loop is the densest
 possible arrangement of the things these mechanisms check: fuel is charged per
