@@ -6,6 +6,27 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **[docs/WRITING-A-PLUGIN.md](docs/WRITING-A-PLUGIN.md)** — a plugin from
+  nothing to running under a policy, in Rust, in about fifteen minutes. Every
+  command was run in order and its output pasted back rather than written from
+  memory. It leads with the thing that surprises people: a six-line plugin that
+  formats a string still wants the clock and the environment, because `std`
+  links them, and `watoots inspect` shows you that before it runs.
+
+- **[docs/PERFORMANCE.md](docs/PERFORMANCE.md)** and
+  `cargo bench -p watoots --bench boundary` — what the boundary costs, measured.
+  A crossing is ~330 ns and `[limits]` adds nothing measurable to it; the cost
+  of fuel and deadlines is per *instruction*, roughly 2.0x and 1.7x on a tight
+  loop, which is close to their worst case. WAVE adds ~240 ns to a small call,
+  and the compiled-component cache saves ~130 µs per instance after the first.
+
+  The document says plainly what the measurement cannot support as well as what
+  it can: in the per-crossing group fuel appears *faster* than no limits, which
+  is not possible, so that whole group resolves to "about 330 ns" and nothing
+  finer. Not a CI gate — microbenchmarks on shared runners are noise.
+
 ### Changed
 
 - **Wasmtime 48.0.1 → 48.0.2.** No security fix in it — it vendors

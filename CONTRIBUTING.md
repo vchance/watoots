@@ -4,6 +4,10 @@ watoots is pre-1.0 and single-maintainer. The API can still move, so the most
 useful contribution right now is a report that something is wrong, confusing,
 or missing — not necessarily a patch.
 
+If you have not used watoots yet, the fastest way in is
+[`docs/WRITING-A-PLUGIN.md`](docs/WRITING-A-PLUGIN.md) — a plugin from nothing
+to running under a policy, with every command checked.
+
 Before anything else, read [`docs/SPEC.md`](docs/SPEC.md). It is the source of
 truth for scope, and it lists what this project deliberately does **not** build.
 A change that contradicts it needs the spec changed first.
@@ -63,6 +67,13 @@ could otherwise raise the real floor with nobody noticing.
 reconfigures its own build tree every run: clang-tidy parses with its own
 clang, which is a different major from the compiler CMake picked, and a stale
 compile database silently drops whole translation units.
+
+`cargo bench -p watoots --bench boundary` measures the boundary itself —
+crossing cost, what `[limits]` charges per instruction, WAVE's share, and what
+the compiled-component cache saves. It is not a gate; CI does not run it,
+because microbenchmark numbers on shared runners are noise. Run it locally when
+you change the call path, and update `docs/PERFORMANCE.md` if the shape moves
+rather than the third digit.
 
 There is also `cmake --preset asan` for AddressSanitizer and UBSan.
 LeakSanitizer is Linux-only, so leak checking happens in CI rather than on a

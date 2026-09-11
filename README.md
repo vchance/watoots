@@ -72,7 +72,10 @@ That is a **load** error, not a runtime trap. No guest code has run. You learn a
 plugin wants the network when you install it, not at 3am when it first reaches
 for a socket — and the exit code is non-zero, so it works as a CI gate.
 
-Full reference: **[docs/MANIFEST.md](docs/MANIFEST.md)**.
+Writing one from scratch, in fifteen minutes:
+**[docs/WRITING-A-PLUGIN.md](docs/WRITING-A-PLUGIN.md)**.
+Full manifest reference: **[docs/MANIFEST.md](docs/MANIFEST.md)**.
+What it costs, measured: **[docs/PERFORMANCE.md](docs/PERFORMANCE.md)**.
 Limits of the sandbox, stated plainly: **[docs/SECURITY.md](docs/SECURITY.md)**.
 
 ## Who wrote it
