@@ -52,6 +52,9 @@ capabilities
   random       DENY   wanted; no random granted
   logging      -      not requested, not granted
 
+publisher
+  signature    WARN   not verified - any bytes at this path load, with everything granted above
+
 your application must serve
   watoots:example/log@0.1.0
 
@@ -71,6 +74,57 @@ for a socket — and the exit code is non-zero, so it works as a CI gate.
 
 Full reference: **[docs/MANIFEST.md](docs/MANIFEST.md)**.
 Limits of the sandbox, stated plainly: **[docs/SECURITY.md](docs/SECURITY.md)**.
+
+## Who wrote it
+
+The manifest says what a plugin may *do*. It cannot say the plugin is the one
+you think it is — swap the file on disk and the replacement inherits every
+grant you gave it. That is the gap signatures close, and it is the only part of
+watoots that can.
+
+```toml
+[signature]
+keys = ["""
+-----BEGIN PUBLIC KEY-----
+MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEzuhbtxgdBr7pXOlkrACLK8+PXkOL
+WmxJSG+8X0cSE6TaYhzhil1GgjEIbsI9QoDGb1DR6/EBuxvg2E4ejBuqDg==
+-----END PUBLIC KEY-----
+"""]
+```
+
+The format is what `cosign sign-blob` already writes, so nothing new has to be
+invented or installed:
+
+```sh
+cosign sign-blob --key cosign.key --output-signature lint.wasm.sig lint.wasm
+```
+
+`watoots run lint.wasm` reads `lint.wasm.sig` from beside it. A plugin that is
+unsigned, signed by a key you did not list, or changed by one byte does not
+load, is not compiled, and is not cached. **Reload re-verifies** — the moment
+the code changes is the moment publisher identity matters most, and a check
+your application does before calling `load` is one that reload skips.
+
+A policy file has to say which it is: list `keys`, or say `required = false`.
+There is no default, because "nobody thought about signing" and "we decided not
+to" must not look the same in a file someone reviews. Running unsigned warns on
+stderr every time and records a `loaded-unverified` audit event.
+
+Deliberately narrow: pinned keys, offline, no network at load. No Sigstore
+keyless identity, no certificate chains, no transparency log — those need a
+maintained trust root inside `load`, which a sandbox library should not have.
+Verify a bundle where you *fetch* the plugin, then hand watoots bytes and a key.
+[ADR-0014](docs/adr/0014-signature-verification.md) has the argument.
+
+## What it was allowed to do, afterwards
+
+`AuditHook` records authorisation decisions — a plugin loaded or refused, each
+import's verdict, a reload, a log line dropped by the level ceiling, a `[limits]`
+ceiling spent, a load nobody verified. Never argument values, so an audit line
+is safe to keep when a trace is not.
+
+Off unless you install it; a library that writes to stderr uninvited is badly
+behaved. `watoots run --audit` turns it on for the command line.
 
 ## Record and replay
 
@@ -168,22 +222,31 @@ See it all in 90 seconds: `tools/demo.sh`.
 
 ## Any guest language, one host
 
-`examples/` has the same linter in Rust, JavaScript and Python against one WIT
-world, driven by one C++ host binary that is not recompiled between them.
+`examples/` has the same linter in Rust, C++, JavaScript and Python against one
+WIT world, driven by one C++ host binary that is not recompiled between them.
+C++ appears on both sides deliberately: the claim this project makes is that C++
+applications have no component-model plugin option today, and a C++ *host* only
+half demonstrates it.
 
 The interesting part is that their policies differ, and none of the plugins
 *uses* what it is granted — the import list reflects the toolchain, not the
 author:
 
-| | Rust | JavaScript | Python |
-|---|:-:|:-:|:-:|
-| monotonic clock, environment | ✓ | ✓ | ✓ |
-| wall clock, filesystem | | ✓ | ✓ |
-| random, socket interfaces | | | ✓ |
+| | Rust | C++ | JavaScript | Python |
+|---|:-:|:-:|:-:|:-:|
+| monotonic clock, environment | ✓ | ✓ | ✓ | ✓ |
+| wall clock | | ✓ | ✓ | ✓ |
+| filesystem | | | ✓ | ✓ |
+| random, socket interfaces | | | | ✓ |
 
-`std` pulls in the clock. StarlingMonkey needs the wall clock for `Date`.
-CPython links sockets at startup. You can see the whole bill before running
-anything.
+`std` pulls in the clock. wasi-libc links a wall clock Rust's `std` does not.
+StarlingMonkey needs it for `Date`. CPython links sockets at startup, which is
+why `net` is a grant for the *import* and never for a reachable host. You can
+see the whole bill before running anything.
+
+A second world, `examples/wit/asset`, is an image pipeline with the same four
+guests — larger payloads, a `variant`, a `result`, and the first example where
+the *plugin* itself needs the filesystem rather than its language runtime.
 
 ## Rust
 
@@ -220,7 +283,7 @@ target_link_libraries(my_app PRIVATE watoots::capi)
 cargo test                              # host, trace, CLI
 cargo clippy --all-targets -- -D warnings
 
-tools/build-plugins.sh                  # sample plugins (Rust, JS, Python)
+tools/build-plugins.sh                  # sample plugins (Rust, C++, JS, Python)
 
 cmake --preset dev && cmake --build --preset dev && ctest --preset dev
 tools/format.sh --check                 # clang-format, Google style
@@ -231,8 +294,12 @@ Rust 1.95+ (whatever Wasmtime 48 requires), CMake 3.28+, a C++20 compiler.
 
 ## Status
 
-v0.1. Both halves work and are tested end to end. Not yet published anywhere;
-see [docs/SPEC.md](docs/SPEC.md) for what is deliberately *not* built, and
+**v0.5.0**, pre-1.0: the API can still move between 0.x releases. Both halves
+work and are tested end to end in CI. crates.io holds only the `0.0.0`
+placeholders that reserve the names, so build from the tag.
+
+See [docs/SPEC.md](docs/SPEC.md) for what is deliberately *not* built,
+[CHANGELOG.md](CHANGELOG.md) for what changed and what breaks, and
 [docs/adr/](docs/adr/) for the decisions and why.
 
 Licensed under Apache-2.0 WITH LLVM-exception.
