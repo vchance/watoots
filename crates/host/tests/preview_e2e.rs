@@ -72,6 +72,34 @@ fn build_rust_qoi() -> &'static PathBuf {
     })
 }
 
+fn build_rust_farbfeld() -> &'static PathBuf {
+    static ARTIFACT: OnceLock<PathBuf> = OnceLock::new();
+    ARTIFACT.get_or_init(|| {
+        let crate_dir = repo_root().join("examples/plugins/rust-farbfeld");
+        let status = Command::new(env!("CARGO"))
+            .args(["build", "--manifest-path"])
+            .arg(crate_dir.join("Cargo.toml"))
+            .args(["--target", "wasm32-wasip2", "--release"])
+            .status()
+            .expect("running cargo to build the farbfeld plugin");
+        assert!(status.success(), "failed to build rust-farbfeld");
+        let built = crate_dir.join("target/wasm32-wasip2/release/rust_farbfeld.wasm");
+        let installed = crate_dir.join("rust_farbfeld.wasm");
+        std::fs::copy(&built, &installed).expect("installing rust_farbfeld.wasm");
+        installed
+    })
+}
+
+/// The second format's decoder. Not in `guests()`: those all decode QOI and
+/// are held to the same QOI assertions, and this one decodes something else.
+fn farbfeld() -> Guest {
+    Guest {
+        name: "rust-farbfeld",
+        wasm: build_rust_farbfeld().clone(),
+        policy: repo_root().join("examples/policies/rust-farbfeld.toml"),
+    }
+}
+
 fn guests() -> &'static [Guest] {
     static GUESTS: OnceLock<Vec<Guest>> = OnceLock::new();
     GUESTS.get_or_init(|| {
@@ -257,4 +285,90 @@ fn every_shipped_preview_policy_grants_exactly_what_its_decoder_imports() {
             report.describe()
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// Two formats, so that dispatch is between two codecs and not two copies.
+
+#[test]
+fn the_farbfeld_decoder_reproduces_the_reference_exactly() {
+    // blocks.ff was widened from blocks.rgba as `b << 8 | b`; taking the high
+    // byte back must give the reference decoder's output to the byte.
+    let guest = farbfeld();
+    let mut plugin = guest.open();
+    let (w, h, pixels) = expect_image(&guest.decode(&mut plugin, &fixture("blocks.ff")).unwrap());
+    assert_eq!((w, h), (32, 32));
+    assert_eq!(pixels, fixture("blocks.rgba"));
+}
+
+#[test]
+fn each_decoder_declines_the_other_format_from_the_prefix() {
+    // This is what "dispatch on magic bytes" means, and the previous version
+    // of this suite never showed it: both installed decoders were QOI, so
+    // the first always won. Now one says no and the other says yes, both from
+    // the first sixteen bytes and without allocating.
+    let ff = fixture("blocks.ff");
+    let qoi = fixture("blocks.qoi");
+    let prefix = |bytes: &[u8]| Val::List(bytes[..16].iter().map(|&b| Val::U8(b)).collect());
+
+    let ff_guest = farbfeld();
+    let mut ff_plugin = ff_guest.open();
+    assert_eq!(
+        ff_plugin.call("sniff", &[prefix(&ff)]).unwrap(),
+        vec![Val::Bool(true)]
+    );
+    assert_eq!(
+        ff_plugin.call("sniff", &[prefix(&qoi)]).unwrap(),
+        vec![Val::Bool(false)]
+    );
+    // And `decode` agrees with `sniff` about what is not its business.
+    assert_eq!(
+        expect_failure(&ff_guest.decode(&mut ff_plugin, &qoi).unwrap()),
+        "not-this-format"
+    );
+
+    for guest in guests() {
+        let mut plugin = guest.open();
+        assert_eq!(
+            plugin.call("sniff", &[prefix(&qoi)]).unwrap(),
+            vec![Val::Bool(true)],
+            "{}",
+            guest.name
+        );
+        assert_eq!(
+            plugin.call("sniff", &[prefix(&ff)]).unwrap(),
+            vec![Val::Bool(false)],
+            "{}",
+            guest.name
+        );
+        assert_eq!(
+            expect_failure(&guest.decode(&mut plugin, &ff).unwrap()),
+            "not-this-format",
+            "{}",
+            guest.name
+        );
+    }
+}
+
+#[test]
+fn a_farbfeld_size_lie_is_truncated_before_any_allocation() {
+    // The point farbfeld makes that QOI cannot: its size follows from its
+    // header, so a header claiming 16384 x 16384 in an 8 KB file is provably
+    // short before a byte of pixels is allocated. The *decoder* refuses this
+    // one, with `truncated`; the QOI bomb is the sandbox's to refuse, because
+    // a chunk stream gives the decoder no way to know up front. Both are fine
+    // outcomes. Only one was in the plugin author's hands.
+    let mut lie = fixture("blocks.ff");
+    lie[8..12].copy_from_slice(&16384u32.to_be_bytes());
+    lie[12..16].copy_from_slice(&16384u32.to_be_bytes());
+
+    let guest = farbfeld();
+    let mut plugin = guest.open();
+    let results = guest
+        .decode(&mut plugin, &lie)
+        .expect("a typed failure, not a ceiling");
+    assert_eq!(expect_failure(&results), "truncated");
+    // Under the same 64 MiB policy the QOI bomb hits, and no ceiling was spent:
+    // the decoder never asked.
+    assert!(plugin.stats().peak_memory_bytes < 64 * 1024 * 1024);
 }

@@ -1,0 +1,21 @@
+# Policy for examples/plugins/rust-farbfeld: the second decoder, so a
+# previewer with two installed is dispatching between two codecs.
+#
+# Same two grants as rust-qoi and for the same reason: Rust's `std`, not the
+# codec. Same ceiling too -- one "codec plugins may do this much" rule is the
+# realistic shape, not one per codec. farbfeld cannot be bombed the way QOI
+# can (its file size follows from its header, so a lie is provably truncated
+# before any allocation), but the ceiling is not there for the formats that
+# behave; it is there for the one that does not.
+
+[permissions]
+clocks = "monotonic"
+env    = {}
+
+[limits]
+memory  = "64MiB"
+fuel    = 200_000_000
+timeout = "2s"
+
+[signature]
+required = false

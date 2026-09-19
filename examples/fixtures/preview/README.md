@@ -12,6 +12,7 @@ cargo run --manifest-path tools/make-preview-fixtures/Cargo.toml -- examples/fix
 |---|---|
 | `blocks.qoi` | A 32×32 RGBA image chosen so every QOI chunk type appears — `RUN`, `DIFF`, `LUMA`, `INDEX`, `RGB`, `RGBA`. The first version of this fixture missed two of the six and a deliberately broken decoder still passed; the generator's comment says how each block earns its op. |
 | `blocks.rgba` | The reference decoder's output for `blocks.qoi`, 4096 bytes. What every guest must produce. |
+| `blocks.ff` | The same image as farbfeld — the second format, so that two installed decoders are two codecs. Widened from `blocks.rgba` as `b << 8 \| b`, so the farbfeld decoder taking the high byte must reproduce the reference exactly. |
 | `bomb.qoi` | `blocks.qoi` with the header rewritten to claim 16384×16384 — a 1 GiB image. Nothing else about it is wrong: the decoder's own overflow check passes, and it asks for the memory. `limits.memory` refuses it. **This is the file the example exists for.** |
 | `truncated.qoi` | The first half of `blocks.qoi`. What a download cut off looks like. |
 | `not-qoi.bin` | `blocks.qoi` with the magic replaced by `RIFF`. What a renamed file looks like; a decoder must answer `not-this-format` from the prefix without allocating. |

@@ -20,7 +20,8 @@ plugin has to — the opposite trade from `preview`, and both are worth reading.
 wit/preview/preview.wit   a file-format decoder: bytes in, pixels out
 plugins/rust-qoi/         Rust,  via wit-bindgen        ~55 KB   needs clock + env (std)
 plugins/cpp-qoi/          C++,   via wasi-sdk           ~141 KB  needs env only
-fixtures/preview/         a real image, the bomb, a truncated file, a renamed one
+plugins/rust-farbfeld/    Rust,  a second *format*      ~53 KB   so dispatch is real
+fixtures/preview/         a real image in both formats, the bomb, a truncated file, a renamed one
 host-cpp-preview/         the viewer: N decoders, dispatch on magic bytes
 
 wit/lint/lint.wit     the world every lint sample implements
@@ -197,7 +198,16 @@ process still running.
     examples/plugins/cpp-qoi/cpp_qoi.wasm examples/plugins/rust-qoi/rust_qoi.wasm
 ```
 
-Two decoders installed there, so dispatch is real. The C++ one answers first.
+Two decoders installed there, and with a `.ff` file instead the QOI decoder
+says no from the magic bytes and the farbfeld decoder says yes. That "no" is
+what dispatch is; the first version of this example installed two QOI decoders
+and the first one always won, which demonstrated nothing.
+
+farbfeld also makes a point QOI cannot: its file size follows from its header,
+so a header claiming 16384×16384 in an 8 KB file is provably truncated before
+any allocation and the *decoder* refuses it. QOI's chunk stream gives the
+decoder no way to know up front, so its bomb is the *sandbox's* to refuse. Both
+are fine outcomes. Only one of them was in the plugin author's hands.
 
 ## The second host: the application owns the codec
 

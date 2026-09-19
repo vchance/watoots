@@ -51,11 +51,25 @@ fn main() {
     let cut = &encoded[..encoded.len() / 2];
     fs::write(format!("{out}/truncated.qoi"), cut).unwrap();
 
+    // The same image as farbfeld: eight magic bytes, two big-endian u32s,
+    // then 16-bit big-endian RGBA. Widened from 8-bit as `b << 8 | b`, so a
+    // decoder taking the high byte gets the reference back exactly. This is the
+    // second *format*, so that two installed decoders are two codecs and not
+    // two copies of one.
+    let mut ff = Vec::with_capacity(16 + px.len() * 2);
+    ff.extend_from_slice(b"farbfeld");
+    ff.extend_from_slice(&w.to_be_bytes());
+    ff.extend_from_slice(&h.to_be_bytes());
+    for &b in &px {
+        ff.extend_from_slice(&[b, b]);
+    }
+    fs::write(format!("{out}/blocks.ff"), &ff).unwrap();
+
     // Right length, wrong magic: what a renamed file looks like.
     let mut other = encoded.clone();
     other[..4].copy_from_slice(b"RIFF");
     fs::write(format!("{out}/not-qoi.bin"), &other).unwrap();
 
-    println!("blocks.qoi {} bytes, bomb.qoi {} bytes, truncated.qoi {} bytes",
-        encoded.len(), bomb.len(), cut.len());
+    println!("blocks.qoi {} bytes, blocks.ff {} bytes, bomb.qoi {} bytes, truncated.qoi {} bytes",
+        encoded.len(), ff.len(), bomb.len(), cut.len());
 }

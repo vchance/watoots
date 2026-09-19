@@ -59,9 +59,12 @@ running. With the codec in-process that is an OOM kill — or, with a less hones
 header, the CVE. One manifest line.
 
 The same decoder exists in C++, built with wasi-sdk, and needs *less* than the
-Rust one: no clock, because wasi-libc links only what the code touches. The
-host is not recompiled between them. `tools/demo-preview.sh` runs the whole
-story; **[docs/WRITING-A-PLUGIN.md](docs/WRITING-A-PLUGIN.md)** builds one from
+Rust one: no clock, because wasi-libc links only what the code touches. A
+second format, farbfeld, is a second plugin; install both and the host asks
+each one, from the first sixteen bytes, whether a file is its business. The
+host is not recompiled for any of it and never learns what either format looks
+like. `tools/demo-preview.sh` runs the whole story, signed;
+**[docs/WRITING-A-PLUGIN.md](docs/WRITING-A-PLUGIN.md)** builds a plugin from
 nothing in fifteen minutes.
 
 ## The manifest
@@ -322,8 +325,8 @@ StarlingMonkey needs it for `Date`. CPython links sockets at startup, which is
 why `net` is a grant for the *import* and never for a reachable host. You can
 see the whole bill before running anything.
 
-Three worlds. `examples/wit/preview` is the previewer above — Rust and C++
-decoders, the codec on the untrusted side. `examples/wit/asset` is an image
+Three worlds. `examples/wit/preview` is the previewer above — QOI in Rust and
+C++, farbfeld in Rust, the codec on the untrusted side. `examples/wit/asset` is an image
 pipeline with all four guests: larger payloads, a `variant`, a `result`, and the
 first example where the *plugin* itself needs the filesystem rather than its
 language runtime. `examples/wit/lint` is the small hermetic world the test

@@ -58,14 +58,25 @@ foreach(sample rust cpp)
   endif()
 endforeach()
 
-# Two decoders installed at once, so dispatch is real and not a loop of one.
+# Two *formats* installed at once, so dispatch is between two codecs rather
+# than two copies of one. The farbfeld decoder is listed first both times: for
+# the QOI file it has to say no before the QOI decoder says yes, and that
+# "no" is the whole of what dispatch is. The first version of this test
+# installed two QOI decoders and the first one always won.
 set(rust_qoi ${PROJECT_SOURCE_DIR}/examples/plugins/rust-qoi/rust_qoi.wasm)
-set(cpp_qoi ${PROJECT_SOURCE_DIR}/examples/plugins/cpp-qoi/cpp_qoi.wasm)
-if(EXISTS ${rust_qoi} AND EXISTS ${cpp_qoi})
+set(rust_ff ${PROJECT_SOURCE_DIR}/examples/plugins/rust-farbfeld/rust_farbfeld.wasm)
+if(EXISTS ${rust_qoi} AND EXISTS ${rust_ff})
   add_test(
-    NAME host_cpp_preview.two_decoders
+    NAME host_cpp_preview.dispatch.qoi_after_farbfeld_declines
     COMMAND host_cpp_preview ${PROJECT_SOURCE_DIR}/examples/policies/rust-qoi.toml
-            ${fixtures}/blocks.qoi ${CMAKE_CURRENT_BINARY_DIR}/two.png ${cpp_qoi} ${rust_qoi})
-  set_tests_properties(host_cpp_preview.two_decoders
-                       PROPERTIES PASS_REGULAR_EXPRESSION "wrote .*via qoi")
+            ${fixtures}/blocks.qoi ${CMAKE_CURRENT_BINARY_DIR}/dispatch-qoi.png ${rust_ff} ${rust_qoi})
+  set_tests_properties(host_cpp_preview.dispatch.qoi_after_farbfeld_declines
+                       PROPERTIES PASS_REGULAR_EXPRESSION "wrote .*32x32 RGBA8 via qoi")
+
+  add_test(
+    NAME host_cpp_preview.dispatch.farbfeld
+    COMMAND host_cpp_preview ${PROJECT_SOURCE_DIR}/examples/policies/rust-qoi.toml
+            ${fixtures}/blocks.ff ${CMAKE_CURRENT_BINARY_DIR}/dispatch-ff.png ${rust_qoi} ${rust_ff})
+  set_tests_properties(host_cpp_preview.dispatch.farbfeld
+                       PROPERTIES PASS_REGULAR_EXPRESSION "wrote .*32x32 RGBA8 via farbfeld")
 endif()

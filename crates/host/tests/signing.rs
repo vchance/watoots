@@ -306,5 +306,5 @@ fn every_shipped_policy_states_a_signature_posture() {
     }
     // Exact on purpose: a policy that vanished would be as wrong as one that
     // said nothing. Update this when a guest is added.
-    assert_eq!(checked, 10, "expected ten shipped policies");
+    assert_eq!(checked, 11, "expected eleven shipped policies");
 }

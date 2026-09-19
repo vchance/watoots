@@ -28,6 +28,34 @@ cargo build --release -p watoots-cli >/dev/null 2>&1
 [ -x "$preview" ] || { cmake --preset dev >/dev/null && cmake --build --preset dev --target host_cpp_preview >/dev/null; }
 dim "decoder $(wc -c <"$decoder" | tr -d ' ') bytes; previewer is C++ over the C API"
 
+# Sign the decoders, so the rest of the demo runs verified. A codec is
+# precisely the thing you want to know came from who you think -- it parses
+# what the user downloaded -- so the flagship example should carry the
+# flagship check rather than leave it to the linter's demo.
+#
+# openssl produces exactly what `cosign sign-blob --key` does. Without it the
+# demo still runs, unsigned, and says so.
+signed=""
+farbfeld=examples/plugins/rust-farbfeld/rust_farbfeld.wasm
+[ -f "$farbfeld" ] || tools/build-plugins.sh rust-farbfeld >/dev/null
+if command -v openssl >/dev/null 2>&1; then
+  openssl ecparam -name prime256v1 -genkey -noout -out "$work/demo.key" 2>/dev/null
+  openssl ec -in "$work/demo.key" -pubout -out "$work/demo.pub" 2>/dev/null
+  for component in "$decoder" "$farbfeld"; do
+    openssl dgst -sha256 -sign "$work/demo.key" -out "$work/sig.der" "$component" 2>/dev/null
+    openssl base64 -A -in "$work/sig.der" -out "$component.sig" 2>/dev/null
+  done
+  {
+    sed '/^\[signature\]/,$d' "$policy"
+    printf '\n[signature]\nkeys = ["""\n'
+    cat "$work/demo.pub"
+    printf '"""]\n'
+  } > "$work/signed.toml"
+  policy="$work/signed.toml"
+  signed=yes
+  trap 'rm -rf "$work" "$decoder.sig" "$farbfeld.sig"' EXIT
+fi
+
 # ---------------------------------------------------------------------------
 step "1. What does a codec need?"
 dim "\$ watoots inspect rust_qoi.wasm"
@@ -80,16 +108,33 @@ dim "--emit-test turns it into a regression test."
 
 # ---------------------------------------------------------------------------
 step "5. Two codecs installed"
-cpp=examples/plugins/cpp-qoi/cpp_qoi.wasm
-if [ -f "$cpp" ]; then
-  dim "\$ host_cpp_preview policy.toml blocks.qoi out.png cpp_qoi.wasm rust_qoi.wasm"
+dim "\$ host_cpp_preview policy.toml blocks.ff out.png rust_qoi.wasm rust_farbfeld.wasm"
+echo
+$preview "$policy" "$fixtures/blocks.ff" "$work/ff.png" "$decoder" "$farbfeld"
+echo
+dim "A farbfeld file, with the QOI decoder installed first. It looked at the"
+dim "magic bytes, said no, and the farbfeld decoder said yes. Two formats, one"
+dim "policy, one host that never learned either format exists."
+
+# ---------------------------------------------------------------------------
+if [ -n "$signed" ]; then
+  step "6. And they have to be the codecs you signed"
+  dim "Every step above ran verified: both decoders were signed with a throwaway"
+  dim "key and the policy lists its public half. Replace one byte of a codec and:"
   echo
-  $preview "$policy" "$fixtures/blocks.qoi" "$work/two.png" "$cpp" "$decoder"
-  dim "The C++ decoder answered first. Same world, same policy, same bytes out;"
-  dim "the host was not recompiled. C++ as the untrusted side is the half of"
-  dim "\"C++ has no component-model plugin option\" that a C++ host cannot show."
-else
-  dim "(build the C++ decoder to see this: tools/build-plugins.sh cpp-qoi)"
+  cp "$decoder" "$work/tampered.wasm"
+  cp "$decoder.sig" "$work/tampered.wasm.sig"
+  printf 'X' | dd of="$work/tampered.wasm" bs=1 seek=4096 conv=notrunc 2>/dev/null
+  dim "\$ host_cpp_preview policy.toml blocks.qoi out.png tampered.wasm"
+  echo
+  if $preview "$policy" "$fixtures/blocks.qoi" "$work/t.png" "$work/tampered.wasm"; then
+    echo "UNEXPECTED: a tampered decoder should not load"
+    exit 1
+  fi
+  echo
+  dim "The permission check would have let it in: it asks for nothing new."
+  dim "Only the signature can tell that this is not the codec you approved --"
+  dim "and a codec is the plugin most worth being sure about."
 fi
 
 bold "That is what the sandbox is for."

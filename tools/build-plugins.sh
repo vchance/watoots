@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build the sample plugins.
 #
-#   tools/build-plugins.sh [rust|rust-asset|rust-qoi|cpp|cpp-asset|cpp-qoi|js|js-asset|py|py-asset]...
+#   tools/build-plugins.sh [rust|rust-asset|rust-qoi|rust-farbfeld|cpp|cpp-asset|cpp-qoi|js|js-asset|py|py-asset]...
 #
 # With no arguments, builds every guest whose toolchain is available and skips
 # the rest with a note. Each needs a different toolchain, which is the point:
@@ -58,6 +58,20 @@ if want rust-qoi; then
       examples/plugins/rust-qoi/rust_qoi.wasm
   else
     echo "skip rust-qoi: rustup target add wasm32-wasip2"
+  fi
+fi
+
+if want rust-farbfeld; then
+  # The preview world's second format, so that a previewer with two decoders
+  # installed is dispatching between two codecs rather than two copies of one.
+  if rustup target list --installed 2>/dev/null | grep -q wasm32-wasip2; then
+    echo "==> rust-farbfeld"
+    cargo build --manifest-path examples/plugins/rust-farbfeld/Cargo.toml \
+      --target wasm32-wasip2 --release
+    cp examples/plugins/rust-farbfeld/target/wasm32-wasip2/release/rust_farbfeld.wasm \
+      examples/plugins/rust-farbfeld/rust_farbfeld.wasm
+  else
+    echo "skip rust-farbfeld: rustup target add wasm32-wasip2"
   fi
 fi
 
