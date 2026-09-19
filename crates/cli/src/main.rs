@@ -944,19 +944,38 @@ fn record(args: &RecordArgs) -> Result<ExitCode, String> {
         manifest_toml,
     }));
 
-    let code = invoke(
+    let outcome = invoke(
         &args.invocation,
         Some(Arc::clone(&recorder) as Arc<dyn TraceHook>),
-    )?;
+    );
 
+    // A call that failed is the recording worth keeping. The trace format
+    // carries the failure as an outcome, the host records it, and replay
+    // reproduces it -- the first version of this command threw all of that away
+    // with a `?`, which meant the one session anyone actually wants a file for
+    // was the one it refused to write. Found by the preview demo trying to
+    // record a decoder hitting its memory ceiling.
+    //
+    // A failure *before* the call -- the component would not load, the manifest
+    // would not parse -- has no crossings and gets no file: an empty trace for
+    // a load error would misdescribe what happened.
     let trace = recorder.finish().map_err(|err| err.message().to_string())?;
+    if trace.events.is_empty() {
+        return outcome;
+    }
     write_trace(&trace, &args.output)?;
     eprintln!(
         "wrote {} ({} crossings)",
         args.output.display(),
         trace.events.len()
     );
-    Ok(code)
+    match outcome {
+        Ok(code) => Ok(code),
+        Err(message) => {
+            eprintln!("watoots: {message}");
+            Ok(ExitCode::FAILURE)
+        }
+    }
 }
 
 fn do_replay(args: &ReplayArgs) -> Result<ExitCode, String> {

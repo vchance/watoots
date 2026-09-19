@@ -1053,3 +1053,95 @@ fn inspect_reports_the_signature_posture_alongside_the_capabilities() {
     // refused. `DENY` has to keep meaning "requested and refused".
     assert!(text.contains("signature    WARN"), "{text}");
 }
+
+#[test]
+fn record_keeps_the_trace_when_the_call_fails_because_that_is_the_bug() {
+    // The one session anyone actually wants a file for is the one where the
+    // plugin failed. The first version of `record` threw it away with a `?`.
+    // Found by the preview demo trying to record a decoder hitting its memory
+    // ceiling, which is exactly the shape of a real bug report.
+    let dir = tempfile::tempdir().unwrap();
+    let trace = dir.path().join("bug.wave");
+    let policy = dir.path().join("tight.toml");
+    // A transfer ceiling the result cannot fit under: the call fails with a
+    // limit, which is a failure the trace format can carry. Transfer rather
+    // than fuel because instantiation lifts nothing and so is unaffected --
+    // a fuel budget small enough to fail the call also fails the load, which
+    // is the *other* test's case.
+    std::fs::write(
+        &policy,
+        "[permissions]\nclocks = \"monotonic\"\nenv = {}\n\n\
+         [limits]\ntransfer = 64\n\n[signature]\nrequired = false\n",
+    )
+    .unwrap();
+    let plugin = sample_plugin().display().to_string();
+    // Enough diagnostics that lifting the result costs more than 64.
+    let source = format!("\"{}\"", "TODO x\\n".repeat(400));
+
+    let recorded = watoots(&[
+        "record",
+        &plugin,
+        "-m",
+        &policy.display().to_string(),
+        "--answer",
+        "watoots:example/log@0.1.0#emit=",
+        "-c",
+        "lint",
+        "-o",
+        &trace.display().to_string(),
+        "--",
+        r#""notes.md""#,
+        &source,
+    ]);
+    // The command fails, because the call did...
+    assert!(!recorded.status.success());
+    let err = String::from_utf8_lossy(&recorded.stderr);
+    assert!(
+        err.contains("copied between the host and the guest"),
+        "{err}"
+    );
+    // ...and the trace exists anyway, carrying the failure as its outcome.
+    let text = std::fs::read_to_string(&trace).expect("the trace was written");
+    assert!(text.contains("export-call lint"), "{text}");
+    assert!(text.contains("WT_ERR_LIMIT_EXCEEDED"), "{text}");
+
+    // Replaying it reproduces the failure: that is what makes it a bug report.
+    let replayed = watoots(&[
+        "replay",
+        &trace.display().to_string(),
+        "-c",
+        &plugin,
+        "--assert",
+    ]);
+    assert!(
+        replayed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&replayed.stderr)
+    );
+    assert!(
+        stdout(&replayed).contains("matched"),
+        "{}",
+        stdout(&replayed)
+    );
+}
+
+#[test]
+fn record_writes_nothing_when_the_failure_was_before_the_call() {
+    // A component that will not load has no crossings to record. An empty
+    // trace would misdescribe what happened, so there is no file.
+    let dir = tempfile::tempdir().unwrap();
+    let trace = dir.path().join("nothing.wave");
+    let not_a_component = dir.path().join("garbage.wasm");
+    std::fs::write(&not_a_component, b"this is not a component").unwrap();
+
+    let recorded = watoots(&[
+        "record",
+        &not_a_component.display().to_string(),
+        "-c",
+        "lint",
+        "-o",
+        &trace.display().to_string(),
+    ]);
+    assert!(!recorded.status.success());
+    assert!(!trace.exists(), "no call happened, so no trace");
+}

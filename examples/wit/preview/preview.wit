@@ -1,0 +1,62 @@
+package watoots:preview@0.1.0;
+
+/// A file-format decoder as a plugin: untrusted bytes in, pixels out.
+///
+/// This is the trade the asset world deliberately refuses -- there, the host
+/// decodes at the edge and hands plugins pixels that are already safe. Here the
+/// codec *is* the plugin, parsing input the user got from the internet, which
+/// is the most exploited surface in native software and the one every desktop
+/// application eventually opens to third parties. That is exactly why it
+/// belongs in a sandbox, and why a decoder is the example that shows what the
+/// sandbox is for.
+interface types {
+  /// Decoded pixels, RGBA8, row-major, `width * height * 4` bytes.
+  ///
+  /// A host must check that length before trusting it. A decoder that returns
+  /// fewer bytes than its dimensions claim is the kind of thing an untrusted
+  /// plugin must not be able to make a host act on.
+  record image {
+    width: u32,
+    height: u32,
+    pixels: list<u8>,
+  }
+
+  /// Why a decode did not produce an image.
+  ///
+  /// `not-this-format` is the host's dispatch signal -- try the next decoder --
+  /// and must be cheap to reach: a decoder answers it from the magic bytes,
+  /// before allocating anything. The other two are about *this* file.
+  variant failure {
+    not-this-format,
+    /// The stream ended early; the payload is how many more bytes were needed.
+    truncated(u64),
+    /// The stream is malformed in a way the decoder can name.
+    corrupt(string),
+  }
+}
+
+/// One decoder. A host registers several and dispatches on `sniff`.
+///
+/// Nothing is imported: a decoder needs no filesystem, no network, no clock.
+/// Under a manifest granting nothing at all it still works, and a host that
+/// reads `[permissions]` and finds it empty has read the whole security
+/// argument for keeping codecs out of the process.
+///
+/// Deliberately *not* asked to police its own resource use. A decoder cannot
+/// know the host's memory budget, so a header claiming an image too large to
+/// be real is the *sandbox's* to refuse, via `limits.memory`, not the plugin's.
+/// A plugin that is careful is nice; a sandbox that does not need it to be is
+/// the point.
+world decoder {
+  use types.{image, failure};
+
+  /// The format this decodes, e.g. `"qoi"`. For the host's plugin list.
+  export format: func() -> string;
+
+  /// Whether `prefix` -- the first few bytes of a file -- looks like this
+  /// format. Answered from magic bytes alone; must not allocate.
+  export sniff: func(prefix: list<u8>) -> bool;
+
+  /// Decode a whole file.
+  export decode: func(data: list<u8>) -> result<image, failure>;
+}

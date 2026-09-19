@@ -85,6 +85,19 @@ struct State {
 struct MeteredLimits {
     inner: StoreLimits,
     peak_memory: usize,
+    /// Whether a growth was refused during the current call.
+    ///
+    /// A refused `memory.grow` returns -1 to the guest, and what the guest does
+    /// next is its own business: Rust's allocator aborts, C's `malloc` returns
+    /// NULL and the program may or may not cope. Either way, if the call then
+    /// ends in a trap, this is what lets `classify_call_error` report the
+    /// *ceiling* rather than the trap — the same distinction ADR-0010 drew for
+    /// `limits.transfer`, and the one the audit trail was already making while
+    /// the error kind was not. Cleared by [`arm`] with the other per-call state.
+    ///
+    /// Carries the size that was asked for, because "asked for 1 GiB under a
+    /// 64 MiB policy" is the whole story and "a growth was refused" is not.
+    refused_growth: Option<usize>,
     /// The audit hook and the name to report under, or `None` when nobody is
     /// listening — which is also why the name is not stored unconditionally.
     audit: Option<AuditFor>,
@@ -109,7 +122,10 @@ impl wasmtime::ResourceLimiter for MeteredLimits {
         let allowed = self.inner.memory_growing(current, desired, maximum)?;
         if allowed {
             self.peak_memory = self.peak_memory.max(desired);
-        } else if let Some(audit) = &self.audit {
+        } else {
+            self.refused_growth = Some(desired);
+        }
+        if !allowed && let Some(audit) = &self.audit {
             // The only ceiling a plugin never sees as an error: a refused
             // growth makes `memory.grow` return -1, so without this the fact
             // that a plugin hit `limits.memory` reaches nobody at all. The
@@ -415,6 +431,7 @@ impl Plugin {
             wasi,
             table: ResourceTable::new(),
             limits: MeteredLimits {
+                refused_growth: None,
                 inner: StoreLimitsBuilder::new().memory_size(memory).build(),
                 peak_memory: 0,
                 audit: wiring.audit.map(|hook| AuditFor {
@@ -1048,8 +1065,14 @@ impl Plugin {
     /// that gets one string, and not much better in a log line.
     ///
     /// A store limiter refusing growth makes `memory.grow` return -1 rather
-    /// than raise an error, so a memory ceiling is only ever reported here via
-    /// a trap; there is nothing extra to match on.
+    /// than raise an error, so a memory ceiling only ever arrives here as a
+    /// trap — usually `unreachable`, from an allocator aborting on NULL. There
+    /// is nothing in the *error* to match on, but the limiter is ours and
+    /// remembers saying no: a trap in a call where growth was refused is
+    /// reported as the ceiling. A guest that survives the refusal and later
+    /// traps for another reason in the same call is misreported by this rule,
+    /// and that is the better mistake — the alternative sent whoever installed
+    /// a decoder to debug it for opening a 1 GiB image under a 64 MiB policy.
     fn classify_call_error(&self, export: &str, err: &wasmtime::Error) -> Error {
         // The same match answers both questions, so the audit trail cannot come
         // to a different conclusion about a ceiling than the error does. The log
@@ -1065,6 +1088,12 @@ impl Plugin {
                 Some(wasmtime::Trap::Interrupt) => {
                     (ErrorKind::LimitExceeded, Some(Ceiling::Timeout))
                 }
+                // Not `Some(Ceiling::Memory)` for the audit event: the limiter
+                // already emitted one at the moment of refusal, and a second
+                // would count one ceiling twice.
+                Some(_) if self.store.data().limits.refused_growth.is_some() => {
+                    (ErrorKind::LimitExceeded, None)
+                }
                 _ => (ErrorKind::Trap, None),
             }
         };
@@ -1076,10 +1105,20 @@ impl Plugin {
             });
         }
 
-        Error::new(
-            kind,
-            format!("{}: {export}: {}\n{err}", self.name, err.root_cause()),
-        )
+        // A memory refusal reaches here as a trap whose root cause says
+        // `unreachable`, which is true and useless. Lead with what actually
+        // happened; the guest's own account follows underneath as usual.
+        let refused = self.store.data().limits.refused_growth;
+        let headline = if let (Some(asked), ErrorKind::LimitExceeded) = (refused, kind) {
+            format!(
+                "limits.memory: the plugin asked for {asked} bytes, the manifest allows \
+                 {}, and it could not continue without them",
+                self.limits.memory
+            )
+        } else {
+            err.root_cause().to_string()
+        };
+        Error::new(kind, format!("{}: {export}: {headline}\n{err}", self.name))
     }
 }
 
@@ -1369,6 +1408,7 @@ fn install_host_funcs(linker: &mut Linker<State>, plugin: &str, wiring: &Wiring<
 /// Reset the per-call budgets on a store.
 fn arm(store: &mut Store<State>, limits: &Limits, name: &str) -> Result<()> {
     store.data_mut().log.rearm();
+    store.data_mut().limits.refused_growth = None;
     // Per crossing rather than per call, so wasmtime resets it itself; this
     // sets the value each one starts from. Armed here with the others so a
     // manifest is the only place any ceiling comes from.

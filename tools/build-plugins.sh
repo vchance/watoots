@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build the sample plugins.
 #
-#   tools/build-plugins.sh [rust|rust-asset|cpp|cpp-asset|js|js-asset|py|py-asset]...
+#   tools/build-plugins.sh [rust|rust-asset|rust-qoi|cpp|cpp-asset|cpp-qoi|js|js-asset|py|py-asset]...
 #
 # With no arguments, builds every guest whose toolchain is available and skips
 # the rest with a note. Each needs a different toolchain, which is the point:
@@ -44,6 +44,20 @@ if want rust-asset; then
       examples/plugins/rust-asset/rust_asset.wasm
   else
     echo "skip rust-asset: rustup target add wasm32-wasip2"
+  fi
+fi
+
+if want rust-qoi; then
+  # The preview world's reference guest: a QOI decoder, the codec on the
+  # untrusted side. Its own target for the same reason the others are.
+  if rustup target list --installed 2>/dev/null | grep -q wasm32-wasip2; then
+    echo "==> rust-qoi"
+    cargo build --manifest-path examples/plugins/rust-qoi/Cargo.toml \
+      --target wasm32-wasip2 --release
+    cp examples/plugins/rust-qoi/target/wasm32-wasip2/release/rust_qoi.wasm \
+      examples/plugins/rust-qoi/rust_qoi.wasm
+  else
+    echo "skip rust-qoi: rustup target add wasm32-wasip2"
   fi
 fi
 
@@ -108,7 +122,7 @@ if want py-asset; then
   fi
 fi
 
-if want cpp || want cpp-asset; then
+if want cpp || want cpp-asset || want cpp-qoi; then
   # wasi-sdk is a 172MB tarball with no Homebrew formula, so it is found rather
   # than required: set WASI_SDK_PATH, or drop it in one of the usual places.
   # Found once and shared, because both C++ guests need the same two tools and
@@ -169,6 +183,24 @@ if want cpp-asset; then
     cd "$root"
   else
     echo "skip cpp-asset: $cpp_skip"
+  fi
+fi
+
+if want cpp-qoi; then
+  # The preview world's C++ guest. Notable for what it does *not* import: no
+  # clock, because it never reaches for one and wasi-libc links only what is
+  # touched. Compare rust-qoi, whose `std` brings a clock regardless.
+  if [ "$cpp_ready" = yes ]; then
+    echo "==> cpp-qoi"
+    cd "$root/examples/plugins/cpp-qoi"
+    wit-bindgen c ../../wit/preview --world decoder --out-dir bindings >/dev/null
+    # C bindings with clang, C++ with clang++ -- see the note above cpp-lint.
+    "$sdk/bin/wasm32-wasip2-clang" -std=c11 -O2 -I. -c bindings/decoder.c -o bindings.o
+    "$sdk/bin/wasm32-wasip2-clang++" -std=c++20 -O2 -fno-exceptions -fno-rtti -I. \
+      -o cpp_qoi.wasm qoi.cc bindings.o bindings/decoder_component_type.o
+    cd "$root"
+  else
+    echo "skip cpp-qoi: $cpp_skip"
   fi
 fi
 

@@ -42,6 +42,7 @@ wat = "1.258"
 tempfile = "3.27.0"
 proptest = "1.11.0"
 criterion = { version = "0.7", default-features = false, features = ["cargo_bench_support"] }
+qoi = "0.4"
 
 [[bench]]
 name = "boundary"

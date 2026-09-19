@@ -1,0 +1,15 @@
+# Its own workspace: a throwaway tool, not a member of the real one.
+[workspace]
+
+[package]
+name = "make-preview-fixtures"
+version = "0.0.0"
+edition = "2024"
+publish = false
+license = "Apache-2.0 WITH LLVM-exception"
+
+[dependencies]
+# The reference implementation. The fixtures come from it so that the valid
+# image was produced by code that is not ours, and `preview_e2e` decodes it
+# with the same crate as its oracle.
+qoi = "0.4"

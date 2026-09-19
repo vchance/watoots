@@ -32,6 +32,23 @@ const GROWER: &str = r#"
 )
 "#;
 
+/// What a real allocator does when `memory.grow` says no: gives up. Rust's
+/// `handle_alloc_error` aborts, which is an `unreachable` trap; this is that
+/// shape with the decision made explicit.
+const ALLOCATE_OR_DIE: &str = r#"
+(component
+  (core module $m
+    (memory 1)
+    (func (export "need") (param i32) (result i32)
+      (if (i32.eq (memory.grow (local.get 0)) (i32.const -1))
+        (then (unreachable)))
+      (i32.const 0)))
+  (core instance $i (instantiate $m))
+  (func $need (param "pages" s32) (result s32) (canon lift (core func $i "need")))
+  (export "need" (func $need))
+)
+"#;
+
 /// Returns immediately.
 const CHEAP: &str = r#"
 (component
@@ -123,6 +140,74 @@ fn memory_growth_past_the_ceiling_is_refused() {
         results,
         vec![Val::S32(-1)],
         "growth past the ceiling should be refused"
+    );
+}
+
+#[test]
+fn a_trap_after_a_refused_growth_is_the_memory_ceiling_and_not_a_trap() {
+    // A refused growth returns -1 and the guest decides what to do. A real
+    // allocator aborts, and that abort arrives as `unreachable` -- which, read
+    // literally, told whoever installed the plugin to debug it for opening a
+    // 1 GiB image under a 64 MiB policy. The limiter is ours and remembers
+    // saying no, so the error says what actually happened.
+    let host = host_with("[limits]\nmemory = \"128KiB\"\n");
+    let mut plugin = host
+        .load_binary("hungry", ALLOCATE_OR_DIE.as_bytes())
+        .unwrap();
+
+    let err = plugin
+        .call("need", &[Val::S32(100)])
+        .expect_err("100 pages is past the ceiling and the guest aborts");
+    assert_eq!(
+        err.kind(),
+        ErrorKind::LimitExceeded,
+        "a ceiling is a limit, not misbehaviour: {}",
+        err.message()
+    );
+    // The message leads with the ceiling and the numbers, because "wasm trap:
+    // unreachable" is true and useless.
+    assert!(err.message().contains("limits.memory"), "{}", err.message());
+    assert!(err.message().contains("asked for"), "{}", err.message());
+    assert!(
+        err.message().contains("131072"),
+        "the limit itself: {}",
+        err.message()
+    );
+
+    // And it is per call: a well-behaved call afterwards is still just a call.
+    // (The trap poisoned the instance, so use a fresh one to show the flag
+    // does not leak into the next plugin.)
+    let mut fresh = host.load_binary("fresh", GROWER.as_bytes()).unwrap();
+    assert_eq!(
+        fresh.call("grow", &[Val::S32(0)]).unwrap(),
+        vec![Val::S32(1)]
+    );
+}
+
+/// Traps unconditionally. Misbehaviour with no ceiling anywhere near it.
+const JUST_TRAPS: &str = r#"
+(component
+  (core module $m
+    (memory 1)
+    (func (export "boom") (result i32) (unreachable)))
+  (core instance $i (instantiate $m))
+  (func $boom (result s32) (canon lift (core func $i "boom")))
+  (export "boom" (func $boom))
+)
+"#;
+
+#[test]
+fn a_trap_with_no_refused_growth_is_still_a_trap() {
+    // The rule must not swallow real misbehaviour. Same `unreachable`, but no
+    // growth was ever refused, so it is reported as what it is.
+    let host = host_with("[limits]\nmemory = \"64MiB\"\n");
+    let mut plugin = host.load_binary("broken", JUST_TRAPS.as_bytes()).unwrap();
+    let err = plugin.call("boom", &[]).expect_err("it traps");
+    assert_eq!(err.kind(), ErrorKind::Trap, "{}", err.message());
+    assert!(
+        !err.message().contains("limits.memory"),
+        "{}",
+        err.message()
     );
 }
 

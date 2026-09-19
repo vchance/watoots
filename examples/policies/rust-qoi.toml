@@ -1,0 +1,26 @@
+# Policy for examples/plugins/rust-qoi: a QOI decoder.
+#
+# The codec asks for nothing. Both grants below are Rust's `std`, which links a
+# clock and the environment whether or not the author touches them; `watoots
+# inspect rust_qoi.wasm` with no policy shows exactly those two and no more. No
+# filesystem, no network: a decoder reads the bytes it is handed and returns
+# pixels, and the sandbox has nothing else to offer it.
+
+[permissions]
+clocks = "monotonic"
+env    = {}
+
+# The line that makes this example worth having. A QOI header carries width and
+# height as two u32s, and a hostile file can claim 16384 x 16384 -- a 1 GiB
+# image -- with nothing else wrong with it. The decoder cannot know what this
+# host can afford, so it does not try to guess; it asks for the memory and the
+# sandbox says no. `examples/fixtures/preview/bomb.qoi` is that file.
+[limits]
+memory  = "64MiB"
+fuel    = 200_000_000
+timeout = "2s"
+
+# Built from source here, not shipped by a publisher. A real viewer installing
+# third-party codecs is precisely where `keys` belongs instead.
+[signature]
+required = false

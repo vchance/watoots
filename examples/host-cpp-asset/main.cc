@@ -45,6 +45,7 @@
 
 #include "stb_image.h"
 #include "stb_image_write.h"
+#include "wave_reader.hpp"
 
 namespace {
 
@@ -62,281 +63,11 @@ wt::Error Invalid(std::string message) {
   return {WT_ERR_INVALID_ARGUMENT, std::move(message)};
 }
 
-// A value the plugin returned that this host cannot read. Deliberately not
-// WT_ERR_INVALID_ARGUMENT: the argument was ours, the answer is theirs, and
-// conflating the two sends the reader to the wrong file.
-wt::Error Unreadable(const std::string& message) {
-  return {WT_ERR_INTERNAL, "the plugin's answer did not parse: " + message};
-}
-
 int Fail(const wt::Error& error) {
   std::cerr << "watoots: " << wt_status_name(error.Code()) << ": "
             << error.Message() << '\n';
   return EXIT_FAILURE;
 }
-
-// ---------------------------------------------------------------------------
-// Reading WAVE
-// ---------------------------------------------------------------------------
-
-// A reader for the slice of WAVE this world's values are written in: records,
-// lists, variants, enums, strings and unsigned integers.
-//
-// It exists because results cross the C API as text and the C API has no typed
-// accessor -- `wt_plugin_call` hands back a string, and a host that wants a
-// pixel out of it has to parse one. Written by hand and kept small rather than
-// pulled in from anywhere, so that what an application actually has to do is
-// visible instead of hidden behind a dependency.
-//
-// The first failure is sticky and every later call is a no-op, so callers read
-// as a description of the grammar rather than as a chain of error handling. A
-// loop must still test `Ok()`, because a reader that has failed reports every
-// `Peek` as false and would otherwise spin.
-class WaveReader {
- public:
-  explicit WaveReader(std::string_view text) : text_(text) {}
-
-  [[nodiscard]] bool Ok() const { return !failed_; }
-
-  // The first failure. Default-constructed, and meaningless, while `Ok()`.
-  [[nodiscard]] const wt::Error& Failure() const { return failure_; }
-
-  // Record a failure of the caller's own, in the same channel.
-  void Reject(const std::string& message) {
-    if (Ok()) {
-      failure_ = Unreadable(message);
-      failed_ = true;
-    }
-  }
-
-  // Whether the next non-space character is `expected`, without consuming it.
-  bool Peek(char expected) {
-    SkipSpace();
-    return Ok() && at_ < text_.size() && text_.at(at_) == expected;
-  }
-
-  bool Take(char expected) {
-    if (!Peek(expected)) {
-      return false;
-    }
-    ++at_;
-    return true;
-  }
-
-  void Expect(char expected) {
-    if (!Take(expected)) {
-      Reject(std::string("expected '") + expected + "' " + Here());
-    }
-  }
-
-  // Every character of `expected`, in order.
-  void Expect(std::string_view expected) {
-    for (const char character : expected) {
-      Expect(character);
-    }
-  }
-
-  // A bare word: an enum case, a variant case, or a record field name.
-  std::string Word() {
-    SkipSpace();
-    const size_t start = at_;
-    while (Ok() && at_ < text_.size() && IsWordCharacter(text_.at(at_))) {
-      ++at_;
-    }
-    if (at_ == start) {
-      Reject("expected a name " + Here());
-      return {};
-    }
-    return std::string(text_.substr(start, at_ - start));
-  }
-
-  uint32_t Number() {
-    SkipSpace();
-    const size_t start = at_;
-    uint64_t value = 0;
-    while (Ok() && at_ < text_.size() && text_.at(at_) >= '0' &&
-           text_.at(at_) <= '9') {
-      value = (value * 10) + static_cast<uint64_t>(text_.at(at_) - '0');
-      if (value > UINT32_MAX) {
-        Reject("a number too large for u32 " + Here());
-        return 0;
-      }
-      ++at_;
-    }
-    if (at_ == start) {
-      Reject("expected a number " + Here());
-      return 0;
-    }
-    return static_cast<uint32_t>(value);
-  }
-
-  // A quoted string, with its escapes resolved.
-  std::string Text() {
-    Expect('"');
-    std::string out;
-    while (Ok() && at_ < text_.size()) {
-      const char character = text_.at(at_);
-      ++at_;
-      if (character == '"') {
-        return out;
-      }
-      out += character == '\\' ? Escape() : std::string(1, character);
-    }
-    Reject("a string was never closed");
-    return {};
-  }
-
-  // Consume whatever value starts here without interpreting it, so a record
-  // can carry a field this host has never heard of without becoming
-  // unreadable. Iterative rather than recursive: the nesting depth here comes
-  // from a plugin, and a parser that recursed on it would be a stack overflow
-  // with extra steps.
-  void SkipValue() {
-    size_t depth = 0;
-    SkipSpace();
-    while (Ok() && at_ < text_.size()) {
-      const char character = text_.at(at_);
-      if (character == '"') {
-        Text();
-      } else if (character == '{' || character == '[' || character == '(') {
-        ++depth;
-        ++at_;
-      } else if (character == '}' || character == ']' || character == ')') {
-        if (depth == 0) {
-          return;  // the closer belongs to whoever called us
-        }
-        --depth;
-        ++at_;
-      } else if (character == ',' && depth == 0) {
-        return;
-      } else {
-        ++at_;
-      }
-      if (depth == 0 && AtValueEnd()) {
-        return;
-      }
-    }
-  }
-
- private:
-  static bool IsWordCharacter(char character) {
-    return (character >= 'a' && character <= 'z') ||
-           (character >= 'A' && character <= 'Z') ||
-           (character >= '0' && character <= '9') || character == '-' ||
-           character == '_' || character == '%';
-  }
-
-  bool AtValueEnd() {
-    SkipSpace();
-    if (at_ >= text_.size()) {
-      return true;
-    }
-    const char character = text_.at(at_);
-    return character == ',' || character == '}' || character == ']' ||
-           character == ')';
-  }
-
-  void SkipSpace() {
-    while (at_ < text_.size() &&
-           (text_.at(at_) == ' ' || text_.at(at_) == '\t' ||
-            text_.at(at_) == '\n' || text_.at(at_) == '\r')) {
-      ++at_;
-    }
-  }
-
-  // The body of one backslash escape, the backslash not yet consumed.
-  std::string Escape() {
-    if (at_ >= text_.size()) {
-      Reject("a string ended inside an escape");
-      return {};
-    }
-    const char character = text_.at(at_);
-    ++at_;
-    switch (character) {
-      case 'n':
-        return "\n";
-      case 'r':
-        return "\r";
-      case 't':
-        return "\t";
-      case 'u':
-        return CodePoint();
-      default:
-        // \" \\ \' and anything else: the character itself.
-        return {character};
-    }
-  }
-
-  // `\u{2014}`, encoded as UTF-8. A failure `reason` is prose written by a
-  // guest, so it can legitimately contain one.
-  std::string CodePoint() {
-    Expect('{');
-    uint32_t value = 0;
-    size_t digits = 0;
-    while (Ok() && at_ < text_.size() && text_.at(at_) != '}') {
-      const int digit = HexDigit(text_.at(at_));
-      ++at_;
-      ++digits;
-      if (digit < 0 || digits > 6) {
-        Reject("a bad \\u{...} escape " + Here());
-        return {};
-      }
-      value = (value << 4U) | static_cast<uint32_t>(digit);
-    }
-    Expect('}');
-    return Ok() ? Utf8(value) : std::string{};
-  }
-
-  static int HexDigit(char character) {
-    if (character >= '0' && character <= '9') {
-      return character - '0';
-    }
-    if (character >= 'a' && character <= 'f') {
-      return (character - 'a') + 10;
-    }
-    if (character >= 'A' && character <= 'F') {
-      return (character - 'A') + 10;
-    }
-    return -1;
-  }
-
-  static std::string Utf8(uint32_t code_point) {
-    std::string out;
-    const auto byte = [&out](uint32_t value) {
-      out += static_cast<char>(static_cast<unsigned char>(value));
-    };
-    if (code_point < 0x80) {
-      byte(code_point);
-    } else if (code_point < 0x800) {
-      byte(0xC0 | (code_point >> 6U));
-      byte(0x80 | (code_point & 0x3FU));
-    } else if (code_point < 0x10000) {
-      byte(0xE0 | (code_point >> 12U));
-      byte(0x80 | ((code_point >> 6U) & 0x3FU));
-      byte(0x80 | (code_point & 0x3FU));
-    } else {
-      byte(0xF0 | (code_point >> 18U));
-      byte(0x80 | ((code_point >> 12U) & 0x3FU));
-      byte(0x80 | ((code_point >> 6U) & 0x3FU));
-      byte(0x80 | (code_point & 0x3FU));
-    }
-    return out;
-  }
-
-  // A short excerpt, so an error is actionable without quoting fifteen
-  // megabytes of pixels back at the reader.
-  [[nodiscard]] std::string Here() const {
-    constexpr size_t kExcerpt = 40;
-    const size_t start = at_ > kExcerpt / 2 ? at_ - (kExcerpt / 2) : 0;
-    return "at offset " + std::to_string(at_) + ", near \"" +
-           std::string(text_.substr(start, kExcerpt)) + "\"";
-  }
-
-  std::string_view text_;
-  size_t at_ = 0;
-  wt::Error failure_;
-  bool failed_ = false;
-};
 
 // ---------------------------------------------------------------------------
 // The world's values
@@ -350,7 +81,8 @@ struct Image {
 
 // `[10, 20, 30, ...]`, reserving `expected` bytes up front: growing a
 // multi-megabyte vector one push at a time is measurable at these sizes.
-std::vector<unsigned char> ReadPixels(WaveReader& reader, uint64_t expected) {
+std::vector<unsigned char> ReadPixels(wave::WaveReader& reader,
+                                      uint64_t expected) {
   std::vector<unsigned char> pixels;
   pixels.reserve(static_cast<size_t>(expected));
   reader.Expect('[');
@@ -365,7 +97,7 @@ std::vector<unsigned char> ReadPixels(WaveReader& reader, uint64_t expected) {
 }
 
 // `{width: .., height: .., pixels: [..]}`.
-Image ReadImage(WaveReader& reader) {
+Image ReadImage(wave::WaveReader& reader) {
   Image image;
   reader.Expect('{');
   while (reader.Ok() && !reader.Peek('}')) {
@@ -411,7 +143,7 @@ struct PluginInfo {
 };
 
 // `{name: "...", supports: [grayscale, invert, ...]}`.
-PluginInfo ReadPluginInfo(WaveReader& reader) {
+PluginInfo ReadPluginInfo(wave::WaveReader& reader) {
   PluginInfo info;
   reader.Expect('{');
   while (reader.Ok() && !reader.Peek('}')) {
@@ -440,7 +172,7 @@ PluginInfo ReadPluginInfo(WaveReader& reader) {
 }
 
 // `{path: "...", reason: "..."}`, the payload of `unreadable`.
-std::string ReadFileFailure(WaveReader& reader) {
+std::string ReadFileFailure(wave::WaveReader& reader) {
   std::string path;
   std::string reason;
   reader.Expect('{');
@@ -467,7 +199,7 @@ std::string ReadFileFailure(WaveReader& reader) {
 // Branching on the case and never on the prose, because `asset.wit` is explicit
 // that the strings are for people and that two guests wording the same failure
 // differently are both conforming.
-std::string ReadFailure(WaveReader& reader) {
+std::string ReadFailure(wave::WaveReader& reader) {
   const std::string which = reader.Word();
   reader.Expect('(');
   std::string described;
@@ -885,7 +617,7 @@ wt::Result<wt::Host> OpenHost(const std::string& policy_path) {
         // Both arguments arrive as WAVE, so the message is a quoted string.
         // Unquoting it is one more use of the reader, and the reason the
         // reader is not an implementation detail of the result path.
-        WaveReader message(args[1]);
+        wave::WaveReader message(args[1]);
         const std::string prose = message.Text();
         std::cout << "  [plugin " << args[0] << "] "
                   << (message.Ok() ? prose : std::string(args[1])) << '\n';
@@ -944,7 +676,7 @@ int Run(const std::vector<std::string>& args) {
   // Named, not a temporary: WaveReader borrows a string_view, so the answer
   // has to outlive it.
   const std::string describe_text = described->value_or("");
-  WaveReader describe_reader(describe_text);
+  wave::WaveReader describe_reader(describe_text);
   const PluginInfo info = ReadPluginInfo(describe_reader);
   if (!describe_reader.Ok()) {
     return Fail(describe_reader.Failure());
@@ -1005,7 +737,7 @@ int Run(const std::vector<std::string>& args) {
             << Millis(called) << '\n';
 
   const Clock::time_point parse_began = Clock::now();
-  WaveReader answer_reader(result);
+  wave::WaveReader answer_reader(result);
   const std::string outcome = answer_reader.Word();
   answer_reader.Expect('(');
   if (outcome == "err") {
@@ -1020,8 +752,8 @@ int Run(const std::vector<std::string>& args) {
     return EXIT_FAILURE;
   }
   if (outcome != "ok") {
-    return Fail(
-        Unreadable("expected ok(...) or err(...), got `" + outcome + "`"));
+    return Fail(wave::Unreadable("expected ok(...) or err(...), got `" +
+                                 outcome + "`"));
   }
   const Image output = ReadImage(answer_reader);
   answer_reader.Expect(')');

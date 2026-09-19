@@ -10,10 +10,8 @@ Cargo.lock.orig
 /examples/plugins/*/.venv
 /examples/plugins/*/*.wasm
 # wit-bindgen output and its object file, regenerated on every C++ guest build
-/examples/plugins/cpp-lint/bindings
-/examples/plugins/cpp-lint/bindings.o
-/examples/plugins/cpp-asset/bindings
-/examples/plugins/cpp-asset/bindings.o
+/examples/plugins/*/bindings
+/examples/plugins/*/bindings.o
 # componentize-py bindings, regenerated with `componentize-py bindings .`
 # and supplied at build time either way; they exist for editors and type
 # checkers, so they are generated rather than committed.

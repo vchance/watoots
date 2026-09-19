@@ -8,6 +8,29 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **A third example world, `preview`: a file-format decoder as the untrusted
+  plugin.** The asset world keeps codecs on the host and hands plugins safe
+  pixels; this one inverts that trade, because "open a file" is the most
+  exploited surface in native software and the one every desktop app eventually
+  opens to third parties. `examples/plugins/rust-qoi` decodes QOI — real,
+  adopted, one-page spec — under a policy that grants nothing the codec asked
+  for. `examples/fixtures/preview/bomb.qoi` is a valid file whose header claims
+  a 1 GiB image; the decoder does not police that, on purpose, and
+  `limits.memory` refuses it. The reference `qoi` crate produced the valid
+  fixture and is the test oracle, so the decoder is checked against an
+  implementation that is not ours, across all six chunk types.
+
+  The same decoder in C++ (`examples/plugins/cpp-qoi`), which needs *less*
+  than the Rust one — no clock, because wasi-libc links what the code touches
+  and Rust's `std` does not. `examples/host-cpp-preview` is the viewer: N
+  decoders installed, dispatch on magic bytes, pixel count checked before it is
+  trusted, and the bomb reported as `WT_ERR_LIMIT_EXCEEDED` naming
+  `limits.memory` through the C API. `tools/demo-preview.sh` walks the story.
+
+- `examples/common/wave_reader.hpp`: the C++ hosts' hand-written WAVE reader,
+  shared rather than copied now that two hosts need it. Gained `Number64` for
+  `u64` payloads.
+
 - **[docs/WRITING-A-PLUGIN.md](docs/WRITING-A-PLUGIN.md)** — a plugin from
   nothing to running under a policy, in Rust, in about fifteen minutes. Every
   command was run in order and its output pasted back rather than written from
@@ -30,6 +53,28 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   group pays a warmup criterion does not absorb. That group therefore resolves
   to "about 330 ns" and nothing finer, while the metering gaps (µs on ns bias)
   survive easily. Not a CI gate — microbenchmarks on shared runners are noise.
+
+### Fixed
+
+- **`watoots record` threw away the trace when the call failed.** A `?` on the
+  invocation bailed before the file was written — so the one session anyone
+  actually wants a file for, the one where the plugin failed, was the one it
+  refused to record. The trace format carries a failure as an outcome, the host
+  records it, and replay reproduces it; only the CLI was discarding it. Found
+  by the preview demo trying to record a decoder hitting its memory ceiling. A
+  failure *before* the call — a component that will not load — still writes
+  nothing, since an empty trace would misdescribe what happened.
+
+- **A memory ceiling was reported as `wasm trap: unreachable`.** A refused
+  `memory.grow` returns -1 and Rust's allocator aborts, which arrives as a trap
+  — so a decoder opening a 1 GiB image under a 64 MiB policy told whoever
+  installed it to go debug the plugin. The audit trail already said
+  `ceiling-spent limits.memory`; the error kind and message did not. The
+  limiter is ours and remembers saying no, so a trap in a call where growth was
+  refused is now `LimitExceeded`, and the message leads with *asked for N
+  bytes, the manifest allows M*. Found by the preview example on its first run,
+  which is what an example that exercises the sandbox is for. Same family as
+  the `limits.transfer` fix in 0.3.0.
 
 ### Changed
 

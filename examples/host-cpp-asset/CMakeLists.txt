@@ -31,6 +31,7 @@ target_include_directories(watoots_stb SYSTEM INTERFACE ${stb_SOURCE_DIR})
 # is suppressed there rather than by a NOLINT here.
 add_executable(host_cpp_asset main.cc stb_impl.cc)
 target_link_libraries(host_cpp_asset PRIVATE watoots::capi watoots_stb)
+target_include_directories(host_cpp_asset PRIVATE ${PROJECT_SOURCE_DIR}/examples/common)
 target_compile_features(host_cpp_asset PRIVATE cxx_std_20)
 target_compile_options(host_cpp_asset PRIVATE ${WATOOTS_STRICT_FLAGS})
 

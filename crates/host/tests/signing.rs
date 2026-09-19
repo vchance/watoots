@@ -304,5 +304,7 @@ fn every_shipped_policy_states_a_signature_posture() {
             .unwrap_or_else(|err| panic!("{}: {}", path.display(), err.message()));
         checked += 1;
     }
-    assert_eq!(checked, 8, "expected eight shipped policies");
+    // Exact on purpose: a policy that vanished would be as wrong as one that
+    // said nothing. Update this when a guest is added.
+    assert_eq!(checked, 10, "expected ten shipped policies");
 }

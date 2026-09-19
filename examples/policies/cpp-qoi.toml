@@ -1,0 +1,24 @@
+# Policy for examples/plugins/cpp-qoi: the same QOI decoder, in C++.
+#
+# Smaller than rust-qoi's bill, and the difference is the lesson. Rust's `std`
+# links a clock whether or not you touch one; wasi-libc links what the code
+# reaches for, and this decoder reaches for `malloc` and `memcmp` and nothing
+# that needs the time. Compare cpp-lint, which uses `std::to_string` and gets
+# the wall clock for its trouble. The import list is a property of the
+# toolchain *and* of what the author called, and neither is visible in the
+# source -- which is why `inspect` exists.
+
+[permissions]
+env = {}
+
+# The same ceiling as rust-qoi, for the same file. A C++ decoder that checks
+# `malloc` for NULL and aborts arrives at the same `LimitExceeded`; one that
+# does not would scribble from address zero, because in wasm that is valid
+# memory. See the comment at the top of qoi.cc.
+[limits]
+memory  = "64MiB"
+fuel    = 200_000_000
+timeout = "2s"
+
+[signature]
+required = false
