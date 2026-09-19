@@ -19,6 +19,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the string, and `wave::WaveReader` now deletes its `std::string&&` constructor
   so the mistake is a compile error rather than a comment.
 
+- **CI never ran the demos.** `tools/demo.sh` and `tools/demo-preview.sh` are
+  the README's story executed end to end and each exits non-zero on a wrong
+  outcome, but nothing ran them except a developer remembering to. Both run in
+  the `cpp` job now, so the story a reader follows cannot rot with the badge
+  still green.
+
 - **CI never ran the example hosts.** The `cpp` job built `rust-lint` and
   nothing else, and every `host_cpp_asset.*` and `host_cpp_preview.*` ctest is
   gated on its component existing — so CI ran 89 tests while a developer's

@@ -97,6 +97,13 @@ jobs:
       - run: cmake --build --preset dev
       - run: ctest --preset dev
       - run: tools/tidy.sh
+      # The two demos are the README's story executed end to end, and each
+      # exits non-zero if a step comes out wrong -- a bomb that decodes, a
+      # tampered plugin that loads. Everything they need is already built by
+      # this job. Without this step the story a reader follows could rot with
+      # the badge still green.
+      - run: tools/demo.sh
+      - run: tools/demo-preview.sh
 
   sanitizers:
     runs-on: ubuntu-latest
