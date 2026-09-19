@@ -3,10 +3,10 @@
 > **Work in progress — v0.5.0 is tagged, not published.** crates.io holds
 > only the `0.0.0` placeholders that reserve the names, so build from the tag.
 > The API can still change between 0.x releases. What is here works and is
-> tested in CI: the host, the C API, record/replay, `wasi:logging`, a boundary
-> profiler, property tests whose oracle is replay itself, and three sample
-> plugins in three languages over one WIT world. Read it, build it, tell me
-> where it is wrong.
+> tested in CI: the host, the C API, record/replay, signing, an audit trail,
+> a boundary profiler, property tests whose oracle is replay itself, and ten
+> sample plugins in four languages over three WIT worlds. Read it, build it,
+> tell me where it is wrong.
 
 A batteries-included plugin host for native applications on the WebAssembly
 component model, plus WIT-level record/replay. Built on Wasmtime 48 (LTS).
@@ -16,9 +16,58 @@ your process's privileges. watoots turns "I have a Wasmtime dependency" into "I
 have a plugin system" — with a C API from day one, so C++ applications are
 first-class rather than an afterthought.
 
+## Open a file
+
+Every desktop application has this feature, and it is the most dangerous one
+it has: a file the user got from the internet, parsed by code from a third
+party, inside your process. Image, archive, document and font parsers are where
+the memory-safety CVEs live. Quick Look plugins and shell extensions are the
+famous versions.
+
+`examples/host-cpp-preview` is a previewer whose format decoders are plugins.
+The codec is on the untrusted side, and the policy it runs under grants nothing
+the codec asked for:
+
+```toml
+[permissions]
+clocks = "monotonic"    # Rust's std links a clock whether or not you use it
+env    = {}             # and the environment; the decoder touches neither
+
+[limits]
+memory  = "64MiB"
+fuel    = 200_000_000
+timeout = "2s"
+```
+
+No filesystem, no network. A decoder reads the bytes it is handed and returns
+pixels, and the sandbox has nothing else to offer it.
+
+Now open `examples/fixtures/preview/bomb.qoi`: a valid QOI file whose header
+claims 16384×16384 — a 1 GiB image — with nothing else wrong. The decoder does
+not police that, on purpose: it cannot know your budget, so it asks for the
+memory.
+
+```console
+$ host_cpp_preview policy.toml bomb.qoi out.png rust_qoi.wasm
+preview: bomb.qoi looks like qoi; decoding
+preview: rust_qoi hit limits.memory
+preview: qoi: decode: WT_ERR_LIMIT_EXCEEDED: rust_qoi: decode: limits.memory: the plugin asked for 1074921472 bytes, the manifest allows 67108864, and it could not continue without them
+```
+
+Exit code 1, one line of stderr naming the ceiling, and the process is still
+running. With the codec in-process that is an OOM kill — or, with a less honest
+header, the CVE. One manifest line.
+
+The same decoder exists in C++, built with wasi-sdk, and needs *less* than the
+Rust one: no clock, because wasi-libc links only what the code touches. The
+host is not recompiled between them. `tools/demo-preview.sh` runs the whole
+story; **[docs/WRITING-A-PLUGIN.md](docs/WRITING-A-PLUGIN.md)** builds one from
+nothing in fifteen minutes.
+
 ## The manifest
 
-The front door, and the thing worth looking at first.
+What that policy file is, and why it is not just a config file. The decoder's
+was short because a decoder needs nothing; here is the full vocabulary:
 
 ```toml
 [permissions]
@@ -40,7 +89,8 @@ Everything is denied unless granted. There is no "allow all, then subtract".
 The part that is not just a config file: **a component declares its imports in
 the binary**, so they can be read without running it. At load time watoots
 intersects what a plugin asks for against what you granted, and refuses anything
-uncovered:
+uncovered. A Python plugin under that policy, for instance — CPython links a
+great deal the author never asked for:
 
 ```console
 $ watoots inspect py_lint.wasm -m policy.toml
@@ -143,14 +193,60 @@ as an explicit non-goal:
 
 That is this. Every call between an application and a plugin already goes
 through the host library, so recording is a hook rather than an instrumentation
-pass:
+pass. Record the bomb from the section above:
 
 ```console
-$ watoots record lint.wasm -m policy.toml -c lint -o bug.wave -- '"notes.md"' '"TODO\n"'
-wrote bug.wave (6 crossings)
+$ watoots record rust_qoi.wasm -m policy.toml -c decode -o bug.wave -- '[113,111,105,102,...]'
+wrote bug.wave (2 crossings)
+watoots: rust_qoi: decode: limits.memory: the plugin asked for 1074921472 bytes, the manifest allows 67108864, and it could not continue without them
 ```
 
-The trace is text, and readable:
+The call failed, and the trace was written anyway — a failure is the recording
+worth keeping. It is text, and it carries the offending bytes as the argument
+and the failure as the outcome:
+
+```
+watoots-trace 1
+component sha256:2e79da2ba0167987ccd1771a021dfcd578f0758796a4a4faa737b2a1a95d641d
+plugin rust_qoi
+manifest
+  [permissions]
+  clocks = "monotonic"
+  ...
+export-call decode
+  arg [113, 111, 105, 102, 0, 0, 64, 0, 0, 0, 64, 0, 4, 0, ...]
+export-return decode
+  error WT_ERR_LIMIT_EXCEEDED "rust_qoi: decode: limits.memory: the plugin asked for 1074921472 bytes, ..."
+```
+
+Replaying needs the trace and the component, and nothing else — the manifest
+travels in the header, so whoever gets the bug report reproduces it with no
+viewer, no policy file and no fixtures:
+
+```console
+$ watoots replay bug.wave -c rust_qoi.wasm --assert
+replay matched the trace (2 crossings)
+```
+
+Now edit the file. Raise `memory` in the embedded manifest to `2GiB` and replay
+again:
+
+```
+replay diverged after 1 matching crossing(s):
+event 1:
+  expected: decode to fail with WT_ERR_LIMIT_EXCEEDED
+  actual:   decode returned Some("err(truncated(268434432))")
+```
+
+With the memory allowed, the allocation succeeds — and the decoder correctly
+reports that 1109 bytes cannot be a 16384×16384 image. The bomb was two lies
+deep, and replay found the second one. `--emit-test` writes a Rust test that
+performs the replay, so a bug report becomes a regression test with no host
+code around it.
+
+A trace of a plugin that *calls back into the application* records those
+crossings too, and answers them on replay in place of your code. The lint
+world's plugins log through a host function, so its trace looks like this:
 
 ```
 export-call lint
@@ -164,27 +260,6 @@ import-return watoots:example/log@0.1.0 emit
 export-return lint
   value [{line: 1, column: 1, severity: error, message: "unresolved TODO"}]
 ```
-
-Replaying needs the trace and the component, and nothing else — the manifest
-travels in the header, and the recording answers the plugin's imports in place
-of your application:
-
-```console
-$ watoots replay bug.wave -c lint.wasm --assert
-replay matched the trace (6 crossings)
-```
-
-Change one line of that file and CI notices:
-
-```
-replay diverged after 3 matching crossing(s):
-event 3:
-  expected: watoots:example/log@0.1.0#emit(hint, "9 diagnostic(s)")
-  actual:   watoots:example/log@0.1.0#emit(hint, "2 diagnostic(s)")
-```
-
-`--emit-test` writes a Rust test that performs the replay, so a bug report
-becomes a regression test with no host code around it.
 
 This is deliberately *not* Wasmtime's own `rr`, which records at the
 canonical-ABI level for bit-exact engine determinism in a binary format that is
@@ -247,9 +322,12 @@ StarlingMonkey needs it for `Date`. CPython links sockets at startup, which is
 why `net` is a grant for the *import* and never for a reachable host. You can
 see the whole bill before running anything.
 
-A second world, `examples/wit/asset`, is an image pipeline with the same four
-guests — larger payloads, a `variant`, a `result`, and the first example where
-the *plugin* itself needs the filesystem rather than its language runtime.
+Three worlds. `examples/wit/preview` is the previewer above — Rust and C++
+decoders, the codec on the untrusted side. `examples/wit/asset` is an image
+pipeline with all four guests: larger payloads, a `variant`, a `result`, and the
+first example where the *plugin* itself needs the filesystem rather than its
+language runtime. `examples/wit/lint` is the small hermetic world the test
+suite is built on.
 
 ## Rust
 
@@ -287,6 +365,8 @@ cargo test                              # host, trace, CLI
 cargo clippy --all-targets -- -D warnings
 
 tools/build-plugins.sh                  # sample plugins (Rust, C++, JS, Python)
+tools/demo-preview.sh                   # the previewer, the bomb, and its bug report
+tools/demo.sh                           # the lint world: deny, record, replay, reload
 
 cmake --preset dev && cmake --build --preset dev && ctest --preset dev
 tools/format.sh --check                 # clang-format, Google style

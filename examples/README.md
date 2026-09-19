@@ -1,11 +1,28 @@
 # Examples
 
-Two WIT worlds. The first is one world in four guest languages, with four
-different policies, because the languages do not cost the same. The second is
-the same four languages again, over a plugin that actually uses a capability —
-and a host application that owns a codec so no plugin has to.
+Three WIT worlds. Start with the third.
+
+`preview` is a file previewer whose format decoders are plugins — the codec on
+the untrusted side, parsing input the user got from the internet, under a
+policy that grants nothing the codec asked for. It is the example that shows
+what the sandbox is *for*, and `fixtures/preview/bomb.qoi` is the file that
+shows it: a valid image whose header claims 1 GiB. `tools/demo-preview.sh`
+walks the whole story, and [`../docs/WRITING-A-PLUGIN.md`](../docs/WRITING-A-PLUGIN.md)
+builds a plugin from nothing.
+
+`lint` is one small world in four guest languages, with four different
+policies, because the languages do not cost the same; it is also the hermetic
+world the test suite is built on. `asset` is the same four languages over a
+plugin that actually uses a capability, and a host that owns a codec so no
+plugin has to — the opposite trade from `preview`, and both are worth reading.
 
 ```
+wit/preview/preview.wit   a file-format decoder: bytes in, pixels out
+plugins/rust-qoi/         Rust,  via wit-bindgen        ~55 KB   needs clock + env (std)
+plugins/cpp-qoi/          C++,   via wasi-sdk           ~141 KB  needs env only
+fixtures/preview/         a real image, the bomb, a truncated file, a renamed one
+host-cpp-preview/         the viewer: N decoders, dispatch on magic bytes
+
 wit/lint/lint.wit     the world every lint sample implements
 plugins/rust-lint/    Rust,       via wit-bindgen        ~65 KB
 plugins/cpp-lint/     C++,        via wasi-sdk           ~724 KB
@@ -163,6 +180,24 @@ exact arithmetic — fixed-point Rec. 601 luma, `floor(x + 0.5)` rounding,
 truncating nearest-neighbour — because three more guest languages are meant to
 implement this world byte for byte, and `crates/host/tests/asset_e2e.rs` asserts
 values computed by hand from those rules rather than captured from a run.
+
+## The third host: the plugin owns the codec
+
+`host-cpp-preview` is the inverse of the one below, and the headline example.
+Decoders are installed as plugins; the host asks each `sniff` from the first
+sixteen bytes, gives the whole file to the first that says yes, and checks the
+pixel count against the dimensions before it trusts a byte. The bomb comes back
+as `WT_ERR_LIMIT_EXCEEDED` naming `limits.memory`, through the C API, with the
+process still running.
+
+```sh
+./build/dev/examples/host-cpp-preview/host_cpp_preview \
+    examples/policies/rust-qoi.toml \
+    examples/fixtures/preview/bomb.qoi /tmp/out.png \
+    examples/plugins/cpp-qoi/cpp_qoi.wasm examples/plugins/rust-qoi/rust_qoi.wasm
+```
+
+Two decoders installed there, so dispatch is real. The C++ one answers first.
 
 ## The second host: the application owns the codec
 

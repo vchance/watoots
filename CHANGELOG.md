@@ -27,6 +27,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   trusted, and the bomb reported as `WT_ERR_LIMIT_EXCEEDED` naming
   `limits.memory` through the C API. `tools/demo-preview.sh` walks the story.
 
+- **The previewer is the headline example.** The README opens with it — the
+  policy, the bomb, one line of stderr, process still running — and record/
+  replay is told through the bomb's recording, ending with the divergence that
+  appears when the embedded memory limit is raised. The linter keeps one job:
+  showing what a trace of host-import crossings looks like, which a decoder
+  with no imports cannot. `examples/README.md` and `CLAUDE.md` say the same.
+
 - `examples/common/wave_reader.hpp`: the C++ hosts' hand-written WAVE reader,
   shared rather than copied now that two hosts need it. Gained `Number64` for
   `u64` payloads.
