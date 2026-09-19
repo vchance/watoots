@@ -4,7 +4,22 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.6.0] — 2026-09-18
+
+The first release whose front door shows the product rather than a toy: a file
+previewer whose format decoders are plugins, and a valid image whose header
+claims 1 GiB that one line of policy refuses.
+
+**One behaviour change a C host can observe:** a plugin that hits
+`limits.memory` and aborts now returns `WT_ERR_LIMIT_EXCEEDED`, where 0.5.0
+returned `WT_ERR_TRAP` with "unreachable" as the message. The old answer was
+wrong — it sent whoever installed the plugin to debug it — but a host that
+branched on `WT_ERR_TRAP` for that case will see the new code. No enumerator
+moved and no function was added or removed; the C header is byte-identical to
+0.5.0's apart from that.
+
+`watoots record` now writes the trace when the call fails. It used to throw it
+away, which is the opposite of what a bug report needs.
 
 ### Added
 
@@ -493,7 +508,7 @@ First release. Both halves of the project work end to end.
 See [docs/SECURITY.md](docs/SECURITY.md) for what the sandbox does and does not
 protect against.
 
-[Unreleased]: https://github.com/vchance/watoots/compare/v0.5.0...HEAD
+[0.6.0]: https://github.com/vchance/watoots/releases/tag/v0.6.0
 [0.5.0]: https://github.com/vchance/watoots/releases/tag/v0.5.0
 [0.4.0]: https://github.com/vchance/watoots/releases/tag/v0.4.0
 [0.3.0]: https://github.com/vchance/watoots/releases/tag/v0.3.0
