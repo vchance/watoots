@@ -88,7 +88,7 @@ pub enum Requirement {
     /// Whether the interfaces may be *imported*, which is the only question
     /// watoots can answer: `net = "linked"` grants them with nothing reachable,
     /// which is what a CPython or JavaScript guest needs. There is no host
-    /// allowlist — see [`NetGrant`](crate::manifest::NetGrant) and ADR-0012.
+    /// allowlist — see [`NetGrant`] and ADR-0012.
     Network,
     /// `wasi:clocks/monotonic-clock`.
     MonotonicClock,

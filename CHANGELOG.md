@@ -19,6 +19,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the string, and `wave::WaveReader` now deletes its `std::string&&` constructor
   so the mistake is a compile error rather than a comment.
 
+- **No dependency-advisory scanning, and rustdoc never checked.** `cargo audit`
+  was clean — 344 dependencies, no matches — but nothing ran it, and an
+  advisory published against an unchanged lockfile would have gone unnoticed
+  indefinitely. A new `audit` workflow runs RustSec on every lockfile change and
+  weekly on a schedule. `cargo doc -D warnings` was also failing on a redundant
+  intra-doc link and a lib/bin name collision; both fixed, and it runs in CI.
+
 - **CI never ran the demos.** `tools/demo.sh` and `tools/demo-preview.sh` are
   the README's story executed end to end and each exits non-zero on a wrong
   outcome, but nothing ran them except a developer remembering to. Both run in

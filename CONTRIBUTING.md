@@ -50,11 +50,16 @@ CI runs exactly these. Run them before opening a pull request.
 cargo fmt --all --check
 cargo clippy --all-targets -- -D warnings
 cargo test --workspace
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 
 tools/format.sh --check          # clang-format
 cmake --preset dev && cmake --build --preset dev && ctest --preset dev
 tools/tidy.sh                    # clang-tidy
 ```
+
+A separate `audit` workflow runs `cargo audit` against `Cargo.lock` on every
+lockfile change and weekly on a schedule, because advisories arrive without
+commits. Run it locally with `cargo install cargo-audit && cargo audit`.
 
 CI additionally runs `cargo check` on the MSRV in `Cargo.toml`, which is the
 one gate you cannot usefully reproduce without installing that toolchain

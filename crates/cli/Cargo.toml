@@ -17,6 +17,10 @@ categories.workspace = true
 [[bin]]
 name = "watoots"
 path = "src/main.rs"
+# The binary and the `watoots` library would both document to
+# target/doc/watoots/, and cargo warns about the collision. A binary has no
+# public API to document, so it does not.
+doc = false
 
 [dependencies]
 clap = { version = "4.6.6", features = ["derive"] }

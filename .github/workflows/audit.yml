@@ -1,0 +1,37 @@
+name: audit
+
+# Dependency advisories, checked against Cargo.lock.
+#
+# Its own workflow rather than a step in CI, because advisories arrive without
+# a commit: a Cargo.lock that was clean on Monday can match a RustSec entry
+# published on Tuesday, and nothing in a push-triggered job would ever look
+# again. So this runs on a schedule as well as on any change to the lockfile.
+# For a project whose entire pitch is a sandbox, a vulnerable dependency is
+# the failure mode that matters most and is easiest to miss.
+on:
+  push:
+    paths:
+      - "**/Cargo.toml"
+      - "**/Cargo.lock"
+      - ".github/workflows/audit.yml"
+  pull_request:
+    paths:
+      - "**/Cargo.toml"
+      - "**/Cargo.lock"
+  schedule:
+    # Weekly, Monday 06:00 UTC.
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+jobs:
+  rustsec:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+      checks: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
