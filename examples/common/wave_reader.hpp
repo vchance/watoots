@@ -47,6 +47,14 @@ class WaveReader {
  public:
   explicit WaveReader(std::string_view text) : text_(text) {}
 
+  // A reader borrows; it does not own. Building one from a temporary string
+  // -- `WaveReader(value->value_or(""))` -- leaves it reading a dead stack
+  // slot after the semicolon, which worked in a plain build and was a
+  // stack-use-after-scope the first time the previewer ran under
+  // AddressSanitizer. This overload makes that a compile error instead. Name
+  // the string, then build the reader over it.
+  explicit WaveReader(std::string&&) = delete;
+
   [[nodiscard]] bool Ok() const { return !failed_; }
 
   // The first failure. Default-constructed, and meaningless, while `Ok()`.

@@ -8,6 +8,26 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **The previewer read a dead stack slot on every run.** `examples/host-cpp-
+  preview` built its WAVE reader over `format->value_or("")` — a temporary that
+  dies at the semicolon, leaving the reader's `string_view` dangling. The plain
+  build happened to work because nothing had overwritten the slot yet;
+  AddressSanitizer reported a stack-use-after-scope on every one of the
+  eighteen previewer tests the first time they ran under it, which was the
+  first time they ran under it at all (see the next entry). The asset host's
+  own comment warns about exactly this and I did not follow it. Fixed by naming
+  the string, and `wave::WaveReader` now deletes its `std::string&&` constructor
+  so the mistake is a compile error rather than a comment.
+
+- **CI never ran the example hosts.** The `cpp` job built `rust-lint` and
+  nothing else, and every `host_cpp_asset.*` and `host_cpp_preview.*` ctest is
+  gated on its component existing — so CI ran 89 tests while a developer's
+  machine ran 113, and the headline example's viewer had never run in CI. Both
+  the `cpp` and `sanitizers` jobs now build all four Rust guests, which puts
+  the previewer — the one host that parses untrusted input — under
+  LeakSanitizer as well. A skipped test looks exactly like a passing one in a
+  green badge, which is the reason to count.
+
 - **Concurrent first loads of the same component all compiled it.** The
   in-memory cache deduped only *after* the first insert, so a host that starts
   N workers and loads the same plugin in each missed N times at once and

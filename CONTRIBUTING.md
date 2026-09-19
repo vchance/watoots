@@ -121,7 +121,13 @@ tools/build-plugins.sh rust         # or name them:
 ```
 
 Only the Rust guests are built in CI, because `rustup` is the only toolchain it
-has. JavaScript needs Node and ComponentizeJS, Python needs `componentize-py`,
+has — all four of them (`rust`, `rust-asset`, `rust-qoi`, `rust-farbfeld`), so
+every C++ host runs there against at least its Rust guest, under the sanitizers
+too. For a while the workflow built only `rust-lint`, which meant every
+`host_cpp_asset.*` and `host_cpp_preview.*` test was silently skipped in CI and
+the headline example's viewer had never run there; they are gated on the
+component existing, and a skipped test looks exactly like a passing one in a
+green badge. JavaScript needs Node and ComponentizeJS, Python needs `componentize-py`,
 and C++ needs two things:
 
 ```sh

@@ -257,7 +257,13 @@ int main(int argc, char** argv) {
     if (!format) {
       return Fail(path + ": format", format.error());
     }
-    wave::WaveReader reader(format->value_or(""));
+    // Named, not a temporary: `WaveReader` borrows a `string_view`, so the
+    // answer has to outlive the reader. `value_or` returns by value, and a
+    // reader built straight from it reads a dead stack slot -- which worked in
+    // the plain build and was a stack-use-after-scope under AddressSanitizer,
+    // the first time this host ran under it.
+    const std::string format_text = format->value_or("");
+    wave::WaveReader reader(format_text);
     std::string name = reader.Text();
     if (!reader.Ok()) {
       return Fail(path + ": format", reader.Failure());
@@ -300,7 +306,11 @@ int main(int argc, char** argv) {
     }
 
     Failure failure;
-    auto image = ReadDecodeResult(decoded->value_or(""), failure);
+    // Same rule. The reader inside `ReadDecodeResult` only lives for the call,
+    // so a temporary would be safe today; naming it costs nothing and removes
+    // the refactor that would make it unsafe tomorrow.
+    const std::string decoded_text = decoded->value_or("");
+    auto image = ReadDecodeResult(decoded_text, failure);
     if (!image) {
       return Fail(decoder.format + ": answer", image.error());
     }

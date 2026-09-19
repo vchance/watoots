@@ -87,7 +87,12 @@ jobs:
           "$CLANG_TIDY" --version
 
       - run: tools/format.sh --check
-      - run: tools/build-plugins.sh rust
+      # Every guest a rustup toolchain can build. `rust` alone was the original
+      # line, and it meant every host_cpp_asset.* and host_cpp_preview.* test
+      # was silently skipped here -- they are gated on the component existing --
+      # so CI ran 89 ctests while a developer's machine ran 113, and the
+      # headline example's viewer had never run in CI at all.
+      - run: tools/build-plugins.sh rust rust-asset rust-qoi rust-farbfeld
       - run: cmake --preset dev
       - run: cmake --build --preset dev
       - run: ctest --preset dev
@@ -98,11 +103,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip2
       - uses: Swatinem/rust-cache@v2
       - run: sudo apt-get update && sudo apt-get install -y ninja-build
       # The failure mode of a Rust-backed C API is handle lifetime, which unit
       # tests do not catch on their own. LeakSanitizer is Linux-only, which is
       # why this job exists rather than being left to a developer's machine.
+      #
+      # The example hosts are the real consumers of that API, and the previewer
+      # is the one that parses untrusted input -- so they run under the
+      # sanitizers too. "Does the viewer leak when a decode is refused" is
+      # exactly the question this job exists to answer.
+      - run: tools/build-plugins.sh rust rust-asset rust-qoi rust-farbfeld
       - run: cmake --preset asan
       - run: cmake --build --preset asan
       - run: ctest --preset asan
