@@ -58,8 +58,10 @@ Exit code 1, one line of stderr naming the ceiling, and the process is still
 running. With the codec in-process that is an OOM kill — or, with a less honest
 header, the CVE. One manifest line.
 
-The same decoder exists in C++, built with wasi-sdk, and needs *less* than the
-Rust one: no clock, because wasi-libc links only what the code touches. A
+The same decoder exists in C++, JavaScript and Python. The C++ one needs *less*
+than the Rust one — no clock, because wasi-libc links only what the code
+touches — and the Python one needs every socket interface, because CPython
+links them at startup. Same decoder, four bills, none of them the author's. A
 second format, farbfeld, is a second plugin; install both and the host asks
 each one, from the first sixteen bytes, whether a file is its business. The
 host is not recompiled for any of it and never learns what either format looks
@@ -325,8 +327,11 @@ StarlingMonkey needs it for `Date`. CPython links sockets at startup, which is
 why `net` is a grant for the *import* and never for a reachable host. You can
 see the whole bill before running anything.
 
-Three worlds. `examples/wit/preview` is the previewer above — QOI in Rust and
-C++, farbfeld in Rust, the codec on the untrusted side. `examples/wit/asset` is an image
+Three worlds. `examples/wit/preview` is the previewer above — QOI in all four
+languages and farbfeld in Rust, the codec on the untrusted side. The four QOI
+decoders agree with the reference decoder to the byte and every one of them
+gets the bomb refused, including the ones running inside SpiderMonkey and
+CPython, which had no idea they were running a decoder. `examples/wit/asset` is an image
 pipeline with all four guests: larger payloads, a `variant`, a `result`, and the
 first example where the *plugin* itself needs the filesystem rather than its
 language runtime. `examples/wit/lint` is the small hermetic world the test

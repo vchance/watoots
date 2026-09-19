@@ -1,0 +1,29 @@
+# Policy for examples/plugins/py-qoi: the QOI decoder, in Python.
+#
+# The most expensive of the four QOI decoders, and the most instructive bill.
+# The decoder itself touches nothing but the bytes it is handed. CPython
+# touches: both clocks, the environment, the filesystem interfaces, random (it
+# seeds hash randomisation at startup), and every `wasi:sockets` interface,
+# because the `socket` module is linked whether or not anything imports it.
+# `net = "linked"` grants the *imports* and nothing reachable -- see ADR-0012.
+#
+# None of this is visible in app.py. All of it is visible in
+# `watoots inspect py_qoi.wasm`, which is the reason `inspect` exists.
+
+[permissions]
+clocks  = "wall"
+env     = {}
+random  = true
+fs.read = ["${plugin_dir}"]
+net     = "linked"
+
+# 256 MiB: an 18 MB CPython image needs room. Still a quarter of what the bomb
+# asks for, and CPython's `MemoryError` on the refused growth becomes the same
+# `limits.memory` refusal the native decoders produce.
+[limits]
+memory  = "256MiB"
+fuel    = 5_000_000_000
+timeout = "30s"
+
+[signature]
+required = false

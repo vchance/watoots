@@ -5,8 +5,8 @@ use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::RwLock;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Mutex, RwLock};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -185,6 +185,11 @@ struct HostInner {
     /// build it ever compiled. Hence [`COMPILED_CACHE_CAPACITY`] and
     /// `insertion_order`.
     compiled: RwLock<CompiledCache>,
+    /// One lock per component currently being compiled, keyed like `compiled`.
+    /// The first caller to miss on a key takes its lock and compiles; the rest
+    /// block on the same lock and then find the cache warm. Entries are removed
+    /// when the compile finishes, so this is empty whenever nothing is building.
+    in_flight: Mutex<BTreeMap<String, Arc<Mutex<()>>>>,
     /// How many components this host actually built, as opposed to reused.
     compiles: AtomicU64,
     trace: Option<Arc<dyn TraceHook>>,
@@ -238,9 +243,10 @@ impl CompiledCache {
 
     fn insert(&mut self, key: String, component: Component) {
         if self.by_key.insert(key.clone(), component).is_some() {
-            // Already present and already queued: two threads compiled the same
-            // bytes at once. Queueing the key twice would evict a live entry
-            // early and leave a dangling name behind it.
+            // Already present and already queued. `Host::compile` coalesces
+            // concurrent misses, so this should not happen; it is kept because
+            // queueing a key twice would evict a live entry early and leave a
+            // dangling name behind it, and a belt is cheap.
             return;
         }
         self.insertion_order.push_back(key);
@@ -650,23 +656,59 @@ impl Host {
     }
 
     /// Compile a component, going through the precompile cache when one is set.
+    ///
+    /// Concurrent misses on the same bytes are coalesced: one caller compiles
+    /// and the rest wait for it, rather than every caller compiling. Without
+    /// that, the cache only helped *after* the first load finished — and a
+    /// host that starts N workers and loads the same plugin in each misses N
+    /// times at once. Eight test threads doing exactly that on an 18 MB Python
+    /// guest took 220 seconds; single-threaded, the same suite took 53. The
+    /// `insert` comment below had anticipated the duplicate insert and let the
+    /// duplicate compile happen.
     fn compile(&self, wasm: &[u8]) -> Result<Component> {
         let key = self.cache_key(wasm);
 
         // Before the file cache and before compiling: the same bytes are the
         // same machine code, and the only thing an extra instance actually
         // needs is a fresh `Store`.
-        if let Ok(compiled) = self.inner.compiled.read()
-            && let Some(component) = compiled.get(&key)
-        {
-            return Ok(component.clone());
+        if let Some(component) = self.cached(&key) {
+            return Ok(component);
         }
 
-        let component = self.compile_uncached(wasm, &key)?;
-        if let Ok(mut compiled) = self.inner.compiled.write() {
-            compiled.insert(key, component.clone());
+        // Claim (or join) the compile for this key. The per-key lock is taken
+        // *outside* the cache lock, so a slow compile of one component never
+        // blocks lookups or compiles of another.
+        let flight = self.inner.in_flight.lock().map_or_else(
+            |poisoned| Arc::clone(poisoned.into_inner().entry(key.clone()).or_default()),
+            |mut map| Arc::clone(map.entry(key.clone()).or_default()),
+        );
+        let _building = flight.lock().unwrap_or_else(|p| p.into_inner());
+
+        // Whoever held the lock before us may have finished the job.
+        if let Some(component) = self.cached(&key) {
+            return Ok(component);
         }
-        Ok(component)
+
+        let built = self.compile_uncached(wasm, &key);
+        if let Ok(component) = &built
+            && let Ok(mut compiled) = self.inner.compiled.write()
+        {
+            compiled.insert(key.clone(), component.clone());
+        }
+        // A failed compile is not cached: the next caller retries, which is the
+        // right answer for a transient failure and harmless for a permanent one.
+        if let Ok(mut map) = self.inner.in_flight.lock() {
+            map.remove(&key);
+        }
+        built
+    }
+
+    fn cached(&self, key: &str) -> Option<Component> {
+        self.inner
+            .compiled
+            .read()
+            .ok()
+            .and_then(|compiled| compiled.get(key).cloned())
     }
 
     /// How many components this host has built — compiled, or read back from
@@ -1020,6 +1062,7 @@ impl HostBuilder {
         Ok(Host {
             inner: Arc::new(HostInner {
                 compiled: RwLock::new(CompiledCache::default()),
+                in_flight: Mutex::new(BTreeMap::new()),
                 compiles: AtomicU64::new(0),
                 engine,
                 trusted_keys: signature::parse_keys(&self.manifest.signature.keys)?,

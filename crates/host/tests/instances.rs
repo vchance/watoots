@@ -121,3 +121,50 @@ fn the_compiled_cache_is_bounded_and_forgets_the_oldest_first() {
         "oldest survived the bound"
     );
 }
+
+#[test]
+fn concurrent_first_loads_of_the_same_bytes_compile_once() {
+    // The thundering herd. Eight threads loading the same component at the
+    // same instant all miss the cache, and without coalescing all eight
+    // compile it -- which on an 18 MB interpreter guest turned a 53-second
+    // test suite into a 220-second one. The first caller compiles; the rest
+    // wait for it and find the cache warm.
+    let host = host();
+    let threads: Vec<_> = (0..8)
+        .map(|i| {
+            let host = host.clone();
+            std::thread::spawn(move || {
+                host.load_binary(&format!("t{i}"), COUNTER.as_bytes())
+                    .expect("load")
+            })
+        })
+        .collect();
+    for thread in threads {
+        thread.join().expect("thread");
+    }
+    assert_eq!(
+        host.compiles(),
+        1,
+        "eight simultaneous first loads must produce one compile, not eight"
+    );
+}
+
+#[test]
+fn a_slow_compile_of_one_component_does_not_block_another() {
+    // The per-key lock is taken outside the cache lock, so coalescing does not
+    // serialise *all* compiles -- only the redundant ones. Two different
+    // components loaded concurrently both build.
+    let host = host();
+    let other = format!("{COUNTER}\n;; a different component\n");
+    let a = {
+        let host = host.clone();
+        std::thread::spawn(move || host.load_binary("a", COUNTER.as_bytes()).expect("a"))
+    };
+    let b = {
+        let host = host.clone();
+        std::thread::spawn(move || host.load_binary("b", other.as_bytes()).expect("b"))
+    };
+    a.join().unwrap();
+    b.join().unwrap();
+    assert_eq!(host.compiles(), 2, "two distinct components, two compiles");
+}

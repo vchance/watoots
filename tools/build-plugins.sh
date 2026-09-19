@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build the sample plugins.
 #
-#   tools/build-plugins.sh [rust|rust-asset|rust-qoi|rust-farbfeld|cpp|cpp-asset|cpp-qoi|js|js-asset|py|py-asset]...
+#   tools/build-plugins.sh [rust|rust-asset|rust-qoi|rust-farbfeld|cpp|cpp-asset|cpp-qoi|js|js-asset|js-qoi|py|py-asset|py-qoi]...
 #
 # With no arguments, builds every guest whose toolchain is available and skips
 # the rest with a note. Each needs a different toolchain, which is the point:
@@ -197,6 +197,34 @@ if want cpp-asset; then
     cd "$root"
   else
     echo "skip cpp-asset: $cpp_skip"
+  fi
+fi
+
+if want js-qoi; then
+  # The third QOI decoder, in JavaScript. Its bill is the JS engine's, not the
+  # decoder's: StarlingMonkey links the wall clock and the filesystem
+  # interfaces whether or not the script touches them.
+  if command -v npm >/dev/null 2>&1; then
+    echo "==> js-qoi"
+    (cd examples/plugins/js-qoi && npm install --silent && npm run --silent build)
+  else
+    echo "skip js-qoi: npm not found"
+  fi
+fi
+
+if want py-qoi; then
+  # The fourth, in Python. CPython links every wasi:sockets interface at
+  # startup, which is the whole reason `net = "linked"` exists.
+  if command -v python3 >/dev/null 2>&1; then
+    echo "==> py-qoi"
+    cd "$root/examples/plugins/py-qoi"
+    [ -d .venv ] || python3 -m venv .venv
+    ./.venv/bin/pip install --quiet componentize-py
+    ./.venv/bin/componentize-py -d ../../wit/preview -w decoder \
+      componentize app -o py_qoi.wasm
+    cd "$root"
+  else
+    echo "skip py-qoi: python3 not found"
   fi
 fi
 

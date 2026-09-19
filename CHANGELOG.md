@@ -6,7 +6,26 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Concurrent first loads of the same component all compiled it.** The
+  in-memory cache deduped only *after* the first insert, so a host that starts
+  N workers and loads the same plugin in each missed N times at once and
+  compiled it N times. Found because `preview_e2e` with the JavaScript and
+  Python guests took 220 seconds in parallel and 53 single-threaded — the
+  signature of a thundering herd. Misses on the same key are now coalesced:
+  one caller compiles, the rest wait and find the cache warm. That suite runs
+  in 78 seconds. The per-key lock is taken outside the cache lock, so a slow
+  compile of one component never blocks another.
+
 ### Added
+
+- **QOI decoders in JavaScript and Python**, completing the four-language row
+  for the previewer. All four agree with the reference decoder to the byte,
+  and all four get the bomb refused as `limits.memory` — including the two
+  running inside SpiderMonkey and CPython, whose policies grant what an engine
+  needs (a wall clock, the filesystem interfaces, every socket) and nothing
+  the decoder asked for. Same decoder, four bills, none of them the author's.
 
 - **A second format for the previewer, so dispatch is real.** 0.6.0's "two
   decoders installed" test installed two QOI decoders, and the first one always

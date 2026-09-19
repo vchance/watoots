@@ -1,0 +1,27 @@
+# Policy for examples/plugins/js-qoi: the QOI decoder, in JavaScript.
+#
+# The largest bill of the three QOI decoders, and none of it is the decoder's.
+# StarlingMonkey -- the SpiderMonkey build ComponentizeJS embeds -- links the
+# wall clock (for `Date`) and the filesystem interfaces whether or not the
+# script touches them, and it is 12 MB against the Rust decoder's 55 KB. A
+# previewer that installs a JavaScript codec is granting a JavaScript engine,
+# and this file is what that costs, written down.
+#
+# `fs.read` is granted only the plugin's own directory: the engine wants the
+# interface linked, and this is the least that satisfies it.
+
+[permissions]
+clocks  = "wall"
+fs.read = ["${plugin_dir}"]
+
+# 128 MiB: a JS engine needs room a Rust binary does not. Still nowhere near
+# the 1 GiB the bomb asks for, so the sandbox refuses it exactly as it does
+# for the native decoders -- through a runtime that had no idea it was running
+# a decoder at all.
+[limits]
+memory  = "128MiB"
+fuel    = 2_000_000_000
+timeout = "10s"
+
+[signature]
+required = false

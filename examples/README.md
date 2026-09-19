@@ -20,6 +20,8 @@ plugin has to — the opposite trade from `preview`, and both are worth reading.
 wit/preview/preview.wit   a file-format decoder: bytes in, pixels out
 plugins/rust-qoi/         Rust,  via wit-bindgen        ~55 KB   needs clock + env (std)
 plugins/cpp-qoi/          C++,   via wasi-sdk           ~141 KB  needs env only
+plugins/js-qoi/           JS,    via ComponentizeJS     ~12 MB   needs wall clock + fs (the engine)
+plugins/py-qoi/           Python, via componentize-py   ~18 MB   needs everything (CPython)
 plugins/rust-farbfeld/    Rust,  a second *format*      ~53 KB   so dispatch is real
 fixtures/preview/         a real image in both formats, the bomb, a truncated file, a renamed one
 host-cpp-preview/         the viewer: N decoders, dispatch on magic bytes

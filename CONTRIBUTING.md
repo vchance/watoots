@@ -144,7 +144,10 @@ have stopped agreeing.
 That suite is cheap with the two Rust-toolchain guests and slow with all four: a
 ComponentizeJS component is ~14 MB and a componentize-py one ~18 MB, and a debug
 `cargo test` compiles each of them once per case. Expect it to take minutes
-rather than seconds once `js-asset` and `py-asset` are on disk. Deleting their
+rather than seconds once `js-asset` and `py-asset` are on disk. `preview_e2e`
+has the same four guests and shares one `Host` per guest across its tests, so
+each is compiled once per run; with `js-qoi` and `py-qoi` present it takes
+about eighty seconds, most of it those two compiles. Deleting their
 `.wasm` files puts it back where it was; that is also what CI sees.
 
 `tools/demo.sh` runs the whole story end to end — load a plugin, deny a

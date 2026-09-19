@@ -36,14 +36,28 @@ struct Guest {
     name: &'static str,
     wasm: PathBuf,
     policy: PathBuf,
+    /// One host per guest for the whole process, so the compiled component is
+    /// built once and every test's `open` is an instantiation. With a fresh
+    /// host per test the 12 MB JavaScript and 18 MB Python guests were compiled
+    /// eight times each and the suite took 221 seconds; this is the in-memory
+    /// compiled-component cache doing what it exists for. A `Host` is
+    /// `Send + Sync` and each `load` gets its own `Store`, so tests running in
+    /// parallel share nothing but machine code.
+    host: OnceLock<Host>,
 }
 
 impl Guest {
+    fn host(&self) -> &Host {
+        self.host.get_or_init(|| {
+            Host::builder()
+                .manifest(Manifest::from_file(&self.policy).expect("shipped policy parses"))
+                .build()
+                .expect("host")
+        })
+    }
+
     fn open(&self) -> watoots::Plugin {
-        Host::builder()
-            .manifest(Manifest::from_file(&self.policy).expect("shipped policy parses"))
-            .build()
-            .expect("host")
+        self.host()
             .load(&self.wasm)
             .unwrap_or_else(|err| panic!("{}: {}", self.name, err.message()))
     }
@@ -92,12 +106,14 @@ fn build_rust_farbfeld() -> &'static PathBuf {
 
 /// The second format's decoder. Not in `guests()`: those all decode QOI and
 /// are held to the same QOI assertions, and this one decodes something else.
-fn farbfeld() -> Guest {
-    Guest {
+fn farbfeld() -> &'static Guest {
+    static GUEST: OnceLock<Guest> = OnceLock::new();
+    GUEST.get_or_init(|| Guest {
         name: "rust-farbfeld",
         wasm: build_rust_farbfeld().clone(),
         policy: repo_root().join("examples/policies/rust-farbfeld.toml"),
-    }
+        host: OnceLock::new(),
+    })
 }
 
 fn guests() -> &'static [Guest] {
@@ -108,17 +124,39 @@ fn guests() -> &'static [Guest] {
             name: "rust-qoi",
             wasm: build_rust_qoi().clone(),
             policy: root.join("examples/policies/rust-qoi.toml"),
+            host: OnceLock::new(),
         }];
-        // The C++ guest needs wasi-sdk, so it is present on a machine that
-        // has run `tools/build-plugins.sh cpp-qoi` and absent otherwise.
-        // Absent is not a failure; present is held to every assertion below.
-        let cpp = root.join("examples/plugins/cpp-qoi/cpp_qoi.wasm");
-        if cpp.is_file() {
-            built.push(Guest {
-                name: "cpp-qoi",
-                wasm: cpp,
-                policy: root.join("examples/policies/cpp-qoi.toml"),
-            });
+        // The other three need toolchains `rustup` does not install -- wasi-sdk,
+        // an npm tree, a Python venv -- so each is present on a machine that
+        // has run `tools/build-plugins.sh` for it and absent otherwise. Absent
+        // is not a failure; present is held to every assertion below, including
+        // byte-for-byte agreement with the reference decoder and the bomb.
+        for (name, wasm, policy) in [
+            (
+                "cpp-qoi",
+                "examples/plugins/cpp-qoi/cpp_qoi.wasm",
+                "examples/policies/cpp-qoi.toml",
+            ),
+            (
+                "js-qoi",
+                "examples/plugins/js-qoi/js_qoi.wasm",
+                "examples/policies/js-qoi.toml",
+            ),
+            (
+                "py-qoi",
+                "examples/plugins/py-qoi/py_qoi.wasm",
+                "examples/policies/py-qoi.toml",
+            ),
+        ] {
+            let wasm = root.join(wasm);
+            if wasm.is_file() {
+                built.push(Guest {
+                    name,
+                    wasm,
+                    policy: root.join(policy),
+                    host: OnceLock::new(),
+                });
+            }
         }
         built
     })
@@ -272,12 +310,8 @@ fn every_shipped_preview_policy_grants_exactly_what_its_decoder_imports() {
     // The decoder asks for nothing; what the policy grants is what the
     // toolchain dragged in. `inspect` has to be satisfied and nothing more.
     for guest in guests() {
-        let host = Host::builder()
-            .manifest(Manifest::from_file(&guest.policy).unwrap())
-            .build()
-            .unwrap();
         let wasm = std::fs::read(&guest.wasm).unwrap();
-        let report = host.inspect(&wasm).unwrap();
+        let report = guest.host().inspect(&wasm).unwrap();
         assert!(
             report.is_satisfied(),
             "{}: {}",

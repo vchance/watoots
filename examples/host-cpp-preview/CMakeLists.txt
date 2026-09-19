@@ -16,7 +16,7 @@ set(fixtures ${PROJECT_SOURCE_DIR}/examples/fixtures/preview)
 # Every built decoder, through the same four inputs. The bomb is the test that
 # matters: it has to *fail*, cleanly, naming the ceiling, with the process
 # exiting normally -- which is what a real viewer would need from it.
-foreach(sample rust cpp)
+foreach(sample rust cpp js py)
   set(component ${PROJECT_SOURCE_DIR}/examples/plugins/${sample}-qoi/${sample}_qoi.wasm)
   set(policy ${PROJECT_SOURCE_DIR}/examples/policies/${sample}-qoi.toml)
   if(EXISTS ${component})
