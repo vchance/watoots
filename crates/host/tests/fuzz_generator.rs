@@ -168,7 +168,17 @@ fn entropy() -> impl Strategy<Value = Vec<u8>> {
 /// alphabetical: `{write, exec}` parses back as `["exec", "write"]`.
 ///
 /// Reported upstream as
-/// [wasm-tools#2640](https://github.com/bytecodealliance/wasm-tools/issues/2640).
+/// [wasm-tools#2640](https://github.com/bytecodealliance/wasm-tools/issues/2640)
+/// and **fixed** on 2026-09-28 by
+/// [#2678](https://github.com/bytecodealliance/wasm-tools/pull/2678), which
+/// makes `to_wasm_flags` pass the flags in the *type's declaration* order —
+/// the order wasmtime lifts them in, so a hand-written value now compares
+/// equal to a lifted one as well. That fix cannot reach us yet: it landed
+/// after 0.259.0 and is in no release, and the 0.254 line has only 0.254.0, so
+/// the first version carrying it will be semver-incompatible with the copy
+/// Wasmtime 48 pins. It arrives with an engine major, and the exception below
+/// goes with it — see the note on the pinned test.
+///
 /// It is left alone rather than corrected here. It is upstream of watoots — a
 /// wrapper is all `crates/host/src/wave.rs` is meant to be, per ADR-0004 — and
 /// it changes nothing that record/replay depends on: a trace stores the
@@ -385,9 +395,18 @@ fn wave_sorts_a_flag_set_on_the_way_back_in() {
     // Left alone deliberately: it is upstream (reported as wasm-tools#2640),
     // and nothing watoots does depends on the order — a trace compares
     // rendered text, and lowering a flag set into a guest maps labels to bits.
-    // If a future wasm-wave stops sorting, this test fails and `values_agree`
-    // can lose its exception. That failure is the signal the issue was fixed,
-    // so read it as news rather than as a regression.
+    //
+    // It is fixed upstream, in wasm-tools#2678 (2026-09-28): the parser now
+    // yields flags in the type's *declaration* order. So this test is a
+    // countdown, not a permanent statement. It cannot fail on 0.254.0, which
+    // is the only release in the line Wasmtime 48 pins; it will fail the first
+    // time an engine major pulls in a wasm-wave that carries the fix, and the
+    // expected value below becomes ["write", "exec"] — declaration order for a
+    // world declaring read, write, exec.
+    //
+    // When that happens: flip this assertion, delete `values_agree`'s flags
+    // exception, and rename this test. The failure is the news, not a
+    // regression. Whoever writes the engine-bump ADR should expect it.
     let ty = zoo_types()
         .iter()
         .find(|ty| {

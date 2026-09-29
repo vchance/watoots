@@ -171,3 +171,15 @@ than deciding case by case which ones look important.
 The version numbers in the body above are left as they were. They record what
 was read on the day, and rewriting them to the current release would turn a
 dated observation into a claim about the present.
+
+**One thing an engine *major* will bring, noted here because this is the list
+people check at a bump.** `wasm-tools#2678` (2026-09-28) fixed the flag-ordering
+bug watoots reported as `#2640`: WAVE now parses a flag set in the type's
+declaration order rather than alphabetically. The fix is in no release yet and
+the first one carrying it will be semver-incompatible with the `wasm-wave
+0.254.0` Wasmtime 48 pins, so it cannot be taken on this line — a second
+`wasm-wave` means a second `wasmparser`, which ADR-0004 and ADR-0007 both
+forbid. When a major moves us forward,
+`crates/host/tests/fuzz_generator.rs::wave_sorts_a_flag_set_on_the_way_back_in`
+will fail by design and `values_agree` loses its flags exception. That failure
+is the fix arriving, not a regression.

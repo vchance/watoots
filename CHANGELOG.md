@@ -6,6 +6,25 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **The flag-ordering bug we reported upstream is fixed** —
+  [wasm-tools#2678](https://github.com/bytecodealliance/wasm-tools/pull/2678)
+  closed [#2640](https://github.com/bytecodealliance/wasm-tools/issues/2640) on
+  2026-09-28, and took the better of the two resolutions offered: WAVE now
+  parses a flag set in the type's *declaration* order, which is the order
+  wasmtime lifts flags in, so a hand-written value compares equal to a lifted
+  one too. It also fixed a second bug found next to it — `{%read}` was rejected
+  as `unknown case "%read"` although the syntax docs allow the `%` prefix.
+
+  **Nothing changes here yet.** The fix landed after `0.259.0` and is in no
+  release, and the only release in the line Wasmtime 48 pins is `0.254.0`, so
+  the first version carrying it will be semver-incompatible with the engine —
+  and a second `wasm-wave` means a second `wasmparser`. It arrives with an
+  engine major, at which point `wave_sorts_a_flag_set_on_the_way_back_in` fails
+  by design and `values_agree` loses its flags exception. Both say so, and
+  ADR-0013's engine-bump list now names it.
+
 ### Fixed
 
 - **The previewer read a dead stack slot on every run.** `examples/host-cpp-
