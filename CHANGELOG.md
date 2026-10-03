@@ -4,7 +4,43 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.6.1] — 2026-10-03
+
+**A security release. Anyone on 0.6.0 or earlier should move.** No API change:
+the C header is byte-identical to 0.6.0's and no public Rust item moved —
+verified, not assumed.
+
+### Security
+
+- **Wasmtime 48.0.2 → 48.0.5, clearing ten advisories**, including
+  [RUSTSEC-2026-0327](https://rustsec.org/advisories/RUSTSEC-2026-0327)
+  (**9.3 critical**: a component async-lifted callback's result count was
+  unvalidated, causing a native stack buffer overflow). The rest are GC heap
+  corruption via `try_call` rooting and mis-typed tag imports, two fuel-accounting
+  escapes, `fd_readdir` copying uninitialised struct padding into guest memory,
+  a host panic from a filesystem datetime overflow, and unbounded host allocation
+  when a guest has no stdio.
+
+  **One of them was a hole in a ceiling this project documents.**
+  [RUSTSEC-2026-0316](https://rustsec.org/advisories/RUSTSEC-2026-0316) —
+  "dynamic record lifting can allocate beyond the hostcall fuel limit" — is
+  `limits.transfer`. Upstream's advisory says it affects only the `Val` API and
+  that `bindgen!` hosts are unaffected; watoots is a `Val` host by design
+  (ADR-0004) and its whole C surface is dynamic, so this was the advisory aimed
+  squarely at us. `docs/MANIFEST.md` says `transfer` "bounds what the host
+  allocates while lifting what a guest hands it". On 48.0.2 a record could
+  exceed that by as much as ~100x. It holds again on 48.0.5.
+
+  Found by running `cargo audit` as part of this release rather than by waiting
+  for the weekly job — the advisories landed on 2 October and the next scheduled
+  run was 5 October. The audit workflow was not at fault: its 28 September run
+  was correct against a database that did not yet carry these.
+
+  This is also the argument of [ADR-0013](docs/adr/0013-wasi-p3-position.md)
+  paying out. The case for staying on the 48 LTS line was that a sandbox cannot
+  depend on a release line that does not ship security patches. Ten arrived on
+  the line, in patches, needing no major bump and no ADR. ADR-0012's and
+  ADR-0013's own claims were re-checked against 48.0.5 and all three still hold.
 
 ### Changed
 
@@ -598,7 +634,7 @@ First release. Both halves of the project work end to end.
 See [docs/SECURITY.md](docs/SECURITY.md) for what the sandbox does and does not
 protect against.
 
-[Unreleased]: https://github.com/vchance/watoots/compare/v0.6.0...HEAD
+[0.6.1]: https://github.com/vchance/watoots/releases/tag/v0.6.1
 [0.6.0]: https://github.com/vchance/watoots/releases/tag/v0.6.0
 [0.5.0]: https://github.com/vchance/watoots/releases/tag/v0.5.0
 [0.4.0]: https://github.com/vchance/watoots/releases/tag/v0.4.0

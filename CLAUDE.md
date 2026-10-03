@@ -12,6 +12,11 @@ same content as the published scoping page (read-only reference).
 
 ## Hard constraints
 - Engine: **Wasmtime 48.x** (LTS line). Do not bump majors without an ADR.
+  **Take its patches promptly**: on 2026-10-02 the line got ten advisories at
+  once, one of them 9.3 critical and one a hole in `limits.transfer` that hit
+  `Val`-API hosts specifically. `cargo audit` is the check; run it when cutting
+  a release rather than trusting the weekly job, which can be up to seven days
+  behind an advisory.
 - Guest target: **WASI 0.2.x**. Do not depend on `wasmtime-wasi::p3`: it
   documents that security fixes limited to wasip3 get no patch release, which a
   sandbox cannot take. ADR-0013 records the two conditions that would change
@@ -137,14 +142,20 @@ M5 shipped: `docs/MANIFEST.md`, a root `SECURITY.md` (reporting policy)
 alongside `docs/SECURITY.md` (threat model), `CONTRIBUTING.md`,
 `CODE_OF_CONDUCT.md`, issue forms, a manifest-first README, `tools/demo.sh`,
 `CHANGELOG.md`. The repo is public at `github.com/vchance/watoots` and crate
-metadata points at it. Tags `v0.0.0` through `v0.6.0`
+metadata points at it. Tags `v0.0.0` through `v0.6.1`
 are all on the remote; **crates.io has only the `0.0.0` name placeholders** and
 no release is published there, so the README tells people to build from the tag.
 
-**Current release: v0.6.0** (2026-09-18): the previewer, two QOI decoders, the
-bomb, and two fixes it found (memory ceilings reported as the ceiling; `record`
-keeps a failed call's trace). 0.4.0 shipped signing off by default and is the
-one release anyone on it should move off.
+**Current release: v0.6.1** (2026-10-03): a **security release**. Wasmtime
+48.0.2 -> 48.0.5 clears ten advisories including a 9.3 critical, one of which
+(RUSTSEC-2026-0316) was a hole in `limits.transfer` and aimed at `Val`-API
+hosts specifically -- which watoots is by design. Found by running `cargo audit`
+during the release, not by the weekly job. Plus two fixes to shipped 0.6.0 --
+concurrent first loads of one component compiled it once per thread, and the
+previewer read a dangling `string_view` -- plus QOI decoders in JS and Python,
+farbfeld as a second format, and the CI coverage that found the second bug
+(the example hosts and the demos had never run there). Anyone on 0.6.0 should
+move. 0.4.0 shipped signing off by default and is the other release to leave.
 
 **Work landing after a tag goes in the CHANGELOG's `[Unreleased]` section, not
 the tagged one.** Appending to a released version's entry claims things that
