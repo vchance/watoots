@@ -935,7 +935,18 @@ impl Plugin {
                 )
             })?;
 
-        let result_count = func.ty(&self.store).results().len();
+        // Before anything is entered, so a host's own mistake -- a `string`
+        // where the world says `u32` -- is an error for the host and not, as
+        // wasmtime would otherwise make it, a trap that poisons the instance.
+        // See `typecheck.rs`.
+        let ty = func.ty(&self.store);
+        let params: Vec<(String, Type)> = ty
+            .params()
+            .map(|(name, ty)| (name.to_owned(), ty))
+            .collect();
+        crate::typecheck::check_args(&self.name, export, &params, args)?;
+
+        let result_count = ty.results().len();
         let mut results = vec![Val::Bool(false); result_count];
 
         arm(&mut self.store, &self.limits, &self.name)?;

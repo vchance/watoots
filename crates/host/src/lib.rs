@@ -48,6 +48,7 @@ mod profile;
 mod registry;
 pub mod signature;
 pub mod trace;
+mod typecheck;
 pub mod wave;
 
 pub use audit::{AuditEvent, AuditHook, Ceiling, Verdict};
