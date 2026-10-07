@@ -136,7 +136,7 @@ a boundary profiler; reload; an audit trail (ADR-0011); a compiled-component
 cache; signature verification at load (ADR-0014); and `watoots diff`.
 **Every v0.2 candidate in the spec is done.**
 
-After 0.6.1 (unreleased): a typed `wt_val_t` path through the C API (ADR-0004
+0.7.0 (2026-10-07): a typed `wt_val_t` path through the C API (ADR-0004
 addendum), `Plugin::call` type-checking arguments *before* entering the
 component (a mismatch found by wasmtime inside the call poisons the instance
 -- `crates/host/src/typecheck.rs` says why), the README re-led with replay,
@@ -150,11 +150,12 @@ M5 shipped: `docs/MANIFEST.md`, a root `SECURITY.md` (reporting policy)
 alongside `docs/SECURITY.md` (threat model), `CONTRIBUTING.md`,
 `CODE_OF_CONDUCT.md`, issue forms, a manifest-first README, `tools/demo.sh`,
 `CHANGELOG.md`. The repo is public at `github.com/vchance/watoots` and crate
-metadata points at it. Tags `v0.0.0` through `v0.6.1`
+metadata points at it. Tags `v0.0.0` through `v0.7.0`
 are all on the remote; **crates.io has only the `0.0.0` name placeholders** and
 no release is published there, so the README tells people to build from the tag.
 
-**Current release: v0.6.1** (2026-10-03): a **security release**. Wasmtime
+**Current release: v0.7.0** (2026-10-07): the typed C API path, the argument
+precheck, and the replay-first README. Before it, **v0.6.1** (2026-10-03) was a **security release**. Wasmtime
 48.0.2 -> 48.0.5 clears ten advisories including a 9.3 critical, one of which
 (RUSTSEC-2026-0316) was a hole in `limits.transfer` and aimed at `Val`-API
 hosts specifically -- which watoots is by design. Found by running `cargo audit`

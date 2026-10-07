@@ -1,6 +1,6 @@
 # watoots
 
-> **v0.6.1 is tagged, not published.** crates.io holds only the `0.0.0`
+> **v0.7.0 is tagged, not published.** crates.io holds only the `0.0.0`
 > placeholders that reserve the names, so build from the tag. The API can still
 > change between 0.x releases. Everything below works and is tested in CI.
 
@@ -350,7 +350,7 @@ Rust 1.95+ (whatever Wasmtime 48 requires), CMake 3.28+, a C++20 compiler.
 
 ## Status
 
-**v0.6.1**, pre-1.0: the API can still move between 0.x releases. Both halves
+**v0.7.0**, pre-1.0: the API can still move between 0.x releases. Both halves
 work and are tested end to end in CI. crates.io holds only the `0.0.0`
 placeholders that reserve the names, so build from the tag.
 
