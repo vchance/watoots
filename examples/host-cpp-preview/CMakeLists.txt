@@ -7,7 +7,6 @@
 # populates `watoots_stb` for the whole tree; this host only links it.
 add_executable(host_cpp_preview main.cc stb_impl.cc)
 target_link_libraries(host_cpp_preview PRIVATE watoots::capi watoots_stb)
-target_include_directories(host_cpp_preview PRIVATE ${PROJECT_SOURCE_DIR}/examples/common)
 target_compile_features(host_cpp_preview PRIVATE cxx_std_20)
 target_compile_options(host_cpp_preview PRIVATE ${WATOOTS_STRICT_FLAGS})
 

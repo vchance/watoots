@@ -920,3 +920,109 @@ TEST(CApi, NoAuditHookMeansNoAuditTrailAndNoBehaviourChange) {
   ASSERT_TRUE(returned.has_value());
   EXPECT_EQ(returned.value_or(""), "42");
 }
+
+// A borrowed view of an optional value, or a null view and a test failure.
+// `bugprone-unchecked-optional-access` cannot see through gtest's assertion
+// macros, and every accessor on a null `ValRef` answers `nullopt`, so a test
+// reads through this and the failure is still reported where it happened.
+wt::ValRef Must(const std::optional<wt::ValRef>& ref) {
+  EXPECT_TRUE(ref.has_value()) << "expected a value";
+  return ref.value_or(wt::ValRef(nullptr));
+}
+
+wt::ValRef Must(const std::optional<wt::Val>& val) {
+  if (!val.has_value()) {
+    ADD_FAILURE() << "expected a value";
+    return wt::ValRef(nullptr);
+  }
+  return wt::ValRef(val->Raw());
+}
+
+TEST(CApi, ATypedCallCarriesValuesWithoutText) {
+  const wt::Host host = BuildHost();
+  const std::string wasm = kCounterV1;
+  auto plugin = host.LoadBinary("counter", AsBytes(wasm));
+  ASSERT_TRUE(plugin.has_value()) << plugin.error().Message();
+
+  std::vector<wt::Val> args;
+  args.push_back(wt::Val::U32(5));
+  auto bumped = plugin->Call("bump", args);
+  ASSERT_TRUE(bumped.has_value()) << bumped.error().Message();
+  EXPECT_FALSE(bumped->has_value()) << "bump returns nothing";
+
+  auto got = plugin->Call("get", std::span<const wt::Val>{});
+  ASSERT_TRUE(got.has_value()) << got.error().Message();
+  const wt::ValRef value = Must(*got);
+  EXPECT_EQ(value.Kind(), WT_VAL_U32);
+  EXPECT_EQ(value.AsU64().value_or(0), 5U);
+  EXPECT_EQ(value.AsS64().value_or(0), 5);
+  EXPECT_FALSE(value.AsString().has_value()) << "a u32 is not a string";
+  EXPECT_EQ(value.ToWave().value_or(""), "5");
+
+  // The two paths are one call: the WAVE overload sees the typed bump.
+  auto text = plugin->Call("get");
+  ASSERT_TRUE(text.has_value()) << text.error().Message();
+  EXPECT_EQ(text->value_or(""), "5");
+}
+
+TEST(CApi, AWrongKindOfArgumentIsTheCallersFaultNotATrap) {
+  const wt::Host host = BuildHost();
+  const std::string wasm = kCounterV1;
+  auto plugin = host.LoadBinary("counter", AsBytes(wasm));
+  ASSERT_TRUE(plugin.has_value()) << plugin.error().Message();
+
+  std::vector<wt::Val> args;
+  args.push_back(wt::Val::String("five"));
+  auto bumped = plugin->Call("bump", args);
+  ASSERT_FALSE(bumped.has_value());
+  EXPECT_EQ(bumped.error().Code(), WT_ERR_INVALID_ARGUMENT)
+      << bumped.error().Message();
+  EXPECT_NE(bumped.error().Message().find("type mismatch"), std::string::npos)
+      << bumped.error().Message();
+}
+
+TEST(CApi, ValuesBuildAndReadBackEveryShapeAPluginReturns) {
+  // The previewer's `result<image, failure>`, built by hand and walked the way
+  // the previewer walks it.
+  const std::vector<uint8_t> pixels{1, 2, 3, 255, 4, 5, 6, 255};
+  std::vector<std::pair<const char*, wt::Val>> fields;
+  fields.emplace_back("width", wt::Val::U32(2));
+  fields.emplace_back("height", wt::Val::U32(1));
+  fields.emplace_back("pixels", wt::Val::Bytes(pixels));
+  const wt::Val image = wt::Val::Ok(wt::Val::Record(std::move(fields)));
+  ASSERT_TRUE(image.Valid());
+
+  EXPECT_EQ(image.Kind(), WT_VAL_RESULT);
+  EXPECT_EQ(image.IsOk().value_or(false), true);
+  const wt::ValRef record = Must(image.Payload());
+  EXPECT_EQ(record.Size(), 3U);
+  EXPECT_EQ(record.FieldName(2).value_or(""), "pixels");
+  const wt::ValRef field = Must(record.Field("pixels"));
+  EXPECT_EQ(field.Size(), pixels.size());
+  EXPECT_EQ(field.AsBytes().value_or(std::vector<uint8_t>{}), pixels);
+  EXPECT_FALSE(record.Field("depth").has_value());
+  EXPECT_EQ(image.ToWave().value_or(""),
+            "ok({width: 2, height: 1, pixels: [1, 2, 3, 255, 4, 5, 6, 255]})");
+
+  const wt::Val truncated =
+      wt::Val::Err(wt::Val::Variant("truncated", wt::Val::U64(9)));
+  EXPECT_EQ(truncated.IsOk().value_or(true), false);
+  const wt::ValRef why = Must(truncated.Payload());
+  EXPECT_EQ(why.Case().value_or(""), "truncated");
+  EXPECT_EQ(Must(why.Payload()).AsU64().value_or(0), 9U);
+
+  const wt::Val bare = wt::Val::Variant("not-this-format", std::nullopt);
+  EXPECT_FALSE(bare.Payload().has_value());
+  EXPECT_EQ(bare.ToWave().value_or(""), "not-this-format");
+
+  // A clone is a deep copy that outlives the original.
+  wt::Val original = wt::Val::String("keep");
+  const wt::Val copy = original.Clone();
+  original = wt::Val::None();
+  EXPECT_EQ(copy.AsString().value_or(""), "keep");
+  EXPECT_EQ(original.IsOk().value_or(true), false);
+
+  // What a constructor cannot build is a null, not a crash.
+  EXPECT_FALSE(wt::Val::Char(0xD800).Valid());
+  EXPECT_FALSE(wt::Val::String("\xff\xfe").Valid());
+}

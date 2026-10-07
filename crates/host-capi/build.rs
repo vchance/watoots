@@ -10,6 +10,7 @@ use std::path::PathBuf;
 fn main() {
     let crate_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     println!("cargo:rerun-if-changed=src/lib.rs");
+    println!("cargo:rerun-if-changed=src/value.rs");
     println!("cargo:rerun-if-changed=cbindgen.toml");
 
     let Ok(bindings) = cbindgen::generate(&crate_dir) else {

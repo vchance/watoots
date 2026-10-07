@@ -260,10 +260,14 @@ not advertise is refused by name, before a single pixel is marshalled.
 
 ### What the WAVE round trip costs
 
-Images cross the C API as **WAVE text**. `wt_plugin_call` takes
-`const char* const*`; there is no binary path, and adding one is a separate
-decision, not something an example gets to make. The honest accounting, from one
-run of a 960×960 image through `grayscale, lut` on the Rust guest, built with
+Images cross this host as **WAVE text**: `wt_plugin_call` takes
+`const char* const*`. This host was written before the C API had a typed path
+and is kept on text deliberately, because the accounting below is the reason
+that path exists. `host-cpp-preview` is the same trade made the other way:
+its file goes in as `wt::Val::Bytes` and its pixels come back through
+`AsBytes()`, one copy each way and no text. New hosts moving bytes should read
+it, not this. The honest accounting of the text path, from one run of a
+960×960 image through `grayscale, lut` on the Rust guest, built with
 `--preset release`:
 
 ```
@@ -307,6 +311,7 @@ fuel allocated for hostcalls has been exhausted
 ```
 
 A 1024×1024 image goes *in* fine — only guest-to-host data is metered — and
-cannot come back. That is a property of the dynamic `Val` path, which is the
-only path the C API offers; it is not `limits.fuel`, and raising that does not
-help.
+cannot come back. That is a property of the dynamic `Val` path, which both C
+call paths share — the typed one skips the text, not the `Vec<Val>`; it is not
+`limits.fuel`, and raising that does not help. `limits.transfer` is the knob,
+and `docs/MANIFEST.md` says why it is measured in `Val`s rather than bytes.

@@ -5,6 +5,12 @@
 // cannot take. Naming is `wt_` snake_case per ADR-0001 rather than the Google
 // C++ naming that watoots.hpp follows.
 
+// A typed WIT value. Opaque: build one with a `wt_val_*` constructor and read
+// it with a `wt_val_as_*` accessor. Declared here by hand because the Rust
+// struct is `repr(transparent)` over wasmtime's `Val`, which cbindgen would
+// otherwise render as a typedef of a type this header has never heard of.
+typedef struct wt_val_t wt_val_t;
+
 #ifndef WATOOTS_H_
 #define WATOOTS_H_
 
@@ -114,6 +120,34 @@ typedef enum wt_function_kind {
   // A function the host serves and the component imported.
   WT_FUNCTION_IMPORT = 1,
 } wt_function_kind;
+
+// Which WIT kind a value is. `WT_VAL_OTHER` is a value this API cannot
+// express -- a resource handle, a stream, a future -- which can be passed
+// through unchanged but not built or read.
+typedef enum wt_val_kind {
+  WT_VAL_BOOL = 0,
+  WT_VAL_S8 = 1,
+  WT_VAL_U8 = 2,
+  WT_VAL_S16 = 3,
+  WT_VAL_U16 = 4,
+  WT_VAL_S32 = 5,
+  WT_VAL_U32 = 6,
+  WT_VAL_S64 = 7,
+  WT_VAL_U64 = 8,
+  WT_VAL_F32 = 9,
+  WT_VAL_F64 = 10,
+  WT_VAL_CHAR = 11,
+  WT_VAL_STRING = 12,
+  WT_VAL_LIST = 13,
+  WT_VAL_RECORD = 14,
+  WT_VAL_TUPLE = 15,
+  WT_VAL_VARIANT = 16,
+  WT_VAL_ENUM = 17,
+  WT_VAL_OPTION = 18,
+  WT_VAL_RESULT = 19,
+  WT_VAL_FLAGS = 20,
+  WT_VAL_OTHER = 21,
+} wt_val_kind;
 
 // An error: a status code and a message.
 typedef struct wt_error_t wt_error_t;
@@ -712,6 +746,196 @@ enum wt_status wt_plugin_call(struct wt_plugin_t *plugin,
                               size_t args_len,
                               char **result_out,
                               struct wt_error_t **error_out);
+
+// The WIT spelling of a kind, e.g. `"list"`. Never NULL; static storage.
+const char *wt_val_kind_name(enum wt_val_kind kind);
+
+// A `bool`.
+wt_val_t *wt_val_bool(bool value);
+
+// An `s8`.
+wt_val_t *wt_val_s8(int8_t value);
+
+// A `u8`.
+wt_val_t *wt_val_u8(uint8_t value);
+
+// An `s16`.
+wt_val_t *wt_val_s16(int16_t value);
+
+// A `u16`.
+wt_val_t *wt_val_u16(uint16_t value);
+
+// An `s32`.
+wt_val_t *wt_val_s32(int32_t value);
+
+// A `u32`.
+wt_val_t *wt_val_u32(uint32_t value);
+
+// An `s64`.
+wt_val_t *wt_val_s64(int64_t value);
+
+// A `u64`.
+wt_val_t *wt_val_u64(uint64_t value);
+
+// An `f32`.
+wt_val_t *wt_val_f32(float value);
+
+// An `f64`.
+wt_val_t *wt_val_f64(double value);
+
+// A `char`, from a Unicode scalar value. NULL if `codepoint` is a surrogate
+// or out of range -- WIT `char` is a scalar value, not a code unit.
+wt_val_t *wt_val_char(uint32_t codepoint);
+
+// A `string`, from `len` bytes of UTF-8 that need not be NUL-terminated.
+// NULL if the bytes are not valid UTF-8.
+wt_val_t *wt_val_string(const char *utf8, size_t len);
+
+// A `string` from a NUL-terminated C string. NULL if not valid UTF-8.
+wt_val_t *wt_val_cstring(const char *text);
+
+// A `list<u8>` from a byte buffer. This is the constructor the WAVE path has
+// no answer to: the bytes are copied once and never rendered as text.
+wt_val_t *wt_val_bytes(const uint8_t *data, size_t len);
+
+// A `list<T>` of `len` items, which it takes ownership of. NULL if any item
+// is NULL; the others are still freed.
+wt_val_t *wt_val_list(wt_val_t *const *items, size_t len);
+
+// A `tuple<...>` of `len` items, which it takes ownership of. NULL if any
+// item is NULL; the others are still freed.
+wt_val_t *wt_val_tuple(wt_val_t *const *items, size_t len);
+
+// A `record` of `len` fields, `names[i]` holding `values[i]`. Takes ownership
+// of the values. NULL if a name or a value is NULL, or a name is not UTF-8;
+// the values are still freed. Field order is the WIT declaration order.
+wt_val_t *wt_val_record(const char *const *names,
+                        wt_val_t *const *values,
+                        size_t len);
+
+// A `variant` case, with its payload or NULL for a case that carries none.
+// Takes ownership of the payload.
+wt_val_t *wt_val_variant(const char *case_name, wt_val_t *payload);
+
+// An `enum` case.
+wt_val_t *wt_val_enum(const char *case_name);
+
+// An `option<T>`: `some(value)`, or `none` when `value` is NULL. Takes
+// ownership of the value.
+wt_val_t *wt_val_option(wt_val_t *value);
+
+// A `result`'s `ok` case, with its payload or NULL for a result whose ok
+// type is absent. Takes ownership of the payload.
+wt_val_t *wt_val_ok(wt_val_t *payload);
+
+// A `result`'s `err` case, with its payload or NULL for a result whose err
+// type is absent. Takes ownership of the payload.
+wt_val_t *wt_val_err(wt_val_t *payload);
+
+// A `flags` value with `len` flags set, by name. NULL if a name is NULL or
+// not UTF-8.
+wt_val_t *wt_val_flags(const char *const *names, size_t len);
+
+// A deep copy. NULL only if `value` is NULL.
+wt_val_t *wt_val_clone(const wt_val_t *value);
+
+// Free a value and everything inside it. NULL is a no-op.
+void wt_val_delete(wt_val_t *value);
+
+// Render a value as WAVE text, to free with `wt_string_delete`. NULL if the
+// value is NULL or has no WAVE spelling (a resource, a stream, a future).
+char *wt_val_to_wave(const wt_val_t *value);
+
+// Which kind `value` is. `WT_VAL_OTHER` for NULL.
+enum wt_val_kind wt_val_kind_of(const wt_val_t *value);
+
+// Read a `bool`. False if `value` is not one; `*out` is then untouched.
+bool wt_val_as_bool(const wt_val_t *value, bool *out);
+
+// Read any integer that fits in an `int64_t`: every signed kind, and every
+// unsigned one up to `u64` values below 2^63. False otherwise.
+bool wt_val_as_s64(const wt_val_t *value, int64_t *out);
+
+// Read any non-negative integer: every unsigned kind, and every signed one
+// holding a value of zero or more. False otherwise.
+bool wt_val_as_u64(const wt_val_t *value, uint64_t *out);
+
+// Read an `f32` or `f64` as a double. False otherwise.
+bool wt_val_as_f64(const wt_val_t *value, double *out);
+
+// Read a `char` as its Unicode scalar value. False otherwise.
+bool wt_val_as_char(const wt_val_t *value, uint32_t *out);
+
+// Borrow a `string` as `len` bytes of UTF-8, **not NUL-terminated**. False if
+// `value` is not a string. The pointer lives as long as `value`.
+bool wt_val_as_string(const wt_val_t *value, const char **data, size_t *len);
+
+// Copy a `list<u8>` out into `out`, which holds `cap` bytes.
+//
+// False if `value` is not a list whose every item is a `u8`. Otherwise `*len`
+// is set to the list's length and the first `min(len, cap)` bytes are
+// written, so a NULL `out` with a zero `cap` sizes the buffer, and a caller
+// that finds `*len > cap` afterwards knows the copy was cut short. An empty
+// list is a `list<u8>`.
+bool wt_val_as_bytes(const wt_val_t *value,
+                     uint8_t *out,
+                     size_t cap,
+                     size_t *len);
+
+// How many items a `list` or `tuple` has, fields a `record` has, or flags a
+// `flags` value has set. Zero for anything else.
+size_t wt_val_len(const wt_val_t *value);
+
+// Borrow item `index` of a `list` or `tuple`. NULL if out of range or not
+// one of those. Lives as long as `value`.
+const wt_val_t *wt_val_item(const wt_val_t *value, size_t index);
+
+// Borrow a `record` field by name. NULL if there is no such field or `value`
+// is not a record. Lives as long as `value`.
+const wt_val_t *wt_val_field(const wt_val_t *value, const char *name);
+
+// Borrow `record` field number `index`, in declaration order. NULL if out of
+// range or not a record.
+const wt_val_t *wt_val_field_at(const wt_val_t *value, size_t index);
+
+// Borrow the name of `record` field number `index`, **not NUL-terminated**,
+// writing its length to `*len`. NULL if out of range or not a record.
+const char *wt_val_field_name(const wt_val_t *value, size_t index, size_t *len);
+
+// Borrow the case name of a `variant` or `enum`, **not NUL-terminated**.
+// False if `value` is neither.
+bool wt_val_case(const wt_val_t *value, const char **name, size_t *len);
+
+// Borrow the payload of a `variant` case, an `option`'s `some`, or a
+// `result`'s `ok` or `err`. NULL when there is none: a payload-less case,
+// `none`, or a result side without a type. Use `wt_val_is_ok` to tell `none`
+// from `some(unit)` and `ok` from `err`.
+const wt_val_t *wt_val_payload(const wt_val_t *value);
+
+// Whether a `result` is `ok`, or an `option` is `some`. False if `value` is
+// neither; `*out` is then untouched.
+bool wt_val_is_ok(const wt_val_t *value, bool *out);
+
+// Borrow the name of set flag number `index` of a `flags` value, **not
+// NUL-terminated**. NULL if out of range or not a flags value.
+const char *wt_val_flag_at(const wt_val_t *value, size_t index, size_t *len);
+
+// Call an exported function with typed arguments.
+//
+// The typed twin of `wt_plugin_call`: the same limits, the same trace and
+// audit events, no text in between. `args` are borrowed, not consumed. On
+// success `*result_out` is either NULL, when the function returns nothing, or
+// an owned value to free with [`wt_val_delete`].
+//
+// An argument of the wrong kind for the parameter is reported as
+// `WT_ERR_INVALID_ARGUMENT` by the component's own type check, before any
+// guest code runs.
+enum wt_status wt_plugin_call_vals(struct wt_plugin_t *plugin,
+                                   const char *export_,
+                                   const wt_val_t *const *args,
+                                   size_t args_len,
+                                   wt_val_t **result_out,
+                                   struct wt_error_t **error_out);
 
 #ifdef __cplusplus
 }  // extern "C"

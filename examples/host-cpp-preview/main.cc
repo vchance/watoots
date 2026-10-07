@@ -24,6 +24,12 @@
 //   kill, and not "wasm trap: unreachable". It prints one line and exits
 //   cleanly. That line is the reason this example exists.
 //
+// - Bytes cross as bytes. The file goes in as `wt::Val::Bytes` and the pixels
+//   come back through `AsBytes()`: the typed call path, not the WAVE text one
+//   the lint host uses. A linter's arguments are a few words; a codec's are a
+//   file, and a file rendered as `[113, 111, 105, ...]` is four characters per
+//   byte on both sides of the boundary.
+//
 // The audit hook is installed and forwards ceiling events to stderr, because a
 // viewer that can say "the QOI codec hit its memory limit on this file" is a
 // viewer whose user knows what happened.
@@ -45,7 +51,6 @@
 #include "watoots.hpp"
 
 #include "stb_image_write.h"
-#include "wave_reader.hpp"
 
 namespace {
 
@@ -67,7 +72,7 @@ int Fail(std::string_view what, const wt::Error& error) {
 }
 
 // ---------------------------------------------------------------------------
-// The decoder's answers, read out of WAVE
+// The decoder's answers
 // ---------------------------------------------------------------------------
 
 struct Image {
@@ -82,111 +87,95 @@ struct Failure {
   std::string description;
 };
 
-// `ok({width: W, height: H, pixels: [..]})` or `err(<failure>)`.
-wt::Result<std::optional<Image>> ReadDecodeResult(std::string_view text,
-                                                  Failure& failure) {
-  wave::WaveReader reader(text);
+wt::Error Malformed(std::string what) {
+  return {WT_ERR_INVALID_ARGUMENT,
+          "the decoder's answer is not an image: " + std::move(what)};
+}
 
-  if (reader.Take('e')) {
-    reader.Expect("rr(");
-    const std::string which = reader.Word();
-    if (which == "not-this-format") {
-      failure.not_this_format = true;
-    } else if (which == "truncated") {
-      reader.Expect('(');
-      const uint64_t missing = reader.Number64();
-      reader.Expect(')');
-      failure.description =
-          "truncated: about " + std::to_string(missing) + " more needed";
-    } else if (which == "corrupt") {
-      reader.Expect('(');
-      failure.description = "corrupt: " + reader.Text();
-      reader.Expect(')');
-    } else {
-      reader.Reject("unknown failure case " + which);
+// `result<image, failure>`, walked rather than parsed. Every accessor answers
+// `nullopt` for a value of the wrong kind, and this host treats each one as a
+// refusal: the plugin's answer has to be the shape its world declares before a
+// byte of it is used.
+wt::Result<std::optional<Image>> ReadDecodeResult(wt::ValRef answer,
+                                                  Failure& failure) {
+  const std::optional<bool> ok = answer.IsOk();
+  if (!ok.has_value()) {
+    return wt::unexpected(Malformed("not a result"));
+  }
+
+  if (!*ok) {
+    const std::optional<wt::ValRef> why = answer.Payload();
+    const std::optional<std::string_view> which =
+        why ? why->Case() : std::nullopt;
+    if (!which.has_value()) {
+      return wt::unexpected(Malformed("an err with no failure case"));
     }
-    reader.Expect(')');
-    if (!reader.Ok()) {
-      return wt::unexpected(reader.Failure());
+    if (*which == "not-this-format") {
+      failure.not_this_format = true;
+    } else if (*which == "truncated") {
+      const std::optional<wt::ValRef> missing = why->Payload();
+      const std::optional<uint64_t> count =
+          missing ? missing->AsU64() : std::nullopt;
+      failure.description = "truncated: about " +
+                            std::to_string(count.value_or(0)) + " more needed";
+    } else if (*which == "corrupt") {
+      const std::optional<wt::ValRef> text = why->Payload();
+      const std::optional<std::string_view> reason =
+          text ? text->AsString() : std::nullopt;
+      failure.description = "corrupt: " + std::string(reason.value_or(""));
+    } else {
+      return wt::unexpected(
+          Malformed("unknown failure case " + std::string(*which)));
     }
     return std::optional<Image>{};
   }
 
-  reader.Expect("ok({");
+  const std::optional<wt::ValRef> record = answer.Payload();
+  if (!record.has_value()) {
+    return wt::unexpected(Malformed("an ok with no image"));
+  }
+  const std::optional<wt::ValRef> width = record->Field("width");
+  const std::optional<wt::ValRef> height = record->Field("height");
+  const std::optional<wt::ValRef> pixels = record->Field("pixels");
+  const std::optional<uint64_t> w = width ? width->AsU64() : std::nullopt;
+  const std::optional<uint64_t> h = height ? height->AsU64() : std::nullopt;
+  if (!w || !h || !pixels) {
+    return wt::unexpected(Malformed("missing width, height or pixels"));
+  }
   Image image;
-  reader.Expect("width:");
-  image.width = reader.Number();
-  reader.Expect(',');
-  reader.Expect("height:");
-  image.height = reader.Number();
-  reader.Expect(',');
-  reader.Expect("pixels:");
-  reader.Expect('[');
+  image.width = static_cast<uint32_t>(*w);
+  image.height = static_cast<uint32_t>(*h);
 
   // The check that matters. The dimensions are the decoder's claim; the byte
   // count is what it actually handed over, and they have to agree before this
-  // host reads a single pixel.
+  // host reads a single pixel. `AsBytes` is one copy out of the value, which
+  // is the whole of what the pixels cost on this side.
+  std::optional<std::vector<uint8_t>> rgba = pixels->AsBytes();
+  if (!rgba.has_value()) {
+    return wt::unexpected(Malformed("pixels is not a list<u8>"));
+  }
   const uint64_t expected =
       static_cast<uint64_t>(image.width) * image.height * 4;
-  image.rgba.reserve(static_cast<size_t>(expected));
-  while (reader.Ok() && !reader.Peek(']')) {
-    const uint32_t byte = reader.Number();
-    if (byte > 255) {
-      reader.Reject("a pixel byte over 255");
-      break;
-    }
-    if (image.rgba.size() == expected) {
-      reader.Reject("more pixel bytes than width * height * 4");
-      break;
-    }
-    image.rgba.push_back(static_cast<unsigned char>(byte));
-    reader.Take(',');
-  }
-  reader.Expect(']');
-  reader.Expect("})");
-  if (!reader.Ok()) {
-    return wt::unexpected(reader.Failure());
-  }
-  if (image.rgba.size() != expected) {
-    return wt::unexpected(wave::Unreadable(
-        "the decoder returned " + std::to_string(image.rgba.size()) +
+  if (rgba->size() != expected) {
+    return wt::unexpected(Malformed(
+        "the decoder returned " + std::to_string(rgba->size()) +
         " pixel bytes for a " + std::to_string(image.width) + "x" +
         std::to_string(image.height) + " image; refusing to trust it"));
   }
+  image.rgba.assign(rgba->begin(), rgba->end());
   return std::optional<Image>{std::move(image)};
-}
-
-// ---------------------------------------------------------------------------
-// Writing WAVE
-// ---------------------------------------------------------------------------
-
-// A `list<u8>` as text. This is the honest cost of the C API's text-only call
-// path, and examples/README.md says what it costs; for a previewer it is fine,
-// and for a video decoder it would not be.
-std::string WaveBytes(std::span<const unsigned char> bytes) {
-  std::string out;
-  out.reserve(bytes.size() * 4 + 2);
-  out.push_back('[');
-  for (size_t i = 0; i < bytes.size(); ++i) {
-    if (i != 0) {
-      out.push_back(',');
-    }
-    out += std::to_string(bytes[i]);
-  }
-  out.push_back(']');
-  return out;
 }
 
 // ---------------------------------------------------------------------------
 // Files
 // ---------------------------------------------------------------------------
 
-std::optional<std::vector<unsigned char>> ReadFile(const std::string& path) {
+std::optional<std::vector<uint8_t>> ReadFile(const std::string& path) {
   std::ifstream in(path, std::ios::binary);
   if (!in) {
     return std::nullopt;
   }
-  return std::vector<unsigned char>(std::istreambuf_iterator<char>(in), {});
+  return std::vector<uint8_t>(std::istreambuf_iterator<char>(in), {});
 }
 
 bool WritePng(const std::string& path, const Image& image) {
@@ -253,22 +242,18 @@ int main(int argc, char** argv) {
     if (!plugin) {
       return Fail(path, plugin.error());
     }
-    auto format = plugin->Call("format");
+    auto format = plugin->Call("format", std::span<const wt::Val>{});
     if (!format) {
       return Fail(path + ": format", format.error());
     }
-    // Named, not a temporary: `WaveReader` borrows a `string_view`, so the
-    // answer has to outlive the reader. `value_or` returns by value, and a
-    // reader built straight from it reads a dead stack slot -- which worked in
-    // the plain build and was a stack-use-after-scope under AddressSanitizer,
-    // the first time this host ran under it.
-    const std::string format_text = format->value_or("");
-    wave::WaveReader reader(format_text);
-    std::string name = reader.Text();
-    if (!reader.Ok()) {
-      return Fail(path + ": format", reader.Failure());
+    // The borrowed string_view lives as long as the `Val` it was read from,
+    // which is the `format` result; copy it out before that goes away.
+    const std::optional<std::string_view> name =
+        format->has_value() ? (*format)->AsString() : std::nullopt;
+    if (!name.has_value()) {
+      return Fail(path + ": format", Malformed("not a string"));
     }
-    decoders.push_back({std::move(*plugin), std::move(name)});
+    decoders.push_back({std::move(*plugin), std::string(*name)});
   }
 
   auto bytes = ReadFile(input_path);
@@ -279,22 +264,28 @@ int main(int argc, char** argv) {
 
   // Dispatch on the magic bytes. Each decoder sees at most kSniffBytes and
   // answers yes or no; the first yes gets the whole file.
-  const std::span<const unsigned char> prefix(
-      bytes->data(), std::min(bytes->size(), kSniffBytes));
-  const std::vector<std::string> sniff_args{WaveBytes(prefix)};
+  const std::span<const uint8_t> prefix(bytes->data(),
+                                        std::min(bytes->size(), kSniffBytes));
+  std::vector<wt::Val> sniff_args;
+  sniff_args.push_back(wt::Val::Bytes(prefix));
 
   for (Decoder& decoder : decoders) {
     auto sniffed = decoder.plugin.Call("sniff", sniff_args);
     if (!sniffed) {
       return Fail(decoder.format + ": sniff", sniffed.error());
     }
-    if (sniffed->value_or("") != "true") {
+    const std::optional<bool> yes =
+        sniffed->has_value() ? (*sniffed)->AsBool() : std::nullopt;
+    if (!yes.value_or(false)) {
       continue;
     }
 
     std::cerr << "preview: " << input_path << " looks like " << decoder.format
               << "; decoding\n";
-    const std::vector<std::string> decode_args{WaveBytes(*bytes)};
+    // The whole file, copied once into a `list<u8>`. This is the argument the
+    // text path could not carry well, and the reason this host is typed.
+    std::vector<wt::Val> decode_args;
+    decode_args.push_back(wt::Val::Bytes(std::span<const uint8_t>(*bytes)));
     auto decoded = decoder.plugin.Call("decode", decode_args);
     if (!decoded) {
       // This is where the bomb lands. The sandbox refused the allocation, the
@@ -305,12 +296,11 @@ int main(int argc, char** argv) {
       return Fail(decoder.format + ": decode", decoded.error());
     }
 
+    if (!decoded->has_value()) {
+      return Fail(decoder.format + ": answer", Malformed("no value"));
+    }
     Failure failure;
-    // Same rule. The reader inside `ReadDecodeResult` only lives for the call,
-    // so a temporary would be safe today; naming it costs nothing and removes
-    // the refactor that would make it unsafe tomorrow.
-    const std::string decoded_text = decoded->value_or("");
-    auto image = ReadDecodeResult(decoded_text, failure);
+    auto image = ReadDecodeResult(**decoded, failure);
     if (!image) {
       return Fail(decoder.format + ": answer", image.error());
     }

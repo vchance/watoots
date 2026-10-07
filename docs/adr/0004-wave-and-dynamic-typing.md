@@ -58,3 +58,41 @@ pointer. So:
   strings. That is the point: it is a shared spelling, and diverging would cost
   more than it bought.
 - Upgrading wasmtime means checking the `wasm-wave` pin moves with it.
+
+## Addendum (2026-10-07): a typed path beside the text one
+
+WAVE stays the format of the trace and of `wt_plugin_call`, and this decision
+stands. What changed is that the C API is no longer *only* text.
+
+The previewer made the cost concrete. A codec's argument is a file and its
+result is a pixel buffer, and WAVE renders a `list<u8>` as four characters per
+byte: `examples/README.md` measured a 2.6 MiB image as 11.5 MiB of argument,
+12.5 MiB of answer, and ~125 ms of text conversion the profiler could not even
+see. The C++ previewer carried a hand-written WAVE parser to read its pixels
+back. That is the wrong shape for the audience this project is for, whose first
+act with a plugin API is to pass a buffer.
+
+`wt_val_t` is `wasmtime::component::Val` behind an opaque pointer -- a
+constructor and an accessor per WIT kind, and `wt_plugin_call_vals`. It is not
+a second serialisation: there is no format, the value is built in place and
+handed to the same `Plugin::call` the WAVE path reaches after parsing. The two
+paths therefore share limits, trace events and audit, and a recording made
+through one replays through the other, which is the property that made this
+safe to add without touching the trace format.
+
+Two consequences, both deliberate:
+
+- **Argument type checking moved before the call.** The WAVE path could not
+  produce a mismatched `Val` because it parsed text against the parameter type;
+  the typed path can, and wasmtime reports a mismatch from inside the call in a
+  way that poisons the instance. `crates/host/src/typecheck.rs` walks each
+  argument first, so a host's mistake is `InvalidArgument` and the plugin
+  survives it.
+- **The `Vec<Val>` cost stays.** A `list<u8>` is still one `Val` per byte on
+  the host side -- 48 bytes each -- and `limits.transfer` is still measured in
+  those. The typed path removes the text, not the dynamic representation; a
+  Rust host that needs the last of it uses `bindgen!`, as before.
+
+Host functions (`wt_host_func_t`) remain text-only. Their payloads in every
+example are a level and a message, and a typed callback signature is a second
+surface to add when a host has a reason, not before.

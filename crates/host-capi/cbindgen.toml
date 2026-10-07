@@ -20,7 +20,13 @@ header = """
 //             cppcoreguidelines-use-enum-class, performance-enum-size)
 // This file is C, and the checks above are C++-only advice a C ABI header
 // cannot take. Naming is `wt_` snake_case per ADR-0001 rather than the Google
-// C++ naming that watoots.hpp follows."""
+// C++ naming that watoots.hpp follows.
+
+// A typed WIT value. Opaque: build one with a `wt_val_*` constructor and read
+// it with a `wt_val_as_*` accessor. Declared here by hand because the Rust
+// struct is `repr(transparent)` over wasmtime's `Val`, which cbindgen would
+// otherwise render as a typedef of a type this header has never heard of.
+typedef struct wt_val_t wt_val_t;"""
 
 trailer = """
 // NOLINTEND(readability-identifier-naming, modernize-use-using,
@@ -29,6 +35,7 @@ trailer = """
 
 [export]
 prefix = ""
+exclude = ["wt_val_t"]
 
 [enum]
 prefix_with_name = false

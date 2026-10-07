@@ -47,6 +47,27 @@ const ECHO: &str = r#"
 )
 "#;
 
+/// `ECHO` for bytes: a `list<u8>` in, the same `list<u8>` out. The canonical
+/// ABI's work is identical to the string case per byte; what differs is the
+/// text form, which is four characters per byte instead of one.
+const ECHO_BYTES: &str = r#"
+(component
+  (core module $m
+    (memory (export "memory") 256)
+    (func (export "echo") (param i32 i32) (result i32)
+      (i32.store (i32.const 1024) (local.get 0))
+      (i32.store (i32.const 1028) (local.get 1))
+      (i32.const 1024))
+    (func (export "cabi_realloc") (param i32 i32 i32 i32) (result i32)
+      (i32.const 65536)))
+  (core instance $i (instantiate $m))
+  (func $echo (param "b" (list u8)) (result (list u8))
+    (canon lift (core func $i "echo")
+      (memory $i "memory") (realloc (func $i "cabi_realloc"))))
+  (export "echo" (func $echo))
+)
+"#;
+
 /// Spins for a fixed number of iterations, so per-instruction costs have
 /// something to act on.
 ///
@@ -190,6 +211,24 @@ fn marshalling(c: &mut Criterion) {
     let mut p = plugin(&host, ECHO);
     group.bench_function("call_wave/string", |b| {
         b.iter(|| black_box(p.call_wave("echo", &[r#""notes.md""#]).expect("call")));
+    });
+
+    // The case the typed C path exists for: a payload that is bytes rather
+    // than words. 64 KiB is a small image's worth, or one network read. The
+    // typed call pays the canonical ABI's copy and `Vec<Val>` per byte; the
+    // WAVE call pays those *and* rendering `[12, 34, ...]` on the way in and
+    // parsing it back on the way out.
+    let bytes: Vec<u8> = (0..65536u32).map(|i| (i % 251) as u8).collect();
+    let arg = Val::List(bytes.iter().copied().map(Val::U8).collect());
+    let mut p = plugin(&host, ECHO_BYTES);
+    group.bench_function("call/bytes-64KiB", |b| {
+        b.iter(|| black_box(p.call("echo", std::slice::from_ref(&arg)).expect("call")));
+    });
+
+    let text = watoots::to_wave(&arg).expect("render");
+    let mut p = plugin(&host, ECHO_BYTES);
+    group.bench_function("call_wave/bytes-64KiB", |b| {
+        b.iter(|| black_box(p.call_wave("echo", &[&text]).expect("call")));
     });
 
     group.finish();

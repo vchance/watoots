@@ -6,6 +6,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 #include <version>
@@ -250,6 +251,294 @@ inline Error TakeError(wt_status status, wt_error_t* raw) {
 
 /// A WAVE-encoded value, or nothing when a function returns no value.
 using Value = std::optional<std::string>;
+
+/// A borrowed typed WIT value: the view every accessor works on.
+///
+/// Valid for as long as the `Val` it was read out of. Each `As*` accessor
+/// answers `nullopt` when the value is not that kind, so a host that reads a
+/// field it expected and gets nothing back has learned the plugin returned
+/// something other than its world declares -- and has not read a byte of it.
+///
+/// Borrowed strings are copied into `std::string_view`s that point into the
+/// value, so they too live only as long as it does.
+class ValRef {
+ public:
+  explicit ValRef(const wt_val_t* raw) noexcept : raw_(raw) {}
+
+  [[nodiscard]] const wt_val_t* Raw() const noexcept { return raw_; }
+
+  [[nodiscard]] wt_val_kind Kind() const noexcept {
+    return wt_val_kind_of(raw_);
+  }
+
+  [[nodiscard]] std::optional<bool> AsBool() const noexcept {
+    bool out = false;
+    return wt_val_as_bool(raw_, &out) ? std::optional{out} : std::nullopt;
+  }
+
+  /// Any signed integer, or an unsigned one below 2^63.
+  [[nodiscard]] std::optional<int64_t> AsS64() const noexcept {
+    int64_t out = 0;
+    return wt_val_as_s64(raw_, &out) ? std::optional{out} : std::nullopt;
+  }
+
+  /// Any unsigned integer, or a signed one that is not negative.
+  [[nodiscard]] std::optional<uint64_t> AsU64() const noexcept {
+    uint64_t out = 0;
+    return wt_val_as_u64(raw_, &out) ? std::optional{out} : std::nullopt;
+  }
+
+  /// An `f32` or `f64`.
+  [[nodiscard]] std::optional<double> AsF64() const noexcept {
+    double out = 0;
+    return wt_val_as_f64(raw_, &out) ? std::optional{out} : std::nullopt;
+  }
+
+  [[nodiscard]] std::optional<char32_t> AsChar() const noexcept {
+    uint32_t out = 0;
+    return wt_val_as_char(raw_, &out)
+               ? std::optional{static_cast<char32_t>(out)}
+               : std::nullopt;
+  }
+
+  [[nodiscard]] std::optional<std::string_view> AsString() const noexcept {
+    const char* data = nullptr;
+    size_t len = 0;
+    if (!wt_val_as_string(raw_, &data, &len)) {
+      return std::nullopt;
+    }
+    return std::string_view(data, len);
+  }
+
+  /// A `list<u8>`, copied out. `nullopt` if any item is not a `u8`.
+  [[nodiscard]] std::optional<std::vector<uint8_t>> AsBytes() const {
+    size_t len = 0;
+    if (!wt_val_as_bytes(raw_, nullptr, 0, &len)) {
+      return std::nullopt;
+    }
+    std::vector<uint8_t> out(len);
+    wt_val_as_bytes(raw_, out.data(), out.size(), &len);
+    return out;
+  }
+
+  /// Items of a list or tuple, fields of a record, or flags set. Zero for
+  /// anything else.
+  [[nodiscard]] size_t Size() const noexcept { return wt_val_len(raw_); }
+
+  /// Item `index` of a list or tuple.
+  [[nodiscard]] std::optional<ValRef> Item(size_t index) const noexcept {
+    return Wrap(wt_val_item(raw_, index));
+  }
+
+  /// A record field by name.
+  [[nodiscard]] std::optional<ValRef> Field(const char* name) const noexcept {
+    return Wrap(wt_val_field(raw_, name));
+  }
+
+  /// Record field `index`, in declaration order, and its name.
+  [[nodiscard]] std::optional<ValRef> FieldAt(size_t index) const noexcept {
+    return Wrap(wt_val_field_at(raw_, index));
+  }
+  [[nodiscard]] std::optional<std::string_view> FieldName(
+      size_t index) const noexcept {
+    size_t len = 0;
+    const char* name = wt_val_field_name(raw_, index, &len);
+    if (name == nullptr) {
+      return std::nullopt;
+    }
+    return std::string_view(name, len);
+  }
+
+  /// The case name of a variant or enum.
+  [[nodiscard]] std::optional<std::string_view> Case() const noexcept {
+    const char* name = nullptr;
+    size_t len = 0;
+    if (!wt_val_case(raw_, &name, &len)) {
+      return std::nullopt;
+    }
+    return std::string_view(name, len);
+  }
+
+  /// The payload of a variant case, an option's `some`, or either side of a
+  /// result; `nullopt` when there is none.
+  [[nodiscard]] std::optional<ValRef> Payload() const noexcept {
+    return Wrap(wt_val_payload(raw_));
+  }
+
+  /// Whether a result is `ok` or an option is `some`.
+  [[nodiscard]] std::optional<bool> IsOk() const noexcept {
+    bool out = false;
+    return wt_val_is_ok(raw_, &out) ? std::optional{out} : std::nullopt;
+  }
+
+  /// The name of set flag `index` of a flags value.
+  [[nodiscard]] std::optional<std::string_view> FlagAt(
+      size_t index) const noexcept {
+    size_t len = 0;
+    const char* name = wt_val_flag_at(raw_, index, &len);
+    if (name == nullptr) {
+      return std::nullopt;
+    }
+    return std::string_view(name, len);
+  }
+
+  /// The value as WAVE text, for a log line or a trace. `nullopt` for a value
+  /// WAVE cannot spell.
+  [[nodiscard]] std::optional<std::string> ToWave() const {
+    char* text = wt_val_to_wave(raw_);
+    if (text == nullptr) {
+      return std::nullopt;
+    }
+    std::string out(text);
+    wt_string_delete(text);
+    return out;
+  }
+
+ protected:
+  static std::optional<ValRef> Wrap(const wt_val_t* raw) noexcept {
+    if (raw == nullptr) {
+      return std::nullopt;
+    }
+    return ValRef(raw);
+  }
+
+  /// For `Val`, which owns what this views and has to be able to let go of it.
+  void SetRaw(const wt_val_t* raw) noexcept { raw_ = raw; }
+
+ private:
+  const wt_val_t* raw_;
+};
+
+/// An owned typed WIT value: what the typed `Plugin::Call` takes and returns.
+///
+/// Build one with the static constructors below, read it through the `ValRef`
+/// accessors it inherits. A constructor that takes child values moves them in,
+/// so a `Val` is only ever inside one other `Val`. Move-only; `Clone()` is the
+/// explicit deep copy.
+///
+/// This is the path for payloads that are bytes rather than words: `Bytes()`
+/// copies a buffer once, where the WAVE path would render every byte as text
+/// and parse it back on the other side.
+class Val : public ValRef {
+ public:
+  /// Takes ownership of a value from the C API.
+  explicit Val(wt_val_t* raw) noexcept : ValRef(raw) {}
+  ~Val() { wt_val_delete(Mutable()); }
+
+  Val(const Val&) = delete;
+  Val& operator=(const Val&) = delete;
+  Val(Val&& other) noexcept : ValRef(other.Raw()) { other.SetRaw(nullptr); }
+  Val& operator=(Val&& other) noexcept {
+    if (this != &other) {
+      wt_val_delete(Mutable());
+      SetRaw(other.Raw());
+      other.SetRaw(nullptr);
+    }
+    return *this;
+  }
+
+  static Val Bool(bool value) { return Val(wt_val_bool(value)); }
+  static Val S8(int8_t value) { return Val(wt_val_s8(value)); }
+  static Val U8(uint8_t value) { return Val(wt_val_u8(value)); }
+  static Val S16(int16_t value) { return Val(wt_val_s16(value)); }
+  static Val U16(uint16_t value) { return Val(wt_val_u16(value)); }
+  static Val S32(int32_t value) { return Val(wt_val_s32(value)); }
+  static Val U32(uint32_t value) { return Val(wt_val_u32(value)); }
+  static Val S64(int64_t value) { return Val(wt_val_s64(value)); }
+  static Val U64(uint64_t value) { return Val(wt_val_u64(value)); }
+  static Val F32(float value) { return Val(wt_val_f32(value)); }
+  static Val F64(double value) { return Val(wt_val_f64(value)); }
+  /// Null if `codepoint` is not a Unicode scalar value.
+  static Val Char(char32_t codepoint) {
+    return Val(wt_val_char(static_cast<uint32_t>(codepoint)));
+  }
+  /// Null if `text` is not UTF-8.
+  static Val String(std::string_view text) {
+    return Val(wt_val_string(text.data(), text.size()));
+  }
+  /// A `list<u8>`.
+  static Val Bytes(std::span<const uint8_t> bytes) {
+    return Val(wt_val_bytes(bytes.data(), bytes.size()));
+  }
+  static Val Bytes(std::span<const std::byte> bytes) {
+    // Viewing bytes as bytes; see ADR-0003 on why this is spelled out here.
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+    return Val(wt_val_bytes(reinterpret_cast<const uint8_t*>(bytes.data()),
+                            bytes.size()));
+  }
+  static Val List(std::vector<Val> items) {
+    std::vector<wt_val_t*> raw = Release(std::move(items));
+    return Val(wt_val_list(raw.data(), raw.size()));
+  }
+  static Val Tuple(std::vector<Val> items) {
+    std::vector<wt_val_t*> raw = Release(std::move(items));
+    return Val(wt_val_tuple(raw.data(), raw.size()));
+  }
+  /// Fields in the WIT declaration order.
+  static Val Record(std::vector<std::pair<const char*, Val>> fields) {
+    std::vector<const char*> names;
+    std::vector<wt_val_t*> raw;
+    names.reserve(fields.size());
+    raw.reserve(fields.size());
+    for (auto& [name, value] : fields) {
+      names.push_back(name);
+      raw.push_back(value.Release());
+    }
+    return Val(wt_val_record(names.data(), raw.data(), raw.size()));
+  }
+  static Val Variant(const char* case_name, std::optional<Val> payload) {
+    return Val(wt_val_variant(case_name, ReleaseOptional(std::move(payload))));
+  }
+  static Val Enum(const char* case_name) { return Val(wt_val_enum(case_name)); }
+  static Val Some(Val value) { return Val(wt_val_option(value.Release())); }
+  static Val None() { return Val(wt_val_option(nullptr)); }
+  static Val Ok(std::optional<Val> payload = std::nullopt) {
+    return Val(wt_val_ok(ReleaseOptional(std::move(payload))));
+  }
+  static Val Err(std::optional<Val> payload = std::nullopt) {
+    return Val(wt_val_err(ReleaseOptional(std::move(payload))));
+  }
+  static Val Flags(std::span<const char* const> names) {
+    return Val(wt_val_flags(names.data(), names.size()));
+  }
+
+  /// False when a constructor was handed something it could not build from:
+  /// a string that is not UTF-8, a surrogate, a null child.
+  [[nodiscard]] bool Valid() const noexcept { return Raw() != nullptr; }
+  explicit operator bool() const noexcept { return Valid(); }
+
+  [[nodiscard]] Val Clone() const { return Val(wt_val_clone(Raw())); }
+
+  /// Give up ownership. The caller frees the result with `wt_val_delete`, or
+  /// hands it to a C constructor that does.
+  [[nodiscard]] wt_val_t* Release() noexcept {
+    wt_val_t* raw = Mutable();
+    SetRaw(nullptr);
+    return raw;
+  }
+
+ private:
+  // The C API hands out `wt_val_t*` and takes `const wt_val_t*`; `ValRef`
+  // stores the const form so the accessors are shared. Ownership is the only
+  // reason to want it back the other way.
+  [[nodiscard]] wt_val_t* Mutable() const noexcept {
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
+    return const_cast<wt_val_t*>(Raw());
+  }
+
+  static std::vector<wt_val_t*> Release(std::vector<Val> items) {
+    std::vector<wt_val_t*> raw;
+    raw.reserve(items.size());
+    for (Val& item : items) {
+      raw.push_back(item.Release());
+    }
+    return raw;
+  }
+
+  static wt_val_t* ReleaseOptional(std::optional<Val> value) noexcept {
+    return value.has_value() ? value->Release() : nullptr;
+  }
+};
 
 /// A function the application serves to plugins.
 ///
@@ -549,6 +838,34 @@ class Plugin {
   /// Convenience for a call with no arguments.
   Result<Value> Call(const std::string& export_name) {
     return Call(export_name, std::span<const std::string>{});
+  }
+
+  /// Call an exported function with typed arguments.
+  ///
+  /// The same call as the WAVE overload -- same limits, same trace, same
+  /// audit -- with no text in between, which is what makes a `list<u8>` of a
+  /// few million pixels affordable. `nullopt` when the function returns no
+  /// value.
+  Result<std::optional<Val>> Call(const std::string& export_name,
+                                  std::span<const Val> args) {
+    std::vector<const wt_val_t*> argv;
+    argv.reserve(args.size());
+    for (const Val& arg : args) {
+      argv.push_back(arg.Raw());
+    }
+
+    wt_val_t* result = nullptr;
+    wt_error_t* error = nullptr;
+    const wt_status status =
+        wt_plugin_call_vals(handle_.Get(), export_name.c_str(), argv.data(),
+                            argv.size(), &result, &error);
+    if (status != WT_OK) {
+      return unexpected(internal::TakeError(status, error));
+    }
+    if (result == nullptr) {
+      return std::optional<Val>{};
+    }
+    return std::optional<Val>{Val(result)};
   }
 
  private:

@@ -106,6 +106,26 @@ static world can use `bindgen!` and skip it. It is also the cost that was
 invisible until the profiler grew a `wave_nanos` bucket, which is why that bucket
 exists.
 
+For a payload that is bytes rather than words, the text is most of the bill:
+
+```
+marshalling/call/bytes-64KiB         1.23 ms
+marshalling/call_wave/bytes-64KiB    3.57 ms
+```
+
+A `list<u8>` of 64 KiB in and the same list out. Rendering `[12, 34, ...]` on
+the way in and parsing it back on the way out costs **2.3 ms**, nearly three
+times the call it wraps, and it scales with the payload. This is why the C API
+has a typed path: `wt_plugin_call_vals` with `wt_val_bytes` is the 1.23 ms row,
+and the previewer uses it. (Measured 2026-10-07 on the machine above, Wasmtime
+48.0.5.)
+
+The 1.23 ms is not free either: about 19 ns per byte, which is the dynamic
+`Val` representation -- one 48-byte `Val` per element, lowered and lifted --
+plus the argument type check `Plugin::call` runs before entering the component.
+The typed path removes the text, not that. A host that needs the last of it is
+a Rust host with a static world and `bindgen!`.
+
 ## Loading
 
 ```
