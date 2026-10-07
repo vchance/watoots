@@ -193,6 +193,26 @@ Tests live next to the code they cover. Integration tests under
 - A decision listed under "Open decisions" in the spec gets an ADR in
   `docs/adr/NNNN-title.md` when it is made. Don't pick silently.
 
+## Releasing
+
+A release is one commit, one annotated tag, and one `cargo publish`.
+
+1. Move the `[Unreleased]` section of `CHANGELOG.md` under a version heading
+   with today's date, and add the link reference at the bottom. Check
+   `git tag` first: work that landed after a tag belongs to the *next* version,
+   and appending it to a shipped one claims that version contains it.
+2. Bump `version` in the workspace `Cargo.toml` and the four
+   `watoots* = { version = ... }` path dependencies, the README's banner, and
+   the supported line in `SECURITY.md`.
+3. `cargo publish --workspace --dry-run` packages all four crates in dependency
+   order and verifies each builds from its package. It needs no token and is
+   the check that the crate READMEs, the committed header and the CMake files
+   are actually in the package.
+4. Commit, `git tag -a vX.Y.Z`, push both.
+5. `cargo publish --workspace` publishes `watoots`, `watoots-trace`,
+   `watoots-capi` and `watoots-cli` in that order, waiting for each to be
+   indexed before the next. Each crate's `README.md` is its crates.io page.
+
 ## Licence
 
 By contributing you agree that your work is licensed under

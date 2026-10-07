@@ -44,7 +44,8 @@ same content as the published scoping page (read-only reference).
 
 ## Layout
 - `crates/host/`        core library (`Host`, `Plugin`, manifest, limits, registry, cache)
-- `crates/host-capi/`   cbindgen C API + `include/` C++ RAII header + CMake package
+- `crates/host-capi/`   cbindgen C API + `include/` C++ RAII header + CMake package;
+                        `src/value.rs` is the typed `wt_val_t` path beside WAVE text
 - `crates/trace/`       trace format (WAVE text + binary), recorder shim, replay runner
 - `crates/cli/`         `watoots` binary: `inspect`, `run`, `record`, `replay`, `trace fmt`
 - `examples/wit/preview/` **the headline world**: a file-format decoder as the
@@ -134,6 +135,13 @@ M6 so far: `inspect` rewritten as a capability summary plus `--targets` and
 a boundary profiler; reload; an audit trail (ADR-0011); a compiled-component
 cache; signature verification at load (ADR-0014); and `watoots diff`.
 **Every v0.2 candidate in the spec is done.**
+
+After 0.6.1 (unreleased): a typed `wt_val_t` path through the C API (ADR-0004
+addendum), `Plugin::call` type-checking arguments *before* entering the
+component (a mismatch found by wasmtime inside the call poisons the instance
+-- `crates/host/src/typecheck.rs` says why), the README re-led with replay,
+real crate READMEs, and a Releasing section in CONTRIBUTING. `cargo publish
+--workspace --dry-run` passes; publishing itself is Von's call.
 
 Decided since: no `permissions.net` allowlist (ADR-0012, breaking) and stay on
 WASI 0.2 with written conditions for p3 (ADR-0013).

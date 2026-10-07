@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# The previewer demo: a file-format decoder as an untrusted plugin.
+# The previewer demo: a file-format decoder as an untrusted plugin, and the
+# bug it finds turned into a file.
 #
 #   tools/demo-preview.sh
 #
@@ -71,7 +72,8 @@ step "2. Open a file"
 dim "\$ host_cpp_preview policy.toml blocks.qoi out.png rust_qoi.wasm"
 echo
 $preview "$policy" "$fixtures/blocks.qoi" "$work/out.png" "$decoder"
-dim "A real PNG, decoded by code this process never trusted."
+dim "A real PNG, decoded by code this process never trusted. The file went in"
+dim "as bytes and the pixels came back as bytes: the C API's typed call path."
 
 # ---------------------------------------------------------------------------
 step "3. Open a hostile file"
@@ -92,22 +94,7 @@ dim "With the codec in-process this is an OOM kill -- or, with a less honest"
 dim "header, the CVE. One manifest line."
 
 # ---------------------------------------------------------------------------
-step "4. The same bug, as a file"
-dim "\$ watoots record rust_qoi.wasm -m policy.toml -c decode -o bug.wave -- <bomb bytes>"
-echo
-bytes=$(python3 -c "print('['+','.join(map(str,open('$fixtures/bomb.qoi','rb').read()))+']')")
-$watoots record "$decoder" -m "$policy" -c decode -o "$work/bug.wave" -- "$bytes" 2>&1 | grep -E "^(watoots:|wrote)" | sed "s|$work/||" || true
-echo
-dim "\$ watoots replay bug.wave -c rust_qoi.wasm --assert"
-echo
-$watoots replay "$work/bug.wave" -c "$decoder" --assert 2>&1 | head -2 || true
-echo
-dim "The trace carries the offending bytes as the argument. Whoever gets the bug"
-dim "report reproduces it with no viewer, no policy file and no fixtures -- and"
-dim "--emit-test turns it into a regression test."
-
-# ---------------------------------------------------------------------------
-step "5. Two codecs installed"
+step "4. Two codecs installed"
 dim "\$ host_cpp_preview policy.toml blocks.ff out.png rust_qoi.wasm rust_farbfeld.wasm"
 echo
 $preview "$policy" "$fixtures/blocks.ff" "$work/ff.png" "$decoder" "$farbfeld"
@@ -118,7 +105,7 @@ dim "policy, one host that never learned either format exists."
 
 # ---------------------------------------------------------------------------
 if [ -n "$signed" ]; then
-  step "6. And they have to be the codecs you signed"
+  step "5. And they have to be the codecs you signed"
   dim "Every step above ran verified: both decoders were signed with a throwaway"
   dim "key and the policy lists its public half. Replace one byte of a codec and:"
   echo
@@ -137,7 +124,47 @@ if [ -n "$signed" ]; then
   dim "and a codec is the plugin most worth being sure about."
 fi
 
-bold "That is what the sandbox is for."
+# ---------------------------------------------------------------------------
+step "6. The bug, as a file"
+dim "Step 3 is a bug report waiting to happen: 'the viewer fails on my file'."
+dim "Record the same call the viewer made, and the report is a file."
+echo
+dim "\$ watoots record rust_qoi.wasm -m policy.toml -c decode -o bug.wave -- <bomb bytes>"
+echo
+bytes=$(python3 -c "print('['+','.join(map(str,open('$fixtures/bomb.qoi','rb').read()))+']')")
+$watoots record "$decoder" -m "$policy" -c decode -o "$work/bug.wave" -- "$bytes" 2>&1 | grep -E "^(watoots:|wrote)" | sed "s|$work/||" || true
+echo
+dim "The call failed and the trace was written anyway: a failure is the recording"
+dim "worth keeping. It is text. The manifest is in it, the bytes are in it, and"
+dim "the outcome is in it:"
+echo
+grep -E "^(watoots-trace|plugin|export-call|export-return|  error|  arg)" "$work/bug.wave" | cut -c1-96 | sed 's/^/    /'
+echo
+dim "Whoever gets it reproduces it with no viewer, no policy file, no fixtures:"
+echo
+dim "\$ watoots replay bug.wave -c rust_qoi.wasm --assert"
+echo
+$watoots replay "$work/bug.wave" -c "$decoder" --assert 2>&1 | head -2 || true
+echo
+dim "Now edit the file. Give the embedded manifest the memory the bomb asked for,"
+dim "and replay says what the decoder does when the allocation is allowed:"
+echo
+sed 's/memory *= *"64MiB"/memory = "2GiB"/' "$work/bug.wave" > "$work/edited.wave"
+dim "\$ sed 's/memory = \"64MiB\"/memory = \"2GiB\"/' bug.wave > edited.wave"
+dim "\$ watoots replay edited.wave -c rust_qoi.wasm --assert"
+echo
+$watoots replay "$work/edited.wave" -c "$decoder" --assert 2>&1 | head -6 || true
+echo
+dim "The bomb was two lies deep. With the memory allowed, the decoder reports"
+dim "that 1109 bytes cannot be a 16384 x 16384 image -- a divergence from the"
+dim "recording, which is to say a second bug the first one was hiding."
+echo
+dim "\$ watoots replay bug.wave -c rust_qoi.wasm --emit-test bomb_test.rs"
+echo
+$watoots replay "$work/bug.wave" -c "$decoder" --emit-test "$work/bomb_test.rs" 2>&1 | grep -v "^warning\|^  " | sed "s|$work/||" | head -2 || true
+dim "$(grep -c '' "$work/bomb_test.rs") lines of Rust: the bug report, as a regression test, with no viewer in it."
+
+bold "A sandbox you can read, and a bug you can replay."
 dim "Code you did not write, on input you do not trust, inside your process --"
-dim "and a policy you can read that says exactly how far it can get."
+dim "and when it goes wrong, a file that goes wrong the same way on any machine."
 echo

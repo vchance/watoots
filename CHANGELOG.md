@@ -4,6 +4,49 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **A typed value path through the C API.** `wt_val_t` is a WIT value behind
+  an opaque pointer -- one constructor per kind (`wt_val_u32`, `wt_val_bytes`,
+  `wt_val_record`, ...), one accessor per kind (`wt_val_as_u64`,
+  `wt_val_as_bytes`, `wt_val_field`, ...), and `wt_plugin_call_vals` to carry
+  them across with no text in between. `watoots.hpp` wraps it as `wt::Val`
+  (owning) and `wt::ValRef` (borrowed) with a `Plugin::Call` overload. The
+  WAVE path is unchanged and the two are one call underneath: same limits,
+  same trace events, same audit, so a recording made through either replays
+  through either. The previewer now uses it; its file goes in as
+  `wt::Val::Bytes` and its pixels come back through `AsBytes()`, and the
+  example lost its hand-written WAVE parser. [ADR-0004 addendum.]
+- `marshalling/call/bytes-64KiB` and `marshalling/call_wave/bytes-64KiB`
+  benchmarks, which put a number on what the typed path saves.
+- A **Releasing** section in `CONTRIBUTING.md`: `cargo publish --workspace`
+  packages and publishes all four crates in dependency order, and its
+  `--dry-run` is now part of the release checklist.
+- Real `README.md`s for all four crates. They are the crates.io pages, and
+  until now every one of them said "name reserved, nothing here yet".
+
+### Changed
+
+- **`Plugin::call` checks every argument against the parameter's type before
+  entering the component.** Wasmtime finds a mismatch while lowering, inside
+  the call, and a failure there leaves the instance refusing every later call
+  with "cannot enter component instance" -- so a host passing a `string` where
+  the world says `u32` used to be reported as a `Trap` *and* cost the plugin
+  its instance. It is now `ErrorKind::InvalidArgument`
+  (`WT_ERR_INVALID_ARGUMENT`) with a path to the offending value (`argument 0
+  (data) at [3].pixels: type mismatch: expected u8, found u16`), and the plugin
+  is untouched. The WAVE path never produced a mismatched `Val`; the typed C
+  path and any Rust caller building `Val`s by hand can.
+- The README leads with record/replay. Deny-by-default is the part every
+  component-model host ships; a readable, host-free replay that becomes a
+  regression test is the part none of them does, and the old README put the
+  undifferentiated half first. `tools/demo-preview.sh` now ends on the replay
+  -- recording the bomb, replaying it, editing the trace to find the second
+  lie, and emitting the test -- rather than opening on the refusal.
+- `examples/host-cpp-preview` no longer needs `examples/common/wave_reader.hpp`.
+
 ## [0.6.1] — 2026-10-03
 
 **A security release. Anyone on 0.6.0 or earlier should move.** No API change:
@@ -634,6 +677,7 @@ First release. Both halves of the project work end to end.
 See [docs/SECURITY.md](docs/SECURITY.md) for what the sandbox does and does not
 protect against.
 
+[Unreleased]: https://github.com/vchance/watoots/compare/v0.6.1...HEAD
 [0.6.1]: https://github.com/vchance/watoots/releases/tag/v0.6.1
 [0.6.0]: https://github.com/vchance/watoots/releases/tag/v0.6.0
 [0.5.0]: https://github.com/vchance/watoots/releases/tag/v0.5.0
