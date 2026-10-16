@@ -4,6 +4,23 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Security
+
+- **Wasmtime 48.0.5 → 48.0.6, clearing twelve advisories published on
+  2026-10-14.** The one that matters here is
+  [RUSTSEC-2026-0352](https://rustsec.org/advisories/RUSTSEC-2026-0352)
+  (**8.8 high**: a `wasmtime-wasi` filesystem sandbox escape when renaming a
+  symlink with a trailing slash), which reaches any plugin granted
+  `permissions.fs.write`. The rest are host panics reachable from a guest
+  (async entry points, stream and future misuse, recursive type drops, a
+  realloc that calls back into the host) and
+  [RUSTSEC-2026-0363](https://rustsec.org/advisories/RUSTSEC-2026-0363)
+  (6.2: component handle tables charged to no limit). A dependency bump
+  only; no API changed. **0.7.1 and 0.7.0 ship the vulnerable 48.0.5**; the
+  release that carries this is the one to be on.
+
 ## [0.7.1] — 2026-10-16
 
 A code-quality pass over every crate, the C++ header, the example hosts and the
@@ -741,6 +758,7 @@ First release. Both halves of the project work end to end.
 See [docs/SECURITY.md](docs/SECURITY.md) for what the sandbox does and does not
 protect against.
 
+[Unreleased]: https://github.com/vchance/watoots/compare/v0.7.1...HEAD
 [0.7.1]: https://github.com/vchance/watoots/releases/tag/v0.7.1
 [0.7.0]: https://github.com/vchance/watoots/releases/tag/v0.7.0
 [0.6.1]: https://github.com/vchance/watoots/releases/tag/v0.6.1
