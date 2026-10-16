@@ -16,7 +16,11 @@ same content as the published scoping page (read-only reference).
   once, one of them 9.3 critical and one a hole in `limits.transfer` that hit
   `Val`-API hosts specifically. `cargo audit` is the check; run it when cutting
   a release rather than trusting the weekly job, which can be up to seven days
-  behind an advisory.
+  behind an advisory. **And gate on its exit code, not its output**: on
+  2026-10-16 it reported twelve new advisories (one an 8.8 filesystem sandbox
+  escape) and 0.7.1 was tagged anyway, because the run was piped through
+  `tail` and the failure never stopped the chain. 48.0.6 landed on `main`
+  minutes later; v0.7.1 is tagged with the vulnerable lock.
 - Guest target: **WASI 0.2.x**. Do not depend on `wasmtime-wasi::p3`: it
   documents that security fixes limited to wasip3 get no patch release, which a
   sandbox cannot take. ADR-0013 records the two conditions that would change
