@@ -20,29 +20,13 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-tidy=${CLANG_TIDY:-}
-if [ -z "$tidy" ]; then
-  # LLVM 22 is the pinned major (ADR-0003). `.clang-tidy` sets
-  # `WarningsAsErrors: '*'`, so the check set has to be pinned or CI and a
-  # developer's machine disagree about what is an error.
-  for candidate in \
-    /opt/homebrew/opt/llvm@22/bin/clang-tidy \
-    /usr/local/opt/llvm@22/bin/clang-tidy \
-    /usr/lib/llvm-22/bin/clang-tidy \
-    "$(command -v clang-tidy-22 2>/dev/null || true)" \
-    "$(command -v clang-tidy 2>/dev/null || true)" \
-    /opt/homebrew/opt/llvm/bin/clang-tidy \
-    /usr/local/opt/llvm/bin/clang-tidy; do
-    if [ -n "$candidate" ] && [ -x "$candidate" ]; then
-      tidy=$candidate
-      break
-    fi
-  done
-fi
-if [ -z "$tidy" ]; then
+# See tools/lib/llvm.sh for why the major is pinned.
+. tools/lib/llvm.sh
+if ! tidy=$(find_llvm_tool clang-tidy "${CLANG_TIDY:-}"); then
   echo "clang-tidy not found (brew install llvm@22)" >&2
   exit 1
 fi
+warn_unless_llvm_22 "$tidy" "the check set"
 
 bin_dir=$(dirname "$tidy")
 build_dir=${WATOOTS_BUILD_DIR:-build/tidy}
@@ -58,12 +42,16 @@ fi
 "${configure[@]}" >/dev/null
 
 runner="$bin_dir/run-clang-tidy"
-# Both example hosts are in scope. `examples/host-cpp-asset/stb_impl.cc` is
-# linted like everything else and passes trivially: it is two macros and two
+# Every example host and the header they share are in scope: the pattern is
+# every `examples/host-cpp*` directory plus `examples/common`, so a fourth host
+# is covered the day it is added rather than the day someone notices. The
+# first version of this line named two hosts and silently skipped the third,
+# which happened to be the headline one. `examples/host-cpp-asset/stb_impl.cc`
+# is linted like everything else and passes trivially: it is two macros and two
 # includes, and CMake pulls stb in with SYSTEM, so every diagnostic those
 # headers would raise is suppressed at its own -isystem location rather than by
 # a NOLINT here.
-sources='(crates/host-capi/(include|src|tests)|examples/host-cpp(-asset)?)/.*\.(c|cc|h|hpp)$'
+sources='(crates/host-capi/(include|src|tests)|examples/(host-cpp[a-z-]*|common))/.*\.(c|cc|h|hpp)$'
 
 if [ -x "$runner" ]; then
   exec "$runner" -p "$build_dir" -clang-tidy-binary "$tidy" -quiet "$sources"
@@ -72,6 +60,6 @@ fi
 files=()
 while IFS= read -r f; do files+=("$f"); done < <(
   git ls-files --cached --others --exclude-standard \
-    'crates/host-capi/*.c' 'crates/host-capi/*.cc' 'examples/host-cpp/*.cc' \
-    'examples/host-cpp-asset/*.cc')
+    'crates/host-capi/*.c' 'crates/host-capi/*.cc' 'examples/host-cpp*/*.cc' \
+    'examples/common/*.hpp')
 exec "$tidy" -p "$build_dir" "${files[@]}"

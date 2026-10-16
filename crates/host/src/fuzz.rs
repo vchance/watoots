@@ -37,7 +37,7 @@
 
 use wasmtime::component::{Type, Val};
 
-use crate::{Error, ErrorKind, Result};
+use crate::{Error, Result};
 
 /// How deeply a generated value may nest before the generator stops recursing.
 ///
@@ -246,12 +246,7 @@ impl Generator {
                     return Err(unrepresentable("a variant with no cases", ty));
                 }
                 let (name, payload) = &cases[self.pick(cases.len())];
-                let value = match payload {
-                    None => None,
-                    Some(payload) => {
-                        Some(Box::new(self.value_at(payload, depth.saturating_sub(1))?))
-                    }
-                };
+                let value = self.payload(payload.as_ref(), depth)?;
                 Val::Variant(name.clone(), value)
             }
             Type::Enum(enum_) => {
@@ -275,12 +270,7 @@ impl Generator {
                 let (ok, err) = (result.ok(), result.err());
                 let take_ok = self.byte() & 1 == 0;
                 let payload = if take_ok { ok.as_ref() } else { err.as_ref() };
-                let value = match payload {
-                    None => None,
-                    Some(payload) => {
-                        Some(Box::new(self.value_at(payload, depth.saturating_sub(1))?))
-                    }
-                };
+                let value = self.payload(payload, depth)?;
                 Val::Result(if take_ok { Ok(value) } else { Err(value) })
             }
             Type::Flags(flags) => {
@@ -332,6 +322,15 @@ impl Generator {
     }
 
     /// A number in `0..bound`, biased toward small values by construction.
+    /// A variant case's or a result side's payload, one level down, if the
+    /// type declares one.
+    fn payload(&mut self, declared: Option<&Type>, depth: u32) -> Result<Option<Box<Val>>> {
+        match declared {
+            None => Ok(None),
+            Some(ty) => Ok(Some(Box::new(self.value_at(ty, depth.saturating_sub(1))?))),
+        }
+    }
+
     fn pick(&mut self, bound: usize) -> usize {
         if bound <= 1 {
             return 0;
@@ -474,16 +473,13 @@ pub fn seed_bytes(seed: u64, len: usize) -> Vec<u8> {
 
 /// The one refusal this module makes, spelled the same way every time.
 fn unrepresentable(what: &str, ty: &Type) -> Error {
-    Error::new(
-        ErrorKind::InvalidArgument,
-        format!(
-            "cannot generate {what}: it has no WAVE spelling, so a generated \
+    Error::invalid_argument(format!(
+        "cannot generate {what}: it has no WAVE spelling, so a generated \
              value could not be recorded in a trace. Worlds using resources, \
              futures, streams, error-contexts or maps cannot be fuzzed for the \
              same reason they cannot be traced — see \
              docs/adr/0004-wave-and-dynamic-typing.md. Offending type: {ty:?}"
-        ),
-    )
+    ))
 }
 
 #[cfg(test)]

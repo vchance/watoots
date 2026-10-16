@@ -4,6 +4,70 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+A code-quality pass over every crate, the C++ header, the example hosts and the
+tool scripts: duplicated logic folded into one place, hot-path allocations
+removed, and comments that had drifted from the code corrected. No API was
+removed; the public surface changed in three small ways, listed under Changed.
+
+### Added
+
+- `ImportDecision::served_by_application()`: the predicate `inspect` and `diff`
+  both apply to decide whether an import is the application's to serve rather
+  than the manifest's to grant. They had two copies of it.
+- `Error::manifest` and `Error::load` constructors, beside the three that
+  existed; the crate now uses the constructors throughout.
+- `watoots_trace::decode`, which reads a trace in either encoding by sniffing
+  its contents, and `binary::is_binary`. `watoots replay --emit-test` now
+  generates a test that calls it, so the emitted test works for a `.wtr` trace
+  as well as a `.wave` one (it used to hard-code the text parser).
+- `tools/build-plugins.sh --list`, and an error rather than a silent skip when
+  a target named on the command line has no toolchain.
+
+### Changed
+
+- **`Plugin::call` checks `enum` case names before entering the component**,
+  as it already did for `variant` and `flags`. An unknown case used to reach
+  wasmtime and poison the instance.
+- **`watoots::signature` is no longer a public module.** It exposed one type,
+  `TrustedKey`, that nothing outside the crate could construct or use.
+- **A cold `cache_dir` miss compiles once, not twice.** The precompile cache
+  serialized the component it had just built by compiling the bytes a second
+  time; the first load of a large guest with a cache directory took twice as
+  long as it needed to.
+- `Registry::load` and `load_binary` refuse a duplicate name before compiling,
+  instantiating and auditing a plugin they were about to throw away. The audit
+  trail used to record a `loaded` event for a plugin that never registered.
+- Host-function results are moved into the guest's result slots rather than
+  cloned; on the dynamic path a `list<u8>` is a `Vec<Val>` at 48 bytes per
+  element, so this was an image-sized copy per call.
+- The component is hashed once per load when an audit hook is installed; a
+  reload hashed it twice.
+- `wt_version_string()` returns the crate's version. It returned a hard-coded
+  `"0.1.0"` since 0.1.0.
+- A `WT_ERR_SIGNATURE_INVALID` returned by a C host function reaches the guest
+  as `SignatureInvalid`; it used to fall through to `WT_ERR_INTERNAL`.
+- `wt_host_builder_manifest_from_file` with a path that does not exist leaves
+  the builder usable. The edit consumed the builder before it failed, so every
+  later call reported "this builder was already built".
+- The C++ `HostFuncTrampoline` reports a result containing a NUL byte as
+  `WT_ERR_INVALID_ARGUMENT` instead of handing the guest a truncated string.
+- `wt::Plugin::Call(name, span<const Val>)` refuses an invalid `Val` (one a
+  constructor returned null for) with a message naming the argument, instead of
+  letting the C layer report "args[N] must not be NULL".
+- `wt::Plugin`'s documentation says what it always required: destroy plugins
+  before the `Host` that loaded them, because the host owns the callbacks.
+- `watoots record` reads the component and the manifest once and runs what it
+  hashed. It used to read each twice, so a file changed under the command could
+  produce a trace whose header described bytes that did not run.
+- `tools/tidy.sh` lints every `examples/host-cpp*` directory and
+  `examples/common`. Its pattern named two hosts and silently skipped the
+  previewer, which had therefore never been through clang-tidy.
+- Load, instantiation and engine errors render their cause as one line
+  (`{err:#}`) rather than wasmtime's `Debug` dump with a backtrace.
+- The asset host refuses a pixel value above 255 rather than truncating it.
+
 ## [0.7.0] — 2026-10-07
 
 ### Added
@@ -677,6 +741,7 @@ First release. Both halves of the project work end to end.
 See [docs/SECURITY.md](docs/SECURITY.md) for what the sandbox does and does not
 protect against.
 
+[Unreleased]: https://github.com/vchance/watoots/compare/v0.7.0...HEAD
 [0.7.0]: https://github.com/vchance/watoots/releases/tag/v0.7.0
 [0.6.1]: https://github.com/vchance/watoots/releases/tag/v0.6.1
 [0.6.0]: https://github.com/vchance/watoots/releases/tag/v0.6.0

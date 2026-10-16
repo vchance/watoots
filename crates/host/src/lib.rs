@@ -38,6 +38,8 @@
 #![warn(missing_docs)]
 
 pub mod audit;
+mod compile_cache;
+mod epoch;
 mod error;
 pub mod fuzz;
 mod host;
@@ -46,7 +48,7 @@ pub mod manifest;
 mod plugin;
 mod profile;
 mod registry;
-pub mod signature;
+mod signature;
 pub mod trace;
 mod typecheck;
 pub mod wave;

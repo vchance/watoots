@@ -6,6 +6,8 @@
 //! split across lines. A trace diffs cleanly, and a reviewer can edit one to
 //! construct a case that never happened.
 
+use std::fmt::Write as _;
+
 use crate::trace::{Event, FORMAT_VERSION, Header, Outcome, Trace};
 use crate::{Error, Result};
 
@@ -15,12 +17,9 @@ const MAGIC: &str = "watoots-trace";
 #[must_use]
 pub fn to_text(trace: &Trace) -> String {
     let mut out = String::new();
-    out.push_str(&format!("{MAGIC} {FORMAT_VERSION}\n"));
-    out.push_str(&format!(
-        "component sha256:{}\n",
-        trace.header.component_sha256
-    ));
-    out.push_str(&format!("plugin {}\n", trace.header.plugin));
+    let _ = writeln!(out, "{MAGIC} {FORMAT_VERSION}");
+    let _ = writeln!(out, "component sha256:{}", trace.header.component_sha256);
+    let _ = writeln!(out, "plugin {}", trace.header.plugin);
     if !trace.header.manifest_toml.is_empty() {
         out.push_str("manifest\n");
         // split('\n'), not lines(): "a\nb\n" splits to ["a", "b", ""] and the
@@ -39,11 +38,11 @@ pub fn to_text(trace: &Trace) -> String {
     for event in &trace.events {
         match event {
             Event::ExportCall { func, args } => {
-                out.push_str(&format!("export-call {func}\n"));
+                let _ = writeln!(out, "export-call {func}");
                 push_args(&mut out, args);
             }
             Event::ExportReturn { func, outcome } => {
-                out.push_str(&format!("export-return {func}\n"));
+                let _ = writeln!(out, "export-return {func}");
                 push_outcome(&mut out, outcome);
             }
             Event::ImportCall {
@@ -51,7 +50,7 @@ pub fn to_text(trace: &Trace) -> String {
                 func,
                 args,
             } => {
-                out.push_str(&format!("import-call {interface} {func}\n"));
+                let _ = writeln!(out, "import-call {interface} {func}");
                 push_args(&mut out, args);
             }
             Event::ImportReturn {
@@ -59,7 +58,7 @@ pub fn to_text(trace: &Trace) -> String {
                 func,
                 outcome,
             } => {
-                out.push_str(&format!("import-return {interface} {func}\n"));
+                let _ = writeln!(out, "import-return {interface} {func}");
                 push_outcome(&mut out, outcome);
             }
         }
@@ -69,16 +68,18 @@ pub fn to_text(trace: &Trace) -> String {
 
 fn push_args(out: &mut String, args: &[String]) {
     for arg in args {
-        out.push_str(&format!("  arg {arg}\n"));
+        let _ = writeln!(out, "  arg {arg}");
     }
 }
 
 fn push_outcome(out: &mut String, outcome: &Outcome) {
     match outcome {
         Outcome::Value(None) => out.push_str("  unit\n"),
-        Outcome::Value(Some(value)) => out.push_str(&format!("  value {value}\n")),
+        Outcome::Value(Some(value)) => {
+            let _ = writeln!(out, "  value {value}");
+        }
         Outcome::Error { status, message } => {
-            out.push_str(&format!("  error {status} {}\n", quote(message)));
+            let _ = writeln!(out, "  error {status} {}", quote(message));
         }
     }
 }
@@ -160,7 +161,7 @@ pub fn from_text(text: &str) -> Result<Trace> {
         }
 
         // Indented lines belong to the event above and are consumed there.
-        let (keyword, rest) = split_once(trimmed);
+        let (keyword, rest) = keyword_and_rest(trimmed);
         match keyword {
             "component" => {
                 header.component_sha256 = rest
@@ -233,7 +234,8 @@ pub fn from_text(text: &str) -> Result<Trace> {
 
 type Lines<'a> = std::iter::Peekable<std::iter::Enumerate<std::str::Lines<'a>>>;
 
-fn split_once(line: &str) -> (&str, &str) {
+/// A line's leading keyword and, front-trimmed, whatever follows it.
+fn keyword_and_rest(line: &str) -> (&str, &str) {
     line.split_once(char::is_whitespace)
         .map_or((line, ""), |(head, tail)| (head, tail.trim_start()))
 }
@@ -298,7 +300,7 @@ fn collect_outcome(lines: &mut Lines<'_>, at: usize) -> Result<Outcome> {
     // carries WAVE text, and trimming its tail silently rewrote any value that
     // ended in a space.
     let trimmed = next.trim_start();
-    let (keyword, rest) = split_once(trimmed);
+    let (keyword, rest) = keyword_and_rest(trimmed);
     let outcome = match keyword {
         "unit" => Outcome::Value(None),
         "value" => Outcome::Value(Some(keyword_value(trimmed, "value").to_string())),

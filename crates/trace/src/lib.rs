@@ -45,3 +45,26 @@ pub use error::{Error, Result};
 pub use recorder::Recorder;
 pub use replay::{Divergence, ReplayReport, replay};
 pub use trace::{Event, FORMAT_VERSION, Header, Outcome, Trace};
+
+/// The placeholder written for a value that has no WAVE spelling.
+///
+/// A recorder that meets one poisons the recording, so the placeholder never
+/// reaches a finished trace; replay's mock host uses the same word in a
+/// divergence report, so the two agree about what an unspellable value is
+/// called.
+pub const UNREPRESENTABLE: &str = "<unrepresentable>";
+
+/// Read a trace in either encoding, deciding from its contents.
+///
+/// The binary form opens with a magic number and the text form with a format
+/// line, so no extension or flag is needed: this is what `watoots replay` and
+/// the tests it emits call, and what a tool reading traces it did not write
+/// should call too.
+pub fn decode(bytes: &[u8]) -> Result<Trace> {
+    if binary::is_binary(bytes) {
+        return binary::from_bytes(bytes);
+    }
+    let text = std::str::from_utf8(bytes)
+        .map_err(|_| Error::new("neither a text nor a binary trace: not UTF-8"))?;
+    text::from_text(text)
+}

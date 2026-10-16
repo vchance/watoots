@@ -1,6 +1,6 @@
 // A minimal C++ host application.
 //
-//   ./host_cpp <plugin.wasm> [file-to-lint]
+//   ./host_cpp <plugin.wasm> [policy.toml]
 //
 // This is the artifact behind the claim that C++ applications have no
 // component-model plugin option today. It loads a WebAssembly component,
@@ -18,6 +18,8 @@
 #include <vector>
 
 #include "watoots.hpp"
+
+#include "wave_reader.hpp"
 
 namespace {
 
@@ -55,32 +57,6 @@ std::vector<std::byte> ReadFile(const std::string& path) {
   return bytes;
 }
 
-// Escape a string for WAVE. Values cross the boundary as text, so the host has
-// to quote what it sends the same way it would for any other textual protocol.
-std::string WaveString(std::string_view text) {
-  std::string out = "\"";
-  for (const char character : text) {
-    switch (character) {
-      case '"':
-        out += "\\\"";
-        break;
-      case '\\':
-        out += "\\\\";
-        break;
-      case '\n':
-        out += "\\n";
-        break;
-      case '\t':
-        out += "\\t";
-        break;
-      default:
-        out += character;
-    }
-  }
-  out += '"';
-  return out;
-}
-
 int Run(const std::vector<std::string>& args) {
   if (args.size() < 2) {
     std::cerr << "usage: " << args.at(0) << " <plugin.wasm> [policy.toml]\n";
@@ -102,9 +78,6 @@ int Run(const std::vector<std::string>& args) {
   }
   std::cout << "policy: " << (have_policy_file ? args.at(2) : "(built-in)")
             << '\n';
-
-  // ${plugin_dir} in a policy resolves per plugin, so a grant can name the
-  // directory a plugin was loaded from without knowing it in advance.
 
   // The one capability this application offers plugins. The lambda captures,
   // which is why host functions are std::function rather than raw pointers.
@@ -131,10 +104,11 @@ int Run(const std::vector<std::string>& args) {
     return Fail(host.error());
   }
 
-  // Show what the plugin would be granted, before running any of it.
+  // Show what the plugin would be granted, before running any of it. An
+  // empty file is not a component either, so the two failures share a line.
   const std::vector<std::byte> wasm = ReadFile(plugin_path);
   if (wasm.empty()) {
-    std::cerr << "cannot read " << plugin_path << '\n';
+    std::cerr << "cannot read " << plugin_path << " (missing or empty)\n";
     return EXIT_FAILURE;
   }
   if (auto report = host->Inspect(wasm); report) {
@@ -157,8 +131,8 @@ int Run(const std::vector<std::string>& args) {
 
   const std::string source =
       "fine line\nTODO: write a real host\ntrailing   \n";
-  const std::vector<std::string> lint_args = {WaveString("example.txt"),
-                                              WaveString(source)};
+  const std::vector<std::string> lint_args = {wave::Quote("example.txt"),
+                                              wave::Quote(source)};
 
   std::cout << "\nlint():\n";
   auto diagnostics = plugin->Call("lint", lint_args);

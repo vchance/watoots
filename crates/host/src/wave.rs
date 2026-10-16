@@ -23,18 +23,14 @@
 
 use wasmtime::component::{Type, Val};
 
-use crate::{Error, ErrorKind, Result};
+use crate::{Error, Result};
 
 /// Render a value as WAVE text.
 ///
 /// Fails for values WAVE has no syntax for — notably resource handles.
 pub fn to_wave(value: &Val) -> Result<String> {
-    wasm_wave::to_string(value).map_err(|err| {
-        Error::new(
-            ErrorKind::InvalidArgument,
-            format!("cannot render as WAVE: {err}"),
-        )
-    })
+    wasm_wave::to_string(value)
+        .map_err(|err| Error::invalid_argument(format!("cannot render as WAVE: {err}")))
 }
 
 /// Parse WAVE text into a value of a known type.
@@ -42,12 +38,8 @@ pub fn to_wave(value: &Val) -> Result<String> {
 /// The type is required: `42` is a `u8` or an `s64` depending on what the
 /// function being called asks for, and `"a"` is a string or a char.
 pub fn from_wave(ty: &Type, text: &str) -> Result<Val> {
-    wasm_wave::from_str(ty, text).map_err(|err| {
-        Error::new(
-            ErrorKind::InvalidArgument,
-            format!("cannot parse {text:?} as WAVE: {err}"),
-        )
-    })
+    wasm_wave::from_str(ty, text)
+        .map_err(|err| Error::invalid_argument(format!("cannot parse {text:?} as WAVE: {err}")))
 }
 
 #[cfg(test)]
@@ -71,11 +63,11 @@ mod tests {
     }
 
     #[test]
-    fn a_resource_handle_has_no_wave_spelling() {
-        // Not a wrapper bug: a handle is a live table entry, not a value, so
-        // there is nothing truthful to write down. M4's trace format carries
-        // resources as stable IDs beside the WAVE text rather than inside it.
+    fn enums_render_by_case_name() {
+        // A resource handle is the value WAVE cannot spell (see the module
+        // docs), but a `Val::Resource` cannot be built without a live store, so
+        // that case is pinned by the recorder's tests rather than here.
         let value = Val::Enum("placeholder".to_string());
-        assert!(to_wave(&value).is_ok(), "enums are fine");
+        assert_eq!(to_wave(&value).unwrap(), "placeholder");
     }
 }

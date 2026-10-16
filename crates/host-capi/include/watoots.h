@@ -201,7 +201,7 @@ typedef void (*wt_log_sink_t)(void *userdata,
 // Every string is NUL-terminated and **borrowed for the duration of the
 // callback** — copy what you keep. A field that does not apply to this event's
 // `kind` is NULL for a string, and unspecified for a number or an enum: read
-// the `kind` first. The field list below says which kinds set what.
+// the `kind` first. The comment on each field says which kinds set it.
 //
 // **No field here carries an argument value or a log message body.** That is
 // the whole reason this is not a `wt_trace_event_t`: an audit line has to be
@@ -387,7 +387,8 @@ typedef struct wt_function_profile_t {
 extern "C" {
 #endif // __cplusplus
 
-// Library version, e.g. `"0.0.0"`. Never NULL; static storage.
+// Library version, e.g. `"0.7.0"`: the crate's own, so a release bump moves
+// it. Never NULL; static storage.
 const char *wt_version_string(void);
 
 // Stable spelling of a status code, e.g. `"WT_ERR_MANIFEST"`. Never NULL.
@@ -410,7 +411,7 @@ const char *wt_ceiling_name(enum wt_ceiling ceiling);
 
 // Copy a C string into one watoots owns, for returning from a host function.
 //
-// Returns NULL if `text` is NULL or contains a NUL byte.
+// Returns NULL only if `text` is NULL: a C string cannot hold an interior NUL.
 char *wt_string_new(const char *text);
 
 // Free a string produced by this library. NULL is ignored.
@@ -540,8 +541,8 @@ enum wt_status wt_host_builder_profile_guest_samples(struct wt_host_builder_t *b
                                                      uint64_t interval_ms,
                                                      struct wt_error_t **error_out);
 
-// Build the host. The builder is consumed but must still be freed with
-// [`wt_host_builder_delete`].
+// Build the host. The builder is consumed, whether or not the build succeeds,
+// and must still be freed with [`wt_host_builder_delete`].
 enum wt_status wt_host_builder_build(struct wt_host_builder_t *builder,
                                      struct wt_host_t **host_out,
                                      struct wt_error_t **error_out);
@@ -795,7 +796,13 @@ wt_val_t *wt_val_string(const char *utf8, size_t len);
 wt_val_t *wt_val_cstring(const char *text);
 
 // A `list<u8>` from a byte buffer. This is the constructor the WAVE path has
-// no answer to: the bytes are copied once and never rendered as text.
+// no answer to: the bytes are never rendered as text.
+//
+// They are not free either. A component-model `list<u8>` is a `Val` per byte
+// on the host side -- 48 bytes each -- and `wt_plugin_call_vals` copies its
+// arguments once more to hand the engine a contiguous slice. A megabyte of
+// pixels is tens of megabytes of `Val` for the duration of the call; the WAVE
+// path spends the same and a text rendering on top. See `docs/PERFORMANCE.md`.
 wt_val_t *wt_val_bytes(const uint8_t *data, size_t len);
 
 // A `list<T>` of `len` items, which it takes ownership of. NULL if any item
@@ -817,7 +824,7 @@ wt_val_t *wt_val_record(const char *const *names,
 // Takes ownership of the payload.
 wt_val_t *wt_val_variant(const char *case_name, wt_val_t *payload);
 
-// An `enum` case.
+// An `enum` case. NULL if the name is NULL or not UTF-8.
 wt_val_t *wt_val_enum(const char *case_name);
 
 // An `option<T>`: `some(value)`, or `none` when `value` is NULL. Takes
@@ -843,13 +850,14 @@ wt_val_t *wt_val_clone(const wt_val_t *value);
 void wt_val_delete(wt_val_t *value);
 
 // Render a value as WAVE text, to free with `wt_string_delete`. NULL if the
-// value is NULL or has no WAVE spelling (a resource, a stream, a future).
+// value is NULL, has no WAVE spelling (a resource, a stream, a future), or
+// contains a string with a NUL byte, which a C string cannot carry.
 char *wt_val_to_wave(const wt_val_t *value);
 
 // Which kind `value` is. `WT_VAL_OTHER` for NULL.
 enum wt_val_kind wt_val_kind_of(const wt_val_t *value);
 
-// Read a `bool`. False if `value` is not one; `*out` is then untouched.
+// Read a `bool`. False if `value` is not one.
 bool wt_val_as_bool(const wt_val_t *value, bool *out);
 
 // Read any integer that fits in an `int64_t`: every signed kind, and every
@@ -923,9 +931,11 @@ const char *wt_val_flag_at(const wt_val_t *value, size_t index, size_t *len);
 // Call an exported function with typed arguments.
 //
 // The typed twin of `wt_plugin_call`: the same limits, the same trace and
-// audit events, no text in between. `args` are borrowed, not consumed. On
-// success `*result_out` is either NULL, when the function returns nothing, or
-// an owned value to free with [`wt_val_delete`].
+// audit events, no text in between. `args` are borrowed, not consumed, which
+// costs one copy of each: the engine takes its arguments as one contiguous
+// slice and the caller's values live wherever the caller put them. On success
+// `*result_out` is either NULL, when the function returns nothing, or an owned
+// value to free with [`wt_val_delete`].
 //
 // An argument of the wrong kind for the parameter is reported as
 // `WT_ERR_INVALID_ARGUMENT` by the component's own type check, before any

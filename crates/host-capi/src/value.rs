@@ -36,7 +36,10 @@ use std::ptr;
 
 use watoots::{Error, Val};
 
-use crate::{borrow_str, guard, into_c_string, wt_error_t, wt_plugin_t, wt_status};
+use crate::{
+    borrow_plugin_mut, borrow_str, guard, into_c_string, out_param, single_result, wt_error_t,
+    wt_plugin_t, wt_status,
+};
 
 /// A typed WIT value. Opaque: build one with a `wt_val_*` constructor and read
 /// it with a `wt_val_as_*` accessor.
@@ -203,15 +206,29 @@ unsafe fn take_names(names: *const *const c_char, len: usize) -> Option<Vec<Stri
     if names.is_null() {
         return None;
     }
-    let mut out = Vec::with_capacity(len);
-    for index in 0..len {
-        let raw = unsafe { *names.add(index) };
-        if raw.is_null() {
-            return None;
-        }
-        out.push(unsafe { CStr::from_ptr(raw) }.to_str().ok()?.to_owned());
+    (0..len)
+        .map(|index| unsafe { utf8_name(*names.add(index)) }.map(str::to_owned))
+        .collect()
+}
+
+/// A NUL-terminated UTF-8 name, or `None` for a NULL pointer or bytes that are
+/// not UTF-8 -- the two things every name-taking constructor refuses.
+unsafe fn utf8_name<'a>(raw: *const c_char) -> Option<&'a str> {
+    if raw.is_null() {
+        return None;
     }
-    Some(out)
+    unsafe { CStr::from_ptr(raw) }.to_str().ok()
+}
+
+/// Write a value through an out-pointer, or report that there was nowhere to
+/// write it. Every `wt_val_as_*` accessor answers through this so "wrong kind"
+/// and "NULL `out`" fail the same way, which the accessor docs state.
+unsafe fn put<T>(out: *mut T, value: T) -> bool {
+    if out.is_null() {
+        return false;
+    }
+    unsafe { *out = value };
+    true
 }
 
 /// A `bool`.
@@ -310,17 +327,20 @@ pub unsafe extern "C" fn wt_val_string(utf8: *const c_char, len: usize) -> *mut 
 /// A `string` from a NUL-terminated C string. NULL if not valid UTF-8.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn wt_val_cstring(text: *const c_char) -> *mut wt_val_t {
-    if text.is_null() {
-        return ptr::null_mut();
-    }
-    match unsafe { CStr::from_ptr(text) }.to_str() {
-        Ok(text) => wt_val_t::own(Val::String(text.to_owned())),
-        Err(_) => ptr::null_mut(),
+    match unsafe { utf8_name(text) } {
+        Some(text) => wt_val_t::own(Val::String(text.to_owned())),
+        None => ptr::null_mut(),
     }
 }
 
 /// A `list<u8>` from a byte buffer. This is the constructor the WAVE path has
-/// no answer to: the bytes are copied once and never rendered as text.
+/// no answer to: the bytes are never rendered as text.
+///
+/// They are not free either. A component-model `list<u8>` is a `Val` per byte
+/// on the host side -- 48 bytes each -- and `wt_plugin_call_vals` copies its
+/// arguments once more to hand the engine a contiguous slice. A megabyte of
+/// pixels is tens of megabytes of `Val` for the duration of the call; the WAVE
+/// path spends the same and a text rendering on top. See `docs/PERFORMANCE.md`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn wt_val_bytes(data: *const u8, len: usize) -> *mut wt_val_t {
     if len == 0 {
@@ -381,24 +401,18 @@ pub unsafe extern "C" fn wt_val_variant(
     payload: *mut wt_val_t,
 ) -> *mut wt_val_t {
     let payload = unsafe { take_child(payload) };
-    if case_name.is_null() {
-        return ptr::null_mut();
-    }
-    match unsafe { CStr::from_ptr(case_name) }.to_str() {
-        Ok(name) => wt_val_t::own(Val::Variant(name.to_owned(), payload.map(Box::new))),
-        Err(_) => ptr::null_mut(),
+    match unsafe { utf8_name(case_name) } {
+        Some(name) => wt_val_t::own(Val::Variant(name.to_owned(), payload.map(Box::new))),
+        None => ptr::null_mut(),
     }
 }
 
-/// An `enum` case.
+/// An `enum` case. NULL if the name is NULL or not UTF-8.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn wt_val_enum(case_name: *const c_char) -> *mut wt_val_t {
-    if case_name.is_null() {
-        return ptr::null_mut();
-    }
-    match unsafe { CStr::from_ptr(case_name) }.to_str() {
-        Ok(name) => wt_val_t::own(Val::Enum(name.to_owned())),
-        Err(_) => ptr::null_mut(),
+    match unsafe { utf8_name(case_name) } {
+        Some(name) => wt_val_t::own(Val::Enum(name.to_owned())),
+        None => ptr::null_mut(),
     }
 }
 
@@ -456,7 +470,8 @@ pub unsafe extern "C" fn wt_val_delete(value: *mut wt_val_t) {
 }
 
 /// Render a value as WAVE text, to free with `wt_string_delete`. NULL if the
-/// value is NULL or has no WAVE spelling (a resource, a stream, a future).
+/// value is NULL, has no WAVE spelling (a resource, a stream, a future), or
+/// contains a string with a NUL byte, which a C string cannot carry.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn wt_val_to_wave(value: *const wt_val_t) -> *mut c_char {
     if value.is_null() {
@@ -489,100 +504,76 @@ unsafe fn inner<'a>(value: *const wt_val_t) -> Option<&'a Val> {
     }
 }
 
-/// Read a `bool`. False if `value` is not one; `*out` is then untouched.
+// Every `wt_val_as_*` accessor returns false, and leaves `*out` untouched,
+// both when `value` is not of the kind asked for and when `out` is NULL.
+
+/// Read a `bool`. False if `value` is not one.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn wt_val_as_bool(value: *const wt_val_t, out: *mut bool) -> bool {
     match unsafe { inner(value) } {
-        Some(Val::Bool(b)) if !out.is_null() => {
-            unsafe { *out = *b };
-            true
-        }
+        Some(Val::Bool(b)) => unsafe { put(out, *b) },
         _ => false,
     }
+}
+
+/// Every integer kind as an `i128`, which holds all of them: the one place the
+/// eight integer variants are enumerated, so the two integer accessors are
+/// a range check each rather than a match each.
+fn as_integer(val: &Val) -> Option<i128> {
+    Some(match val {
+        Val::S8(n) => i128::from(*n),
+        Val::S16(n) => i128::from(*n),
+        Val::S32(n) => i128::from(*n),
+        Val::S64(n) => i128::from(*n),
+        Val::U8(n) => i128::from(*n),
+        Val::U16(n) => i128::from(*n),
+        Val::U32(n) => i128::from(*n),
+        Val::U64(n) => i128::from(*n),
+        _ => return None,
+    })
 }
 
 /// Read any integer that fits in an `int64_t`: every signed kind, and every
 /// unsigned one up to `u64` values below 2^63. False otherwise.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn wt_val_as_s64(value: *const wt_val_t, out: *mut i64) -> bool {
-    let number = match unsafe { inner(value) } {
-        Some(Val::S8(n)) => i64::from(*n),
-        Some(Val::S16(n)) => i64::from(*n),
-        Some(Val::S32(n)) => i64::from(*n),
-        Some(Val::S64(n)) => *n,
-        Some(Val::U8(n)) => i64::from(*n),
-        Some(Val::U16(n)) => i64::from(*n),
-        Some(Val::U32(n)) => i64::from(*n),
-        Some(Val::U64(n)) => match i64::try_from(*n) {
-            Ok(n) => n,
-            Err(_) => return false,
-        },
-        _ => return false,
-    };
-    if out.is_null() {
-        return false;
+    match unsafe { inner(value) }
+        .and_then(as_integer)
+        .map(i64::try_from)
+    {
+        Some(Ok(number)) => unsafe { put(out, number) },
+        _ => false,
     }
-    unsafe { *out = number };
-    true
 }
 
 /// Read any non-negative integer: every unsigned kind, and every signed one
 /// holding a value of zero or more. False otherwise.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn wt_val_as_u64(value: *const wt_val_t, out: *mut u64) -> bool {
-    let number = match unsafe { inner(value) } {
-        Some(Val::U8(n)) => u64::from(*n),
-        Some(Val::U16(n)) => u64::from(*n),
-        Some(Val::U32(n)) => u64::from(*n),
-        Some(Val::U64(n)) => *n,
-        Some(Val::S8(n)) => match u64::try_from(*n) {
-            Ok(n) => n,
-            Err(_) => return false,
-        },
-        Some(Val::S16(n)) => match u64::try_from(*n) {
-            Ok(n) => n,
-            Err(_) => return false,
-        },
-        Some(Val::S32(n)) => match u64::try_from(*n) {
-            Ok(n) => n,
-            Err(_) => return false,
-        },
-        Some(Val::S64(n)) => match u64::try_from(*n) {
-            Ok(n) => n,
-            Err(_) => return false,
-        },
-        _ => return false,
-    };
-    if out.is_null() {
-        return false;
+    match unsafe { inner(value) }
+        .and_then(as_integer)
+        .map(u64::try_from)
+    {
+        Some(Ok(number)) => unsafe { put(out, number) },
+        _ => false,
     }
-    unsafe { *out = number };
-    true
 }
 
 /// Read an `f32` or `f64` as a double. False otherwise.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn wt_val_as_f64(value: *const wt_val_t, out: *mut f64) -> bool {
-    let number = match unsafe { inner(value) } {
-        Some(Val::Float32(f)) => f64::from(*f),
-        Some(Val::Float64(f)) => *f,
-        _ => return false,
-    };
-    if out.is_null() {
-        return false;
+    match unsafe { inner(value) } {
+        Some(Val::Float32(f)) => unsafe { put(out, f64::from(*f)) },
+        Some(Val::Float64(f)) => unsafe { put(out, *f) },
+        _ => false,
     }
-    unsafe { *out = number };
-    true
 }
 
 /// Read a `char` as its Unicode scalar value. False otherwise.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn wt_val_as_char(value: *const wt_val_t, out: *mut u32) -> bool {
     match unsafe { inner(value) } {
-        Some(Val::Char(c)) if !out.is_null() => {
-            unsafe { *out = u32::from(*c) };
-            true
-        }
+        Some(Val::Char(c)) => unsafe { put(out, u32::from(*c)) },
         _ => false,
     }
 }
@@ -672,10 +663,9 @@ pub unsafe extern "C" fn wt_val_field(
     value: *const wt_val_t,
     name: *const c_char,
 ) -> *const wt_val_t {
-    let (Some(Val::Record(fields)), false) = (unsafe { inner(value) }, name.is_null()) else {
-        return ptr::null();
-    };
-    let Ok(name) = unsafe { CStr::from_ptr(name) }.to_str() else {
+    let (Some(Val::Record(fields)), Some(name)) =
+        (unsafe { inner(value) }, unsafe { utf8_name(name) })
+    else {
         return ptr::null();
     };
     fields
@@ -756,16 +746,11 @@ pub unsafe extern "C" fn wt_val_payload(value: *const wt_val_t) -> *const wt_val
 /// neither; `*out` is then untouched.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn wt_val_is_ok(value: *const wt_val_t, out: *mut bool) -> bool {
-    let ok = match unsafe { inner(value) } {
-        Some(Val::Result(result)) => result.is_ok(),
-        Some(Val::Option(option)) => option.is_some(),
-        _ => return false,
-    };
-    if out.is_null() {
-        return false;
+    match unsafe { inner(value) } {
+        Some(Val::Result(result)) => unsafe { put(out, result.is_ok()) },
+        Some(Val::Option(option)) => unsafe { put(out, option.is_some()) },
+        _ => false,
     }
-    unsafe { *out = ok };
-    true
 }
 
 /// Borrow the name of set flag number `index` of a `flags` value, **not
@@ -795,9 +780,11 @@ pub unsafe extern "C" fn wt_val_flag_at(
 /// Call an exported function with typed arguments.
 ///
 /// The typed twin of `wt_plugin_call`: the same limits, the same trace and
-/// audit events, no text in between. `args` are borrowed, not consumed. On
-/// success `*result_out` is either NULL, when the function returns nothing, or
-/// an owned value to free with [`wt_val_delete`].
+/// audit events, no text in between. `args` are borrowed, not consumed, which
+/// costs one copy of each: the engine takes its arguments as one contiguous
+/// slice and the caller's values live wherever the caller put them. On success
+/// `*result_out` is either NULL, when the function returns nothing, or an owned
+/// value to free with [`wt_val_delete`].
 ///
 /// An argument of the wrong kind for the parameter is reported as
 /// `WT_ERR_INVALID_ARGUMENT` by the component's own type check, before any
@@ -812,43 +799,28 @@ pub unsafe extern "C" fn wt_plugin_call_vals(
     error_out: *mut *mut wt_error_t,
 ) -> wt_status {
     guard(error_out, || {
-        if plugin.is_null() || result_out.is_null() {
-            return Err(Error::invalid_argument(
-                "plugin and result_out must not be NULL",
-            ));
-        }
+        let plugin = unsafe { borrow_plugin_mut(plugin) }?;
+        let result_out = out_param(result_out, "result_out")?;
+        let export = unsafe { borrow_str(export, "export") }?;
         if args.is_null() && args_len != 0 {
             return Err(Error::invalid_argument("args must not be NULL"));
         }
-        let export = unsafe { borrow_str(export, "export") }?;
 
         let mut values = Vec::with_capacity(args_len);
         for index in 0..args_len {
             let raw = unsafe { *args.add(index) };
             let Some(val) = (unsafe { inner(raw) }) else {
                 return Err(Error::invalid_argument(format!(
-                    "argument {index} must not be NULL"
+                    "args[{index}] must not be NULL"
                 )));
             };
             values.push(val.clone());
         }
 
-        let plugin = unsafe { &mut (*plugin).inner };
-        let mut results = plugin.call(export, &values)?;
-
-        unsafe { *result_out = ptr::null_mut() };
-        match results.len() {
-            0 => Ok(()),
-            1 => {
-                unsafe { *result_out = wt_val_t::own(results.remove(0)) };
-                Ok(())
-            }
-            // As in `wt_plugin_call`: WIT 0.2 functions return at most one
-            // value, so more is the world having moved on.
-            more => Err(Error::internal(format!(
-                "{export} returned {more} values; the C API expects at most one"
-            ))),
-        }
+        let results = plugin.inner.call(export, &values)?;
+        let result = single_result(export, results)?;
+        unsafe { *result_out = result.map_or(ptr::null_mut(), wt_val_t::own) };
+        Ok(())
     })
 }
 

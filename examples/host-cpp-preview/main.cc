@@ -38,6 +38,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <exception>
 #include <fstream>
 #include <iostream>
 #include <iterator>
@@ -162,7 +163,7 @@ wt::Result<std::optional<Image>> ReadDecodeResult(wt::ValRef answer,
         " pixel bytes for a " + std::to_string(image.width) + "x" +
         std::to_string(image.height) + " image; refusing to trust it"));
   }
-  image.rgba.assign(rgba->begin(), rgba->end());
+  image.rgba = std::move(*rgba);
   return std::optional<Image>{std::move(image)};
 }
 
@@ -198,26 +199,16 @@ void Usage(const std::string& program) {
             << " <policy.toml> <in.file> <out.png> <decoder.wasm>...\n";
 }
 
-}  // namespace
-
-int main(int argc, char** argv) {
-  const std::vector<std::string> args(argv, argv + argc);
-  if (args.size() < 5) {
-    Usage(args[0]);
-    return EXIT_FAILURE;
-  }
-  const std::string& policy = args[1];
-  const std::string& input_path = args[2];
-  const std::string& output_path = args[3];
-  const std::span<const std::string> decoder_paths(args.begin() + 4,
-                                                   args.end());
-
+// Build the host: one policy for every codec, which is the realistic shape --
+// one "codec plugins may do this much" rule, not one per codec -- and an audit
+// hook that forwards ceiling events to stderr.
+wt::Result<wt::Host> BuildHost(const std::string& policy) {
   wt::HostBuilder builder;
   if (auto applied = builder.ManifestFromFile(policy); !applied) {
-    return Fail("policy", applied.error());
+    return wt::unexpected(applied.error());
   }
-  // Forward ceiling events. `kind` is checked rather than the line grepped:
-  // a C++ host gets the structured fields precisely so it does not have to.
+  // `kind` is checked rather than the line grepped: a C++ host gets the
+  // structured fields precisely so it does not have to.
   if (auto hooked = builder.AuditHook([](const wt::AuditEvent& event) {
         if (event.kind == WT_AUDIT_CEILING_SPENT) {
           std::cerr << "preview: " << event.plugin << " hit " << event.limit_key
@@ -225,35 +216,137 @@ int main(int argc, char** argv) {
         }
       });
       !hooked) {
-    return Fail("audit hook", hooked.error());
+    return wt::unexpected(hooked.error());
   }
-  auto host = builder.Build();
+  return builder.Build();
+}
+
+// Install one decoder and ask it what format it speaks. A decoder that wants
+// more than the policy grants is refused here, before it has seen a byte of
+// anyone's file.
+wt::Result<Decoder> LoadDecoder(const wt::Host& host, const std::string& path) {
+  wt::Result<wt::Plugin> plugin = host.Load(path);
+  if (!plugin) {
+    return wt::unexpected(plugin.error());
+  }
+  auto format = plugin->Call("format", std::span<const wt::Val>{});
+  if (!format) {
+    return wt::unexpected(format.error());
+  }
+  // The borrowed string_view lives as long as the `Val` it was read from,
+  // which is the `format` result; copy it out before that goes away.
+  const std::optional<std::string_view> name =
+      format->has_value() ? (*format)->AsString() : std::nullopt;
+  if (!name.has_value()) {
+    return wt::unexpected(Malformed("format is not a string"));
+  }
+  return Decoder{.plugin = std::move(*plugin), .format = std::string(*name)};
+}
+
+// What one decoder made of the file.
+enum class Attempt : std::uint8_t {
+  // It does not recognise the format; ask the next one.
+  kDeclined,
+  // It decoded it and the PNG is written.
+  kDecoded,
+  // It recognised the format and could not decode it; the reason is printed.
+  kFailed,
+};
+
+// Offer the file to one decoder: sniff, and on a yes, decode and write.
+//
+// A decoder sees at most kSniffBytes before it says yes; the first yes gets
+// the whole file. The whole file is copied once into a `list<u8>`, which is
+// the argument the text path could not carry well and the reason this host is
+// typed.
+Attempt TryDecoder(Decoder& decoder, const std::vector<uint8_t>& bytes,
+                   const std::string& input_path,
+                   const std::string& output_path) {
+  const std::span<const uint8_t> prefix(bytes.data(),
+                                        std::min(bytes.size(), kSniffBytes));
+  std::vector<wt::Val> sniff_args;
+  sniff_args.push_back(wt::Val::Bytes(prefix));
+  auto sniffed = decoder.plugin.Call("sniff", sniff_args);
+  if (!sniffed) {
+    Fail(decoder.format + ": sniff", sniffed.error());
+    return Attempt::kFailed;
+  }
+  const std::optional<bool> yes =
+      sniffed->has_value() ? (*sniffed)->AsBool() : std::nullopt;
+  if (!yes.value_or(false)) {
+    return Attempt::kDeclined;
+  }
+
+  std::cerr << "preview: " << input_path << " looks like " << decoder.format
+            << "; decoding\n";
+  std::vector<wt::Val> decode_args;
+  decode_args.push_back(wt::Val::Bytes(std::span<const uint8_t>(bytes)));
+  auto decoded = decoder.plugin.Call("decode", decode_args);
+  if (!decoded) {
+    // This is where the bomb lands. The sandbox refused the allocation, the
+    // decoder could not continue, and the error says which ceiling -- so a
+    // user sees "this file claims more than a codec is allowed", which is the
+    // truth, rather than a crash, which is what they would have seen with the
+    // codec in-process.
+    Fail(decoder.format + ": decode", decoded.error());
+    return Attempt::kFailed;
+  }
+  if (!decoded->has_value()) {
+    Fail(decoder.format + ": answer", Malformed("no value"));
+    return Attempt::kFailed;
+  }
+
+  Failure failure;
+  auto image = ReadDecodeResult(**decoded, failure);
+  if (!image) {
+    Fail(decoder.format + ": answer", image.error());
+    return Attempt::kFailed;
+  }
+  if (!*image) {
+    if (failure.not_this_format) {
+      // It sniffed yes and then changed its mind. Legitimate -- a prefix is
+      // not a proof -- so try the next one.
+      std::cerr << "preview: " << decoder.format
+                << " declined on a closer look\n";
+      return Attempt::kDeclined;
+    }
+    std::cerr << "preview: " << decoder.format << ": " << failure.description
+              << '\n';
+    return Attempt::kFailed;
+  }
+
+  if (!WritePng(output_path, **image)) {
+    std::cerr << "preview: cannot write " << output_path << '\n';
+    return Attempt::kFailed;
+  }
+  std::cout << "wrote " << output_path << ": " << (*image)->width << "x"
+            << (*image)->height << " RGBA8 via " << decoder.format << '\n';
+  return Attempt::kDecoded;
+}
+
+int Run(const std::vector<std::string>& args) {
+  if (args.size() < 5) {
+    Usage(args.empty() ? "host_cpp_preview" : args.at(0));
+    return EXIT_FAILURE;
+  }
+  const std::string& policy = args.at(1);
+  const std::string& input_path = args.at(2);
+  const std::string& output_path = args.at(3);
+  const std::span<const std::string> decoder_paths(args.begin() + 4,
+                                                   args.end());
+
+  wt::Result<wt::Host> host = BuildHost(policy);
   if (!host) {
     return Fail("host", host.error());
   }
 
-  // Install the decoders. Each is loaded under the same policy, which is the
-  // realistic shape: one "codec plugins may do this much" rule, not one per
-  // codec. A decoder that wants more than that is refused here, before it has
-  // seen a byte of anyone's file.
   std::vector<Decoder> decoders;
   for (const std::string& path : decoder_paths) {
-    auto plugin = host->Load(path);
-    if (!plugin) {
-      return Fail(path, plugin.error());
+    wt::Result<Decoder> decoder = LoadDecoder(*host, path);
+    if (!decoder) {
+      return Fail(path, decoder.error());
     }
-    auto format = plugin->Call("format", std::span<const wt::Val>{});
-    if (!format) {
-      return Fail(path + ": format", format.error());
-    }
-    // The borrowed string_view lives as long as the `Val` it was read from,
-    // which is the `format` result; copy it out before that goes away.
-    const std::optional<std::string_view> name =
-        format->has_value() ? (*format)->AsString() : std::nullopt;
-    if (!name.has_value()) {
-      return Fail(path + ": format", Malformed("not a string"));
-    }
-    decoders.push_back({std::move(*plugin), std::string(*name)});
+    decoders.push_back(std::move(*decoder));
   }
 
   auto bytes = ReadFile(input_path);
@@ -262,71 +355,36 @@ int main(int argc, char** argv) {
     return EXIT_FAILURE;
   }
 
-  // Dispatch on the magic bytes. Each decoder sees at most kSniffBytes and
-  // answers yes or no; the first yes gets the whole file.
-  const std::span<const uint8_t> prefix(bytes->data(),
-                                        std::min(bytes->size(), kSniffBytes));
-  std::vector<wt::Val> sniff_args;
-  sniff_args.push_back(wt::Val::Bytes(prefix));
-
+  // Dispatch on the magic bytes: the first decoder to say yes gets the file.
   for (Decoder& decoder : decoders) {
-    auto sniffed = decoder.plugin.Call("sniff", sniff_args);
-    if (!sniffed) {
-      return Fail(decoder.format + ": sniff", sniffed.error());
-    }
-    const std::optional<bool> yes =
-        sniffed->has_value() ? (*sniffed)->AsBool() : std::nullopt;
-    if (!yes.value_or(false)) {
-      continue;
-    }
-
-    std::cerr << "preview: " << input_path << " looks like " << decoder.format
-              << "; decoding\n";
-    // The whole file, copied once into a `list<u8>`. This is the argument the
-    // text path could not carry well, and the reason this host is typed.
-    std::vector<wt::Val> decode_args;
-    decode_args.push_back(wt::Val::Bytes(std::span<const uint8_t>(*bytes)));
-    auto decoded = decoder.plugin.Call("decode", decode_args);
-    if (!decoded) {
-      // This is where the bomb lands. The sandbox refused the allocation, the
-      // decoder could not continue, and the error says which ceiling -- so a
-      // user sees "this file claims more than a codec is allowed", which is
-      // the truth, rather than a crash, which is what they would have seen
-      // with the codec in-process.
-      return Fail(decoder.format + ": decode", decoded.error());
-    }
-
-    if (!decoded->has_value()) {
-      return Fail(decoder.format + ": answer", Malformed("no value"));
-    }
-    Failure failure;
-    auto image = ReadDecodeResult(**decoded, failure);
-    if (!image) {
-      return Fail(decoder.format + ": answer", image.error());
-    }
-    if (!*image) {
-      if (failure.not_this_format) {
-        // It sniffed yes and then changed its mind. Legitimate -- a prefix is
-        // not a proof -- so try the next one.
-        std::cerr << "preview: " << decoder.format
-                  << " declined on a closer look\n";
+    switch (TryDecoder(decoder, *bytes, input_path, output_path)) {
+      case Attempt::kDeclined:
         continue;
-      }
-      std::cerr << "preview: " << decoder.format << ": " << failure.description
-                << '\n';
-      return EXIT_FAILURE;
+      case Attempt::kDecoded:
+        return EXIT_SUCCESS;
+      case Attempt::kFailed:
+        return EXIT_FAILURE;
     }
-
-    if (!WritePng(output_path, **image)) {
-      std::cerr << "preview: cannot write " << output_path << '\n';
-      return EXIT_FAILURE;
-    }
-    std::cout << "wrote " << output_path << ": " << (*image)->width << "x"
-              << (*image)->height << " RGBA8 via " << decoder.format << '\n';
-    return EXIT_SUCCESS;
   }
 
   std::cerr << "preview: no installed decoder recognises " << input_path << " ("
             << decoders.size() << " tried)\n";
   return EXIT_FAILURE;
+}
+
+}  // namespace
+
+int main(int argc, char** argv) {
+  try {
+    // argv is a counted array; this is the one place its count and its pointer
+    // have to meet. Every other index in this file is bounds-checked.
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
+    const std::vector<std::string> args(argv, argv + argc);
+    return Run(args);
+  } catch (const std::exception& error) {
+    // A viewer that lets an exception escape main gets std::terminate and no
+    // diagnostic, which is a poor advertisement for a sandbox.
+    std::cerr << "preview: " << error.what() << '\n';
+    return EXIT_FAILURE;
+  }
 }

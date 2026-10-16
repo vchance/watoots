@@ -264,7 +264,37 @@ pub enum AuditEvent<'a> {
     },
 }
 
-impl AuditEvent<'_> {
+impl<'a> AuditEvent<'a> {
+    /// A load or a reload refused, by whichever kind of load it was.
+    ///
+    /// The two variants carry the same fields and are built from the same
+    /// place; one constructor keeps them from drifting.
+    pub(crate) fn refused(
+        kind: crate::host::LoadKind,
+        plugin: &'a str,
+        sha256: &'a str,
+        import: Option<&'a str>,
+        requirement: Option<Requirement>,
+        reason: &'a str,
+    ) -> Self {
+        match kind {
+            crate::host::LoadKind::Load => Self::LoadRefused {
+                plugin,
+                sha256,
+                import,
+                requirement,
+                reason,
+            },
+            crate::host::LoadKind::Reload => Self::ReloadRefused {
+                plugin,
+                sha256,
+                import,
+                requirement,
+                reason,
+            },
+        }
+    }
+
     /// The plugin this event is about.
     #[must_use]
     pub fn plugin(&self) -> &str {

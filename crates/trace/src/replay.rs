@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use watoots::{Error as HostError, ErrorKind, Host, Manifest};
 
 use crate::trace::{Event, Outcome, Trace};
-use crate::{Error, Result};
+use crate::{Error, Result, UNREPRESENTABLE};
 
 /// One place where replay did not match the recording.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -116,33 +116,32 @@ impl Cursor {
     }
 
     /// The next import the trace expects, and the answer it recorded.
+    ///
+    /// Nothing is formatted or cloned on the matching path: this runs on every
+    /// host call the guest makes, and a replay of a pixel pipeline makes many.
     fn expect_import(&mut self, interface: &str, func: &str, args: &[String]) -> Option<Outcome> {
-        let actual = format!("{interface}#{func}({})", args.join(", "));
+        let actual = || format!("{interface}#{func}({})", args.join(", "));
         self.skip_unserved();
 
-        let Some(event) = self.events.get(self.position).cloned() else {
-            self.diverge("the trace to be over".to_string(), actual);
-            return None;
+        let expected = match self.events.get(self.position) {
+            None => {
+                self.diverge("the trace to be over".to_string(), actual());
+                return None;
+            }
+            Some(Event::ImportCall {
+                interface: expected_interface,
+                func: expected_func,
+                args: expected_args,
+            }) if expected_interface == interface
+                && expected_func == func
+                && expected_args == args =>
+            {
+                None
+            }
+            Some(other) => Some(other.summary()),
         };
-
-        let Event::ImportCall {
-            interface: expected_interface,
-            func: expected_func,
-            args: expected_args,
-        } = event
-        else {
-            self.diverge(self.events[self.position].summary(), actual);
-            return None;
-        };
-
-        if expected_interface != interface || expected_func != func || expected_args != args {
-            self.diverge(
-                format!(
-                    "{expected_interface}#{expected_func}({})",
-                    expected_args.join(", ")
-                ),
-                actual,
-            );
+        if let Some(expected) = expected {
+            self.diverge(expected, actual());
             return None;
         }
 
@@ -151,8 +150,9 @@ impl Cursor {
 
         // The matching return is the very next event; a trace where it is not
         // is malformed rather than divergent.
-        match self.events.get(self.position).cloned() {
+        match self.events.get(self.position) {
             Some(Event::ImportReturn { outcome, .. }) => {
+                let outcome = outcome.clone();
                 self.position += 1;
                 self.report.matched += 1;
                 Some(outcome)
@@ -166,6 +166,121 @@ impl Cursor {
             }
         }
     }
+
+    /// The driver is about to make the export call recorded at `index`.
+    ///
+    /// Imports the guest makes from inside it are matched from the event after
+    /// it, which is what the mock host's cursor is set to here.
+    fn begin_export(&mut self, index: usize) {
+        self.position = index + 1;
+        self.report.matched += 1;
+    }
+
+    /// Judge what an export call produced against what the trace recorded for
+    /// it. `expected` is `None` for a trace that has no return for the call,
+    /// which is malformed rather than divergent but reported the same way.
+    fn check_export_return(
+        &mut self,
+        func: &str,
+        actual: &watoots::Result<Vec<String>>,
+        expected: Option<&Outcome>,
+    ) {
+        match (actual, expected) {
+            (Ok(values), Some(Outcome::Value(recorded))) => {
+                let got = values.first();
+                if got == recorded.as_ref() {
+                    self.report.matched += 1;
+                } else {
+                    let or_none = |value: Option<&String>| {
+                        value.map_or_else(|| "(no value)".to_string(), String::clone)
+                    };
+                    self.diverge(or_none(recorded.as_ref()), or_none(got));
+                }
+            }
+            (Err(err), Some(Outcome::Error { status, .. })) => {
+                if err.kind().name() == status {
+                    self.report.matched += 1;
+                } else {
+                    self.diverge(status.clone(), err.kind().name().to_string());
+                }
+            }
+            (Ok(values), Some(Outcome::Error { status, .. })) => {
+                self.diverge(
+                    format!("{func} to fail with {status}"),
+                    format!("{func} returned {:?}", values.first()),
+                );
+            }
+            (Err(err), Some(Outcome::Value(_))) => {
+                self.diverge(
+                    format!("{func} to return"),
+                    format!("{func} failed: {}", err.message()),
+                );
+            }
+            (_, None) => self.diverge(
+                format!("a recorded return for {func}"),
+                "the trace has none".to_string(),
+            ),
+        }
+    }
+}
+
+/// Install the mock host: one function per import the component declares, each
+/// answering from the trace instead of from the application.
+///
+/// Every declared import is served, not just the ones the recording exercised:
+/// a plugin that declares an interface it did not call during this session
+/// still has to link. Calling one the recording never saw is itself a
+/// divergence. WASI imports are excluded; the host library serves those.
+fn serve_imports(
+    mut builder: watoots::HostBuilder,
+    cursor: &Arc<Mutex<Cursor>>,
+    declared: Vec<watoots::ImportedFunction>,
+) -> watoots::HostBuilder {
+    for imported in declared {
+        if imported.interface.starts_with("wasi:") {
+            continue;
+        }
+        let cursor = Arc::clone(cursor);
+        let interface = imported.interface;
+        let func = imported.func;
+        let (interface_for_call, func_for_call) = (interface.clone(), func.clone());
+        builder = builder.host_func(&interface, &func, move |call| {
+            let args: Vec<String> = call
+                .args()
+                .iter()
+                .map(|value| watoots::to_wave(value).unwrap_or_else(|_| UNREPRESENTABLE.into()))
+                .collect();
+
+            let mut cursor = cursor.lock().unwrap_or_else(|err| err.into_inner());
+            let Some(outcome) = cursor.expect_import(&interface_for_call, &func_for_call, &args)
+            else {
+                // Diverged. Fail the guest's call rather than inventing an
+                // answer: continuing would produce a cascade of consequences
+                // that all trace back to this one point.
+                return Err(HostError::internal(format!(
+                    "replay diverged at {interface_for_call}#{func_for_call}"
+                )));
+            };
+
+            match outcome {
+                Outcome::Value(None) => Ok(Vec::new()),
+                Outcome::Value(Some(text)) => {
+                    let Some(ty) = call.result_types().first() else {
+                        return Err(HostError::internal(format!(
+                            "the trace records a value for {interface_for_call}#{func_for_call}, \
+                             but the world declares no result"
+                        )));
+                    };
+                    Ok(vec![watoots::from_wave(ty, &text)?])
+                }
+                Outcome::Error { status, message } => Err(HostError::new(
+                    ErrorKind::from_name(&status).unwrap_or(ErrorKind::Internal),
+                    message,
+                )),
+            }
+        });
+    }
+    builder
 }
 
 /// Replay a trace against a component.
@@ -206,65 +321,13 @@ pub fn replay(trace: &Trace, wasm: &[u8]) -> Result<ReplayReport> {
     // replayer. See ADR-0014.
     manifest.signature.keys.clear();
 
-    // Serve every host import the component *declares*, not just the ones the
-    // recording happened to exercise. A plugin that declares an interface it
-    // did not call during this session still has to link, or replaying a
-    // recording of one export would fail because a different one was never
-    // reached. WASI imports are excluded: the host library serves those.
+    // The imports to serve come from the component, not the trace: see
+    // `serve_imports`. Listing them needs an engine, so a bare host is built
+    // for the question; the one that runs the replay is built afterwards, once
+    // the mock functions are known.
     let probe = Host::builder().build().map_err(Error::from)?;
     let declared = probe.import_functions(wasm).map_err(Error::from)?;
-    let to_serve: Vec<(String, String)> = declared
-        .into_iter()
-        .filter(|imported| !imported.interface.starts_with("wasi:"))
-        .map(|imported| (imported.interface, imported.func))
-        .collect();
-
-    let mut builder = Host::builder().manifest(manifest);
-
-    // The mock host: each function answers from the trace instead of from the
-    // application. One that the recording never saw called is still served, and
-    // calling it now is itself a divergence.
-    for (interface, func) in to_serve {
-        let cursor = Arc::clone(&cursor);
-        let interface_for_call = interface.clone();
-        let func_for_call = func.clone();
-        builder = builder.host_func(&interface, &func, move |call| {
-            let args: Vec<String> = call
-                .args()
-                .iter()
-                .map(|value| watoots::to_wave(value).unwrap_or_else(|_| "<unrepresentable>".into()))
-                .collect();
-
-            let mut cursor = cursor.lock().unwrap_or_else(|err| err.into_inner());
-            let Some(outcome) = cursor.expect_import(&interface_for_call, &func_for_call, &args)
-            else {
-                // Diverged. Fail the guest's call rather than inventing an
-                // answer: continuing would produce a cascade of consequences
-                // that all trace back to this one point.
-                return Err(HostError::new(
-                    ErrorKind::Internal,
-                    format!("replay diverged at {interface_for_call}#{func_for_call}"),
-                ));
-            };
-
-            match outcome {
-                Outcome::Value(None) => Ok(Vec::new()),
-                Outcome::Value(Some(text)) => {
-                    let Some(ty) = call.result_types().first() else {
-                        return Err(HostError::internal(format!(
-                            "the trace records a value for {interface_for_call}#{func_for_call}, \
-                             but the world declares no result"
-                        )));
-                    };
-                    Ok(vec![watoots::from_wave(ty, &text)?])
-                }
-                Outcome::Error { status, message } => Err(HostError::new(
-                    ErrorKind::from_name(&status).unwrap_or(ErrorKind::Internal),
-                    message,
-                )),
-            }
-        });
-    }
+    let builder = serve_imports(Host::builder().manifest(manifest), &cursor, declared);
 
     let host = builder.build().map_err(Error::from)?;
     let mut plugin = host
@@ -272,74 +335,38 @@ pub fn replay(trace: &Trace, wasm: &[u8]) -> Result<ReplayReport> {
         .map_err(Error::from)?;
 
     // Drive the exports in recorded order.
-    let mut index = 0;
-    while index < trace.events.len() {
-        let Event::ExportCall { func, args } = &trace.events[index] else {
-            index += 1;
+    for (index, event) in trace.events.iter().enumerate() {
+        let Event::ExportCall { func, args } = event else {
             continue;
         };
 
-        {
-            let mut guard = cursor.lock().unwrap_or_else(|err| err.into_inner());
-            guard.position = index + 1;
-            guard.report.matched += 1;
-        }
+        cursor
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .begin_export(index);
 
         let borrowed: Vec<&str> = args.iter().map(String::as_str).collect();
         let actual = plugin.call_wave(func, &borrowed);
 
-        // Find the recorded return for this call: everything between is the
-        // imports the guest made, which the mock host has already consumed.
+        // The recorded return for this call is the next return *of this
+        // export*; everything between is the imports the guest made, which the
+        // mock host has already consumed. Paired by name because that is what
+        // the events carry; a trace with nested calls of one export would need
+        // a structural pass, and WIT 0.2 has no reentrancy to produce one.
         let expected = trace.events[index + 1..]
             .iter()
             .find_map(|event| match event {
                 Event::ExportReturn {
                     func: name,
                     outcome,
-                } if name == func => Some(outcome.clone()),
+                } if name == func => Some(outcome),
                 _ => None,
             });
 
-        let mut guard = cursor.lock().unwrap_or_else(|err| err.into_inner());
-        match (&actual, &expected) {
-            (Ok(values), Some(Outcome::Value(recorded))) => {
-                let got = values.first().cloned();
-                if got == *recorded {
-                    guard.report.matched += 1;
-                } else {
-                    guard.diverge(
-                        recorded.clone().unwrap_or_else(|| "(no value)".into()),
-                        got.unwrap_or_else(|| "(no value)".into()),
-                    );
-                }
-            }
-            (Err(err), Some(Outcome::Error { status, .. })) => {
-                if err.kind().name() == status {
-                    guard.report.matched += 1;
-                } else {
-                    guard.diverge(status.clone(), err.kind().name().to_string());
-                }
-            }
-            (Ok(values), Some(Outcome::Error { status, .. })) => {
-                guard.diverge(
-                    format!("{func} to fail with {status}"),
-                    format!("{func} returned {:?}", values.first()),
-                );
-            }
-            (Err(err), Some(Outcome::Value(_))) => {
-                guard.diverge(
-                    format!("{func} to return"),
-                    format!("{func} failed: {}", err.message()),
-                );
-            }
-            (_, None) => guard.diverge(
-                format!("a recorded return for {func}"),
-                "the trace has none".to_string(),
-            ),
-        }
-        drop(guard);
-
-        index += 1;
+        cursor
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .check_export_return(func, &actual, expected);
     }
 
     // The mock host functions hold their own clones of the cursor and outlive

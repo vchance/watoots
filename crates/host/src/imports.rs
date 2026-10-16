@@ -228,6 +228,24 @@ pub struct ImportDecision {
     pub granted: bool,
 }
 
+impl ImportDecision {
+    /// Whether this import is the application's to serve rather than the
+    /// manifest's to grant.
+    ///
+    /// A non-WASI interface that is host-provided or unrecognised is one the
+    /// embedding application supplies, so reporting it as a denied permission
+    /// would send a reader to edit the wrong file. It is still a reason the
+    /// build will not load as configured. `inspect` and `diff` both ask this,
+    /// and they have to agree.
+    #[must_use]
+    pub fn served_by_application(&self) -> bool {
+        matches!(
+            self.requirement,
+            Requirement::HostProvided | Requirement::Unrecognized
+        ) && !self.import.starts_with("wasi:")
+    }
+}
+
 /// The full picture for one component: every import, classified and decided.
 ///
 /// This is what v0.2's `watoots inspect` renders, and it is produced whether or
@@ -268,9 +286,10 @@ impl GrantReport {
     #[must_use]
     pub fn summarize(&self, manifest: &Manifest) -> String {
         let permissions = &manifest.permissions;
+        let rows = self.capabilities(permissions);
         let mut out = String::new();
         out.push_str("capabilities\n");
-        for row in self.capabilities(permissions) {
+        for row in &rows {
             let _ = writeln!(out, "  {:<12} {:<6} {}", row.name, row.mark, row.detail);
         }
 
@@ -306,12 +325,7 @@ impl GrantReport {
         let application: Vec<&ImportDecision> = self
             .decisions
             .iter()
-            .filter(|decision| {
-                matches!(
-                    decision.requirement,
-                    Requirement::HostProvided | Requirement::Unrecognized
-                ) && !decision.import.starts_with("wasi:")
-            })
+            .filter(|decision| decision.served_by_application())
             .collect();
         if !application.is_empty() {
             out.push_str("\nyour application must serve\n");
@@ -357,9 +371,8 @@ impl GrantReport {
         // manifest can satisfy every import and still hand out four
         // capabilities nothing asked for, and "every import is granted" reads
         // like an all-clear.
-        let unused = self
-            .capabilities(permissions)
-            .into_iter()
+        let unused = rows
+            .iter()
             .filter(|row| row.granted && !row.requested)
             .count();
         if unused > 0 {
@@ -542,9 +555,9 @@ fn is_granted(requirement: Requirement, permissions: &Permissions) -> bool {
         // manifest cannot separate them here; the read/write split is enforced
         // by what each directory is preopened as.
         Requirement::Filesystem => !permissions.fs.is_empty(),
-        // Granted by the key being present at all. An empty list means the
-        // guest may link the socket interfaces and reach nothing through them,
-        // which is what a scripting-language runtime needs.
+        // `net = "linked"` means the guest may link the socket interfaces and
+        // reach nothing through them, which is what a scripting-language
+        // runtime needs; there is no host allowlist (ADR-0012).
         Requirement::Network => permissions.net.is_granted(),
         Requirement::MonotonicClock => permissions.clocks.allows_monotonic(),
         Requirement::WallClock => permissions.clocks.allows_wall(),

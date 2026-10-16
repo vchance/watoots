@@ -10,7 +10,7 @@ use std::path::Path;
 
 use wasmtime::component::Val;
 
-use crate::{Error, ErrorKind, Host, Plugin, ReloadReport, Result};
+use crate::{Error, Host, Plugin, ReloadReport, Result};
 
 /// A named collection of plugins loaded under one [`Host`].
 #[derive(Debug)]
@@ -39,6 +39,8 @@ impl Registry {
     ///
     /// Returns the name it was registered under.
     pub fn load(&mut self, path: impl AsRef<Path>) -> Result<String> {
+        let path = path.as_ref();
+        self.refuse_duplicate(&crate::host::plugin_name(path))?;
         let plugin = self.host.load(path)?;
         let name = plugin.name().to_string();
         self.insert(plugin)?;
@@ -47,8 +49,24 @@ impl Registry {
 
     /// Load a component already in memory, under an explicit name.
     pub fn load_binary(&mut self, name: &str, wasm: &[u8]) -> Result<()> {
+        self.refuse_duplicate(name)?;
         let plugin = self.host.load_binary(name, wasm)?;
         self.insert(plugin)
+    }
+
+    /// Say no before anything is compiled or run.
+    ///
+    /// `insert` would catch the duplicate too, but only after the host had
+    /// compiled, instantiated and *audited* a plugin that is then thrown away
+    /// -- a `loaded` event for something that never registered is the audit
+    /// trail saying something that did not happen.
+    fn refuse_duplicate(&self, name: &str) -> Result<()> {
+        if self.plugins.contains_key(name) {
+            return Err(Error::invalid_argument(format!(
+                "a plugin named {name:?} is already registered"
+            )));
+        }
+        Ok(())
     }
 
     /// Replace a registered plugin's code with a component from disk.
@@ -69,22 +87,19 @@ impl Registry {
 
     /// Borrow a plugin by name, or say which name was not registered.
     fn expect(&mut self, name: &str) -> Result<&mut Plugin> {
-        self.plugins.get_mut(name).ok_or_else(|| {
-            Error::new(
-                ErrorKind::NotFound,
-                format!("no plugin named {name:?} is registered"),
-            )
-        })
+        self.plugins
+            .get_mut(name)
+            .ok_or_else(|| Error::not_found(format!("no plugin named {name:?} is registered")))
     }
 
     fn insert(&mut self, plugin: Plugin) -> Result<()> {
         match self.plugins.entry(plugin.name().to_string()) {
             // Silently replacing would make a double-load look like it worked
             // while the first plugin's state vanished.
-            Entry::Occupied(entry) => Err(Error::new(
-                ErrorKind::InvalidArgument,
-                format!("a plugin named {:?} is already registered", entry.key()),
-            )),
+            Entry::Occupied(entry) => Err(Error::invalid_argument(format!(
+                "a plugin named {:?} is already registered",
+                entry.key()
+            ))),
             Entry::Vacant(entry) => {
                 entry.insert(plugin);
                 Ok(())

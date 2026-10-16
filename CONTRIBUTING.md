@@ -119,10 +119,12 @@ is the worked example.
 
 ```sh
 tools/build-plugins.sh              # everything whose toolchain is present
-tools/build-plugins.sh rust         # or name them:
+tools/build-plugins.sh rust         # or name them (`--list` prints the set):
                                     #   rust, js, py, cpp        the lint world
                                     #   rust-asset, cpp-asset,   the asset world
                                     #   js-asset, py-asset
+                                    #   rust-qoi, rust-farbfeld, the preview world
+                                    #   cpp-qoi, js-qoi, py-qoi
 ```
 
 Only the Rust guests are built in CI, because `rustup` is the only toolchain it

@@ -5,7 +5,7 @@ use std::sync::Mutex;
 use watoots::{Outcome as HostOutcome, TraceEvent, TraceHook, Val};
 
 use crate::trace::{Event, Header, Outcome, Trace};
-use crate::{Error, Result};
+use crate::{Error, Result, UNREPRESENTABLE};
 
 /// Records every host/plugin crossing into a [`Trace`].
 ///
@@ -83,30 +83,31 @@ impl Recorder {
         }
     }
 
+    /// One value as WAVE text, poisoning the recording if it has none.
+    fn encode_one(&self, value: &Val) -> String {
+        match watoots::to_wave(value) {
+            Ok(text) => text,
+            Err(err) => {
+                // Resource handles are the expected case here: a handle is an
+                // index into a live table, not a value, so there is nothing
+                // truthful to write down. See ADR-0004.
+                self.poison(format!("this trace cannot be recorded: {}", err.message()));
+                UNREPRESENTABLE.to_string()
+            }
+        }
+    }
+
     fn encode(&self, values: &[Val]) -> Vec<String> {
-        values
-            .iter()
-            .map(|value| match watoots::to_wave(value) {
-                Ok(text) => text,
-                Err(err) => {
-                    // Resource handles are the expected case here: a handle is
-                    // an index into a live table, not a value, so there is
-                    // nothing truthful to write down. See ADR-0004.
-                    self.poison(format!("this trace cannot be recorded: {}", err.message()));
-                    "<unrepresentable>".to_string()
-                }
-            })
-            .collect()
+        values.iter().map(|value| self.encode_one(value)).collect()
     }
 
     fn encode_outcome(&self, outcome: &HostOutcome<'_>) -> Outcome {
         match outcome {
-            HostOutcome::Returned(values) => match values.first() {
-                None => Outcome::Value(None),
-                Some(value) => {
-                    Outcome::Value(Some(self.encode(std::slice::from_ref(value)).remove(0)))
-                }
-            },
+            // WIT 0.2 functions return at most one value, so the first is the
+            // whole result.
+            HostOutcome::Returned(values) => {
+                Outcome::Value(values.first().map(|value| self.encode_one(value)))
+            }
             HostOutcome::Failed(err) => Outcome::Error {
                 status: err.kind().name().to_string(),
                 message: err.message().to_string(),

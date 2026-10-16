@@ -2,6 +2,8 @@
 # here, which is the point of the exercise.
 add_executable(host_cpp main.cc)
 target_link_libraries(host_cpp PRIVATE watoots::capi)
+# For the WAVE quoter it shares with host-cpp-asset; see examples/common.
+target_include_directories(host_cpp PRIVATE ${PROJECT_SOURCE_DIR}/examples/common)
 target_compile_features(host_cpp PRIVATE cxx_std_20)
 target_compile_options(host_cpp PRIVATE ${WATOOTS_STRICT_FLAGS})
 

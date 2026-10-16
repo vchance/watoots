@@ -1,6 +1,7 @@
 #ifndef WATOOTS_HPP_
 #define WATOOTS_HPP_
 
+#include <algorithm>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -247,6 +248,29 @@ inline Error TakeError(wt_status status, wt_error_t* raw) {
   return error;
 }
 
+// Make one status-returning C call and turn its outcome into a Result.
+//
+// `call` is handed the `wt_error_t**` out-parameter and returns the status.
+// Every method below is "declare the error slot, call, check the status" with
+// nothing in between, so that ceremony lives here once.
+template <class Fn>
+Result<void> Call(Fn call) {
+  wt_error_t* error = nullptr;
+  const wt_status status = call(&error);
+  if (status != WT_OK) {
+    return unexpected(TakeError(status, error));
+  }
+  return {};
+}
+
+// The C API takes byte buffers as `const uint8_t*`; callers hold
+// `std::span<const std::byte>`. One cast, in one place, with one suppression
+// -- see ADR-0003 on why it is spelled out rather than hidden.
+inline const uint8_t* U8(std::span<const std::byte> bytes) noexcept {
+  // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+  return reinterpret_cast<const uint8_t*>(bytes.data());
+}
+
 }  // namespace internal
 
 /// A WAVE-encoded value, or nothing when a function returns no value.
@@ -259,8 +283,8 @@ using Value = std::optional<std::string>;
 /// field it expected and gets nothing back has learned the plugin returned
 /// something other than its world declares -- and has not read a byte of it.
 ///
-/// Borrowed strings are copied into `std::string_view`s that point into the
-/// value, so they too live only as long as it does.
+/// Borrowed strings come back as `std::string_view`s pointing into the value,
+/// so they too live only as long as it does.
 class ValRef {
  public:
   explicit ValRef(const wt_val_t* raw) noexcept : raw_(raw) {}
@@ -461,10 +485,7 @@ class Val : public ValRef {
     return Val(wt_val_bytes(bytes.data(), bytes.size()));
   }
   static Val Bytes(std::span<const std::byte> bytes) {
-    // Viewing bytes as bytes; see ADR-0003 on why this is spelled out here.
-    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
-    return Val(wt_val_bytes(reinterpret_cast<const uint8_t*>(bytes.data()),
-                            bytes.size()));
+    return Val(wt_val_bytes(internal::U8(bytes), bytes.size()));
   }
   static Val List(std::vector<Val> items) {
     std::vector<wt_val_t*> raw = Release(std::move(items));
@@ -659,6 +680,12 @@ struct PluginProfile {
 };
 
 /// A loaded plugin.
+///
+/// Destroy every `Plugin` before the `Host` that loaded it. The host owns the
+/// `HostFunction`, `LogFunction` and `AuditFunction` objects the C layer calls
+/// back into, and a plugin that outlives its host would reach them after they
+/// are gone. The engine itself survives -- the Rust side keeps it alive for as
+/// long as any plugin does -- so this is about the callbacks, not the sandbox.
 class Plugin {
  public:
   Plugin() = default;
@@ -678,10 +705,11 @@ class Plugin {
   /// distinction ADR-0006 draws in declining to build guest-emitted metrics.
   [[nodiscard]] Result<wt_plugin_stats_t> Stats() const {
     wt_plugin_stats_t stats{};
-    wt_error_t* error = nullptr;
-    const wt_status status = wt_plugin_stats(handle_.Get(), &stats, &error);
-    if (status != WT_OK) {
-      return unexpected(internal::TakeError(status, error));
+    if (Result<void> ok = internal::Call([&](wt_error_t** error) {
+          return wt_plugin_stats(handle_.Get(), &stats, error);
+        });
+        !ok) {
+      return unexpected(std::move(ok).error());
     }
     return stats;
   }
@@ -697,10 +725,11 @@ class Plugin {
   /// from, which invalidates any row read earlier.
   [[nodiscard]] Result<PluginProfile> Profile() {
     wt_plugin_profile_t totals{};
-    wt_error_t* error = nullptr;
-    wt_status status = wt_plugin_profile(handle_.Get(), &totals, &error);
-    if (status != WT_OK) {
-      return unexpected(internal::TakeError(status, error));
+    if (Result<void> ok = internal::Call([&](wt_error_t** error) {
+          return wt_plugin_profile(handle_.Get(), &totals, error);
+        });
+        !ok) {
+      return unexpected(std::move(ok).error());
     }
 
     PluginProfile profile;
@@ -714,9 +743,12 @@ class Plugin {
 
     for (uint64_t index = 0; index < totals.function_count; ++index) {
       wt_function_profile_t row{};
-      status = wt_plugin_profile_function(handle_.Get(), index, &row, &error);
-      if (status != WT_OK) {
-        return unexpected(internal::TakeError(status, error));
+      if (Result<void> ok = internal::Call([&](wt_error_t** error) {
+            return wt_plugin_profile_function(handle_.Get(), index, &row,
+                                              error);
+          });
+          !ok) {
+        return unexpected(std::move(ok).error());
       }
       profile.functions.push_back(FunctionProfile{
           .kind = row.kind,
@@ -738,14 +770,10 @@ class Plugin {
   /// Needs `HostBuilder::ProfileGuestSamples`. The profiler is consumed, so
   /// sampling stops here and a second call fails. Load the file at
   /// https://profiler.firefox.com/.
-  Result<void> WriteGuestProfile(const std::string& path) {
-    wt_error_t* error = nullptr;
-    const wt_status status =
-        wt_plugin_write_guest_profile(handle_.Get(), path.c_str(), &error);
-    if (status != WT_OK) {
-      return unexpected(internal::TakeError(status, error));
-    }
-    return {};
+  [[nodiscard]] Result<void> WriteGuestProfile(const std::string& path) {
+    return internal::Call([&](wt_error_t** error) {
+      return wt_plugin_write_guest_profile(handle_.Get(), path.c_str(), error);
+    });
   }
 
   /// Replace this plugin's code with new bytes, keeping its name and handle.
@@ -763,13 +791,12 @@ class Plugin {
   [[nodiscard]] Result<wt_reload_report_t> Reload(
       std::span<const std::byte> wasm) {
     wt_reload_report_t report{};
-    wt_error_t* error = nullptr;
-    const wt_status status = wt_plugin_reload(
-        handle_.Get(),
-        reinterpret_cast<const uint8_t*>(wasm.data()),  // NOLINT
-        wasm.size(), &report, &error);
-    if (status != WT_OK) {
-      return unexpected(internal::TakeError(status, error));
+    if (Result<void> ok = internal::Call([&](wt_error_t** error) {
+          return wt_plugin_reload(handle_.Get(), internal::U8(wasm),
+                                  wasm.size(), &report, error);
+        });
+        !ok) {
+      return unexpected(std::move(ok).error());
     }
     return report;
   }
@@ -782,15 +809,13 @@ class Plugin {
   [[nodiscard]] Result<wt_reload_report_t> ReloadSigned(
       std::span<const std::byte> wasm, std::span<const std::byte> signature) {
     wt_reload_report_t report{};
-    wt_error_t* error = nullptr;
-    const wt_status status = wt_plugin_reload_signed(
-        handle_.Get(),
-        reinterpret_cast<const uint8_t*>(wasm.data()),  // NOLINT
-        wasm.size(),
-        reinterpret_cast<const uint8_t*>(signature.data()),  // NOLINT
-        signature.size(), &report, &error);
-    if (status != WT_OK) {
-      return unexpected(internal::TakeError(status, error));
+    if (Result<void> ok = internal::Call([&](wt_error_t** error) {
+          return wt_plugin_reload_signed(handle_.Get(), internal::U8(wasm),
+                                         wasm.size(), internal::U8(signature),
+                                         signature.size(), &report, error);
+        });
+        !ok) {
+      return unexpected(std::move(ok).error());
     }
     return report;
   }
@@ -801,11 +826,12 @@ class Plugin {
   /// the replacement came from. The plugin keeps the name it was loaded under.
   [[nodiscard]] Result<wt_reload_report_t> ReloadFile(const std::string& path) {
     wt_reload_report_t report{};
-    wt_error_t* error = nullptr;
-    const wt_status status =
-        wt_plugin_reload_file(handle_.Get(), path.c_str(), &report, &error);
-    if (status != WT_OK) {
-      return unexpected(internal::TakeError(status, error));
+    if (Result<void> ok = internal::Call([&](wt_error_t** error) {
+          return wt_plugin_reload_file(handle_.Get(), path.c_str(), &report,
+                                       error);
+        });
+        !ok) {
+      return unexpected(std::move(ok).error());
     }
     return report;
   }
@@ -820,12 +846,12 @@ class Plugin {
     }
 
     char* result = nullptr;
-    wt_error_t* error = nullptr;
-    const wt_status status =
-        wt_plugin_call(handle_.Get(), export_name.c_str(), argv.data(),
-                       argv.size(), &result, &error);
-    if (status != WT_OK) {
-      return unexpected(internal::TakeError(status, error));
+    if (Result<void> ok = internal::Call([&](wt_error_t** error) {
+          return wt_plugin_call(handle_.Get(), export_name.c_str(), argv.data(),
+                                argv.size(), &result, error);
+        });
+        !ok) {
+      return unexpected(std::move(ok).error());
     }
     if (result == nullptr) {
       return Value{};
@@ -851,16 +877,25 @@ class Plugin {
     std::vector<const wt_val_t*> argv;
     argv.reserve(args.size());
     for (const Val& arg : args) {
+      if (!arg.Valid()) {
+        // A constructor already said no -- a string that was not UTF-8, a
+        // surrogate, a null child -- and this is the first place that answer
+        // has a function name to attach to.
+        return unexpected(Error(
+            WT_ERR_INVALID_ARGUMENT,
+            "argument " + std::to_string(argv.size()) + " to " + export_name +
+                " is not a valid value; a wt::Val constructor refused it"));
+      }
       argv.push_back(arg.Raw());
     }
 
     wt_val_t* result = nullptr;
-    wt_error_t* error = nullptr;
-    const wt_status status =
-        wt_plugin_call_vals(handle_.Get(), export_name.c_str(), argv.data(),
-                            argv.size(), &result, &error);
-    if (status != WT_OK) {
-      return unexpected(internal::TakeError(status, error));
+    if (Result<void> ok = internal::Call([&](wt_error_t** error) {
+          return wt_plugin_call_vals(handle_.Get(), export_name.c_str(),
+                                     argv.data(), argv.size(), &result, error);
+        });
+        !ok) {
+      return unexpected(std::move(ok).error());
     }
     if (result == nullptr) {
       return std::optional<Val>{};
@@ -886,11 +921,11 @@ class Host {
   /// Load a component from a file.
   [[nodiscard]] Result<Plugin> Load(const std::string& path) const {
     wt_plugin_t* plugin = nullptr;
-    wt_error_t* error = nullptr;
-    const wt_status status =
-        wt_host_load(handle_.Get(), path.c_str(), &plugin, &error);
-    if (status != WT_OK) {
-      return unexpected(internal::TakeError(status, error));
+    if (Result<void> ok = internal::Call([&](wt_error_t** error) {
+          return wt_host_load(handle_.Get(), path.c_str(), &plugin, error);
+        });
+        !ok) {
+      return unexpected(std::move(ok).error());
     }
     return Plugin(plugin);
   }
@@ -899,13 +934,13 @@ class Host {
   [[nodiscard]] Result<Plugin> LoadBinary(
       const std::string& name, std::span<const std::byte> wasm) const {
     wt_plugin_t* plugin = nullptr;
-    wt_error_t* error = nullptr;
-    const wt_status status = wt_host_load_binary(
-        handle_.Get(), name.c_str(),
-        reinterpret_cast<const uint8_t*>(wasm.data()),  // NOLINT
-        wasm.size(), &plugin, &error);
-    if (status != WT_OK) {
-      return unexpected(internal::TakeError(status, error));
+    if (Result<void> ok = internal::Call([&](wt_error_t** error) {
+          return wt_host_load_binary(handle_.Get(), name.c_str(),
+                                     internal::U8(wasm), wasm.size(), &plugin,
+                                     error);
+        });
+        !ok) {
+      return unexpected(std::move(ok).error());
     }
     return Plugin(plugin);
   }
@@ -920,15 +955,13 @@ class Host {
       const std::string& name, std::span<const std::byte> wasm,
       std::span<const std::byte> signature) const {
     wt_plugin_t* plugin = nullptr;
-    wt_error_t* error = nullptr;
-    const wt_status status = wt_host_load_binary_signed(
-        handle_.Get(), name.c_str(),
-        reinterpret_cast<const uint8_t*>(wasm.data()),  // NOLINT
-        wasm.size(),
-        reinterpret_cast<const uint8_t*>(signature.data()),  // NOLINT
-        signature.size(), &plugin, &error);
-    if (status != WT_OK) {
-      return unexpected(internal::TakeError(status, error));
+    if (Result<void> ok = internal::Call([&](wt_error_t** error) {
+          return wt_host_load_binary_signed(
+              handle_.Get(), name.c_str(), internal::U8(wasm), wasm.size(),
+              internal::U8(signature), signature.size(), &plugin, error);
+        });
+        !ok) {
+      return unexpected(std::move(ok).error());
     }
     return Plugin(plugin);
   }
@@ -936,35 +969,13 @@ class Host {
   /// Describe what a component would be granted, without instantiating it.
   [[nodiscard]] Result<std::string> Inspect(
       std::span<const std::byte> wasm) const {
-    char* report = nullptr;
-    wt_error_t* error = nullptr;
-    const wt_status status = wt_host_inspect(
-        handle_.Get(),
-        reinterpret_cast<const uint8_t*>(wasm.data()),  // NOLINT
-        wasm.size(), &report, &error);
-    if (status != WT_OK) {
-      return unexpected(internal::TakeError(status, error));
-    }
-    std::string text(report == nullptr ? "" : report);
-    wt_string_delete(report);
-    return text;
+    return Report(wt_host_inspect, wasm);
   }
 
   /// Every import and its decision, one per line: the detail behind `Inspect`.
   [[nodiscard]] Result<std::string> InspectImports(
       std::span<const std::byte> wasm) const {
-    char* report = nullptr;
-    wt_error_t* error = nullptr;
-    const wt_status status = wt_host_inspect_imports(
-        handle_.Get(),
-        reinterpret_cast<const uint8_t*>(wasm.data()),  // NOLINT
-        wasm.size(), &report, &error);
-    if (status != WT_OK) {
-      return unexpected(internal::TakeError(status, error));
-    }
-    std::string text(report == nullptr ? "" : report);
-    wt_string_delete(report);
-    return text;
+    return Report(wt_host_inspect_imports, wasm);
   }
 
   /// Check that a component implements a world.
@@ -976,15 +987,11 @@ class Host {
   [[nodiscard]] Result<void> CheckTargets(
       std::span<const std::byte> wasm, const std::string& wit,
       const std::optional<std::string>& world = std::nullopt) const {
-    wt_error_t* error = nullptr;
-    const wt_status status = wt_host_check_targets(
-        handle_.Get(),
-        reinterpret_cast<const uint8_t*>(wasm.data()),  // NOLINT
-        wasm.size(), wit.c_str(), world ? world->c_str() : nullptr, &error);
-    if (status != WT_OK) {
-      return unexpected(internal::TakeError(status, error));
-    }
-    return {};
+    return internal::Call([&](wt_error_t** error) {
+      return wt_host_check_targets(handle_.Get(), internal::U8(wasm),
+                                   wasm.size(), wit.c_str(),
+                                   world ? world->c_str() : nullptr, error);
+    });
   }
 
  private:
@@ -996,6 +1003,26 @@ class Host {
         functions_(std::move(functions)),
         log_sink_(std::move(log_sink)),
         audit_hook_(std::move(audit_hook)) {}
+
+  using Reporter = wt_status (*)(const wt_host_t*, const uint8_t*, size_t,
+                                 char**, wt_error_t**);
+
+  // `Inspect` and `InspectImports` differ only in which C function writes the
+  // report.
+  [[nodiscard]] Result<std::string> Report(
+      Reporter reporter, std::span<const std::byte> wasm) const {
+    char* report = nullptr;
+    if (Result<void> ok = internal::Call([&](wt_error_t** error) {
+          return reporter(handle_.Get(), internal::U8(wasm), wasm.size(),
+                          &report, error);
+        });
+        !ok) {
+      return unexpected(std::move(ok).error());
+    }
+    std::string text(report == nullptr ? "" : report);
+    wt_string_delete(report);
+    return text;
+  }
 
   internal::OwnedHandle<wt_host_t, internal::HostDeleter> handle_;
   // The C API holds raw pointers to these, so they must outlive the host.
@@ -1027,7 +1054,18 @@ extern "C" inline wt_status WatootsHostFuncTrampoline(  // NOLINT
     return outcome.error().Code();
   }
   if (outcome.value().has_value() && result_out != nullptr) {
-    *result_out = wt_string_new(outcome.value()->c_str());
+    // `c_str()` stops at an interior NUL, so a value holding one would reach
+    // the guest truncated. Say so rather than hand over half an answer.
+    const std::string& text = *outcome.value();
+    if (std::ranges::find(text, '\0') != text.end()) {
+      if (error_out != nullptr) {
+        *error_out = wt_error_new(
+            WT_ERR_INVALID_ARGUMENT,
+            "a host function returned WAVE text containing a NUL byte");
+      }
+      return WT_ERR_INVALID_ARGUMENT;
+    }
+    *result_out = wt_string_new(text.c_str());
   }
   return WT_OK;
 }
@@ -1107,13 +1145,10 @@ class HostBuilder {
 
   /// Define a `${name}` substitution for manifest paths.
   Result<void> Var(const std::string& name, const std::string& value) {
-    wt_error_t* error = nullptr;
-    const wt_status status =
-        wt_host_builder_var(handle_.Get(), name.c_str(), value.c_str(), &error);
-    if (status != WT_OK) {
-      return unexpected(internal::TakeError(status, error));
-    }
-    return {};
+    return internal::Call([&](wt_error_t** error) {
+      return wt_host_builder_var(handle_.Get(), name.c_str(), value.c_str(),
+                                 error);
+    });
   }
 
   /// Serve one function of one interface to plugins.
@@ -1122,12 +1157,13 @@ class HostBuilder {
   Result<void> HostFunc(const std::string& iface, const std::string& func,
                         HostFunction implementation) {
     auto owned = std::make_unique<HostFunction>(std::move(implementation));
-    wt_error_t* error = nullptr;
-    const wt_status status = wt_host_builder_host_func(
-        handle_.Get(), iface.c_str(), func.c_str(), WatootsHostFuncTrampoline,
-        owned.get(), &error);
-    if (status != WT_OK) {
-      return unexpected(internal::TakeError(status, error));
+    if (Result<void> ok = internal::Call([&](wt_error_t** error) {
+          return wt_host_builder_host_func(
+              handle_.Get(), iface.c_str(), func.c_str(),
+              WatootsHostFuncTrampoline, owned.get(), error);
+        });
+        !ok) {
+      return unexpected(std::move(ok).error());
     }
     functions_.push_back(std::move(owned));
     return {};
@@ -1140,11 +1176,12 @@ class HostBuilder {
   /// ceiling go. Calling this twice replaces the first sink.
   Result<void> LogSink(LogFunction implementation) {
     auto owned = std::make_unique<LogFunction>(std::move(implementation));
-    wt_error_t* error = nullptr;
-    const wt_status status = wt_host_builder_log_sink(
-        handle_.Get(), WatootsLogSinkTrampoline, owned.get(), &error);
-    if (status != WT_OK) {
-      return unexpected(internal::TakeError(status, error));
+    if (Result<void> ok = internal::Call([&](wt_error_t** error) {
+          return wt_host_builder_log_sink(
+              handle_.Get(), WatootsLogSinkTrampoline, owned.get(), error);
+        });
+        !ok) {
+      return unexpected(std::move(ok).error());
     }
     log_sink_ = std::move(owned);
     return {};
@@ -1163,11 +1200,12 @@ class HostBuilder {
   /// no audit trail. Calling this twice replaces the first hook.
   Result<void> AuditHook(AuditFunction implementation) {
     auto owned = std::make_unique<AuditFunction>(std::move(implementation));
-    wt_error_t* error = nullptr;
-    const wt_status status = wt_host_builder_audit_hook(
-        handle_.Get(), WatootsAuditHookTrampoline, owned.get(), &error);
-    if (status != WT_OK) {
-      return unexpected(internal::TakeError(status, error));
+    if (Result<void> ok = internal::Call([&](wt_error_t** error) {
+          return wt_host_builder_audit_hook(
+              handle_.Get(), WatootsAuditHookTrampoline, owned.get(), error);
+        });
+        !ok) {
+      return unexpected(std::move(ok).error());
     }
     audit_hook_ = std::move(owned);
     return {};
@@ -1179,12 +1217,9 @@ class HostBuilder {
   /// result with `Plugin::Profile`. Refused alongside a trace recorder, since
   /// profiling changes timing and the recording would not reproduce.
   Result<void> Profile() {
-    wt_error_t* error = nullptr;
-    const wt_status status = wt_host_builder_profile(handle_.Get(), &error);
-    if (status != WT_OK) {
-      return unexpected(internal::TakeError(status, error));
-    }
-    return {};
+    return internal::Call([&](wt_error_t** error) {
+      return wt_host_builder_profile(handle_.Get(), error);
+    });
   }
 
   /// Also sample guest stacks every `interval_ms`, for a Firefox profile.
@@ -1193,24 +1228,21 @@ class HostBuilder {
   /// `limits.timeout` and the timeout wins, so this cannot keep a runaway
   /// plugin alive. Write the result with `Plugin::WriteGuestProfile`.
   Result<void> ProfileGuestSamples(uint64_t interval_ms) {
-    wt_error_t* error = nullptr;
-    const wt_status status = wt_host_builder_profile_guest_samples(
-        handle_.Get(), interval_ms, &error);
-    if (status != WT_OK) {
-      return unexpected(internal::TakeError(status, error));
-    }
-    return {};
+    return internal::Call([&](wt_error_t** error) {
+      return wt_host_builder_profile_guest_samples(handle_.Get(), interval_ms,
+                                                   error);
+    });
   }
 
   /// Build the host. The builder is spent afterwards, and the host takes over
   /// keeping the registered host functions and log sink alive.
   Result<Host> Build() {
     wt_host_t* host = nullptr;
-    wt_error_t* error = nullptr;
-    const wt_status status =
-        wt_host_builder_build(handle_.Get(), &host, &error);
-    if (status != WT_OK) {
-      return unexpected(internal::TakeError(status, error));
+    if (Result<void> ok = internal::Call([&](wt_error_t** error) {
+          return wt_host_builder_build(handle_.Get(), &host, error);
+        });
+        !ok) {
+      return unexpected(std::move(ok).error());
     }
     auto functions = std::move(functions_);
     auto log_sink = std::move(log_sink_);
@@ -1231,12 +1263,9 @@ class HostBuilder {
                                      wt_error_t**);
 
   Result<void> Apply(StringSetter setter, const std::string& value) {
-    wt_error_t* error = nullptr;
-    const wt_status status = setter(handle_.Get(), value.c_str(), &error);
-    if (status != WT_OK) {
-      return unexpected(internal::TakeError(status, error));
-    }
-    return {};
+    return internal::Call([&](wt_error_t** error) {
+      return setter(handle_.Get(), value.c_str(), error);
+    });
   }
 
   internal::OwnedHandle<wt_host_builder_t, internal::BuilderDeleter> handle_;

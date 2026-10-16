@@ -1,21 +1,22 @@
 //! The engine, the policy, and loading plugins under it.
 
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
-use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, RwLock};
-use std::thread::JoinHandle;
 use std::time::Duration;
 
-use sha2::{Digest, Sha256};
+pub(crate) use crate::epoch::epoch_ticks;
+
 use wasmtime::component::types::ComponentItem;
 use wasmtime::component::{Component, Type, Val};
 use wasmtime::{Config, Engine};
 
 use crate::audit::{AuditEvent, AuditHook, Verdict};
+use crate::compile_cache::{CompiledCache, sha256_hex};
+use crate::epoch::EpochTicker;
 use crate::imports::{self, GrantReport, ImportDecision};
 use crate::manifest::{LogLevel, Manifest};
 use crate::plugin::{Plugin, Wiring};
@@ -23,24 +24,6 @@ use crate::profile::Profiling;
 use crate::signature::{self, TrustedKey};
 use crate::trace::TraceHook;
 use crate::{Error, ErrorKind, Result};
-
-/// How often the epoch ticker advances the engine's epoch.
-///
-/// Deadlines are expressed in whole ticks, so this is also the granularity of a
-/// `timeout`: a 200ms timeout is 200 ticks.
-const EPOCH_TICK: Duration = Duration::from_millis(1);
-
-/// How many epoch ticks a duration is worth, rounded up and never zero.
-///
-/// A deadline of zero ticks has already expired, so anything shorter than one
-/// tick becomes one tick: that is the granularity `EPOCH_TICK` can express, and
-/// asking for less would trap immediately rather than sooner.
-pub(crate) fn epoch_ticks(duration: Duration) -> u64 {
-    let tick = EPOCH_TICK.as_nanos();
-    u64::try_from(duration.as_nanos().div_ceil(tick))
-        .unwrap_or(u64::MAX)
-        .max(1)
-}
 
 /// A function the application serves to plugins.
 ///
@@ -215,49 +198,6 @@ pub(crate) enum LoadKind {
     Reload,
 }
 
-/// How many distinct components a host keeps compiled code for.
-///
-/// Sized for the case this cache exists to serve — a host with a handful of
-/// plugins, instantiated many times each — rather than for the case that needs
-/// the bound. Every realistic plugin set fits, and a host that has genuinely
-/// churned through this many distinct components has told us the oldest are
-/// not coming back.
-const COMPILED_CACHE_CAPACITY: usize = 32;
-
-/// Compiled components, keyed by content hash, bounded and evicted oldest-first.
-///
-/// Not an LRU: a load is not a use worth reordering the queue for, and reading
-/// under a shared lock is worth more than eviction precision. The distinction
-/// only matters once a host exceeds the capacity, which is already the unusual
-/// case this exists to survive rather than to optimise.
-#[derive(Default)]
-struct CompiledCache {
-    by_key: BTreeMap<String, Component>,
-    insertion_order: VecDeque<String>,
-}
-
-impl CompiledCache {
-    fn get(&self, key: &str) -> Option<&Component> {
-        self.by_key.get(key)
-    }
-
-    fn insert(&mut self, key: String, component: Component) {
-        if self.by_key.insert(key.clone(), component).is_some() {
-            // Already present and already queued. `Host::compile` coalesces
-            // concurrent misses, so this should not happen; it is kept because
-            // queueing a key twice would evict a live entry early and leave a
-            // dangling name behind it, and a belt is cheap.
-            return;
-        }
-        self.insertion_order.push_back(key);
-        while self.insertion_order.len() > COMPILED_CACHE_CAPACITY {
-            if let Some(oldest) = self.insertion_order.pop_front() {
-                self.by_key.remove(&oldest);
-            }
-        }
-    }
-}
-
 /// The threading model in `Host`'s documentation, enforced rather than
 /// described: a shared host, and a plugin that moves to one thread.
 ///
@@ -324,21 +264,15 @@ impl Host {
     ) -> Result<()> {
         let wit = wit.as_ref();
         let mut resolve = wit_parser::Resolve::default();
-        let (package, _sources) = resolve.push_path(wit).map_err(|err| {
-            Error::new(
-                ErrorKind::InvalidArgument,
-                format!("{}: {err:#}", wit.display()),
-            )
-        })?;
+        let (package, _sources) = resolve
+            .push_path(wit)
+            .map_err(|err| Error::invalid_argument(format!("{}: {err:#}", wit.display())))?;
 
         let world_id = resolve.select_world(&[package], world).map_err(|err| {
-            Error::new(
-                ErrorKind::NotFound,
-                match world {
-                    Some(name) => format!("{}: no world {name:?}: {err:#}", wit.display()),
-                    None => format!("{}: {err:#}", wit.display()),
-                },
-            )
+            Error::not_found(match world {
+                Some(name) => format!("{}: no world {name:?}: {err:#}", wit.display()),
+                None => format!("{}: {err:#}", wit.display()),
+            })
         })?;
 
         // `targets` reports conformance failure by building a component that
@@ -356,20 +290,17 @@ impl Host {
             // rather than leaving "missing import named `wasi:io/poll`" to be
             // interpreted.
             let hint = if detail.contains("missing import named `wasi:") {
-                "\nnote: a world passed to --targets must declare the WASI \
+                "\nnote: a world checked against a component must declare the WASI \
                  imports the guest's toolchain links, not only the interfaces \
                  its author wrote; add `include wasi:cli/imports@0.2.x;` to the \
                  world, with the wasi WIT package vendored under deps/"
             } else {
                 ""
             };
-            Error::new(
-                ErrorKind::Load,
-                format!(
-                    "component does not implement world {:?}: {detail}{hint}",
-                    resolve.worlds[world_id].name
-                ),
-            )
+            Error::load(format!(
+                "component does not implement world {:?}: {detail}{hint}",
+                resolve.worlds[world_id].name
+            ))
         })
     }
 
@@ -434,10 +365,7 @@ impl Host {
         let path = path.as_ref();
         let wasm = read_component(path)?;
         let signature = self.read_signature_beside(path)?;
-        let name = path.file_stem().map_or_else(
-            || path.display().to_string(),
-            |s| s.to_string_lossy().into(),
-        );
+        let name = plugin_name(path);
         self.instantiate_plugin(
             &name,
             &wasm,
@@ -528,22 +456,14 @@ impl Host {
                 let (import_name, requirement) = import.map_or((None, None), |decision| {
                     (Some(decision.import.as_str()), Some(decision.requirement))
                 });
-                hook.on_event(&match kind {
-                    LoadKind::Load => AuditEvent::LoadRefused {
-                        plugin: name,
-                        sha256: &digest,
-                        import: import_name,
-                        requirement,
-                        reason: err.message(),
-                    },
-                    LoadKind::Reload => AuditEvent::ReloadRefused {
-                        plugin: name,
-                        sha256: &digest,
-                        import: import_name,
-                        requirement,
-                        reason: err.message(),
-                    },
-                });
+                hook.on_event(&AuditEvent::refused(
+                    kind,
+                    name,
+                    &digest,
+                    import_name,
+                    requirement,
+                    err.message(),
+                ));
             }
             err
         };
@@ -607,7 +527,8 @@ impl Host {
         };
         let imports = report.decisions.len();
         let plugin = Plugin::instantiate(name, self, &component, &wiring, report, extra_vars)
-            .map_err(|err| refused(None, err))?;
+            .map_err(|err| refused(None, err))?
+            .with_digest(digest.clone());
 
         // A reload has not happened yet: the replacement still has to take the
         // outgoing instance's state, and can still be sent back. `Plugin::reload`
@@ -748,7 +669,10 @@ impl Host {
 
         let component = self.compile_fresh(wasm)?;
 
-        if let Ok(serialized) = self.inner.engine.precompile_component(wasm) {
+        // Serialize the component just built rather than `precompile_component`
+        // the bytes again: the latter is a second full Cranelift compile of the
+        // same input, which doubled the first load of a large guest.
+        if let Ok(serialized) = component.serialize() {
             let _ = std::fs::create_dir_all(dir);
             // Write-then-rename so a concurrent reader never sees a partial
             // file, and a crash mid-write leaves no poisoned entry.
@@ -763,22 +687,12 @@ impl Host {
     }
 
     fn compile_fresh(&self, wasm: &[u8]) -> Result<Component> {
-        Component::new(&self.inner.engine, wasm)
-            .map_err(|err| Error::new(ErrorKind::Load, format!("{err:?}")))
+        Component::new(&self.inner.engine, wasm).map_err(|err| Error::load(format!("{err:#}")))
     }
 
     /// Cache key: this engine's configuration plus the exact component bytes.
-    ///
-    /// The engine half is what makes reusing a `.cwasm` safe — a cache written
-    /// by a differently configured engine simply does not collide.
     fn cache_key(&self, wasm: &[u8]) -> String {
-        let mut hasher = Sha256Hasher::default();
-        self.inner
-            .engine
-            .precompile_compatibility_hash()
-            .hash(&mut hasher);
-        hasher.0.update(wasm);
-        hex(&hasher.0.finalize())
+        crate::compile_cache::cache_key(&self.inner.engine, wasm)
     }
 
     fn report_for(&self, component: &Component) -> GrantReport {
@@ -1026,8 +940,7 @@ impl HostBuilder {
         // profiler perturbs it. Refused rather than silently permitted, because
         // the cost lands on whoever tries to replay the trace afterwards.
         if self.profiling.is_some() && self.trace.is_some() {
-            return Err(Error::new(
-                ErrorKind::InvalidArgument,
+            return Err(Error::invalid_argument(
                 "profiling and a trace hook cannot both be enabled: profiling \
                  changes timing, so a session recorded under it would not \
                  reproduce. Record first, then profile the replay.",
@@ -1055,7 +968,7 @@ impl HostBuilder {
         }
 
         let engine = Engine::new(&config)
-            .map_err(|err| Error::new(ErrorKind::Internal, format!("engine config: {err:?}")))?;
+            .map_err(|err| Error::internal(format!("engine config: {err:#}")))?;
 
         let ticker = needs_epoch.then(|| EpochTicker::spawn(engine.clone()));
 
@@ -1083,12 +996,17 @@ impl HostBuilder {
 
 /// Read a component from disk, saying which file was missing.
 pub(crate) fn read_component(path: &Path) -> Result<Vec<u8>> {
-    std::fs::read(path).map_err(|err| {
-        Error::new(
-            ErrorKind::NotFound,
-            format!("cannot read component {}: {err}", path.display()),
-        )
-    })
+    std::fs::read(path)
+        .map_err(|err| Error::not_found(format!("cannot read component {}: {err}", path.display())))
+}
+
+/// The name a file-backed load registers under: the file stem, or the whole
+/// path when there is none.
+pub(crate) fn plugin_name(path: &Path) -> String {
+    path.file_stem().map_or_else(
+        || path.display().to_string(),
+        |stem| stem.to_string_lossy().into(),
+    )
 }
 
 /// The `${plugin_dir}` substitution a file-backed load defines.
@@ -1126,79 +1044,5 @@ fn has_callable_functions(item: &ComponentItem, engine: &Engine) -> bool {
         // callable so it cannot slip through as "just types".
         ComponentItem::Module(_) | ComponentItem::Component(_) => true,
         ComponentItem::Type(_) | ComponentItem::Resource(_) => false,
-    }
-}
-
-/// Feeds `std::hash::Hash` output into SHA-256.
-///
-/// Wasmtime hands out its compatibility fingerprint as an opaque `impl Hash`,
-/// and `DefaultHasher` is explicitly not stable across releases — no use for
-/// something that names files on disk.
-#[derive(Default)]
-struct Sha256Hasher(Sha256);
-
-impl Hasher for Sha256Hasher {
-    fn write(&mut self, bytes: &[u8]) {
-        self.0.update(bytes);
-    }
-
-    fn finish(&self) -> u64 {
-        let digest = self.0.clone().finalize();
-        u64::from_le_bytes(digest[..8].try_into().expect("sha256 is 32 bytes"))
-    }
-}
-
-/// SHA-256 of a component, lowercase hex.
-///
-/// The same digest `watoots_trace::Trace::hash_component` writes into a trace
-/// header, so an audit line and a recording name the same bytes the same way.
-/// Only ever called when an audit hook is installed.
-pub(crate) fn sha256_hex(wasm: &[u8]) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(wasm);
-    hex(&hasher.finalize())
-}
-
-fn hex(bytes: &[u8]) -> String {
-    use fmt::Write as _;
-    bytes.iter().fold(String::new(), |mut out, byte| {
-        let _ = write!(out, "{byte:02x}");
-        out
-    })
-}
-
-/// Advances the engine epoch on a fixed tick so per-call deadlines can fire.
-struct EpochTicker {
-    stop: Arc<AtomicBool>,
-    handle: Option<JoinHandle<()>>,
-}
-
-impl EpochTicker {
-    fn spawn(engine: Engine) -> Self {
-        let stop = Arc::new(AtomicBool::new(false));
-        let flag = Arc::clone(&stop);
-        let handle = std::thread::Builder::new()
-            .name("watoots-epoch".to_string())
-            .spawn(move || {
-                while !flag.load(Ordering::Relaxed) {
-                    std::thread::sleep(EPOCH_TICK);
-                    engine.increment_epoch();
-                }
-            })
-            .expect("spawning the epoch ticker");
-
-        Self {
-            stop,
-            handle: Some(handle),
-        }
-    }
-}
-
-impl Drop for EpochTicker {
-    fn drop(&mut self) {
-        self.stop.store(true, Ordering::Relaxed);
-        if let Some(handle) = self.handle.take() {
-            let _ = handle.join();
-        }
     }
 }

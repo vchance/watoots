@@ -36,40 +36,42 @@ pub enum ErrorKind {
 }
 
 impl ErrorKind {
+    /// Every kind, paired with its stable spelling.
+    ///
+    /// One table serves both directions of the name mapping, so a kind cannot
+    /// gain a name that does not parse back. Adding a kind means adding a row;
+    /// the tests below walk it.
+    pub(crate) const ALL: [(Self, &'static str); 9] = [
+        (Self::InvalidArgument, "WT_ERR_INVALID_ARGUMENT"),
+        (Self::NotFound, "WT_ERR_NOT_FOUND"),
+        (Self::Manifest, "WT_ERR_MANIFEST"),
+        (Self::PermissionDenied, "WT_ERR_PERMISSION_DENIED"),
+        (Self::Load, "WT_ERR_LOAD"),
+        (Self::Trap, "WT_ERR_TRAP"),
+        (Self::LimitExceeded, "WT_ERR_LIMIT_EXCEEDED"),
+        (Self::Internal, "WT_ERR_INTERNAL"),
+        (Self::SignatureInvalid, "WT_ERR_SIGNATURE_INVALID"),
+    ];
+
     /// The kind a [`ErrorKind::name`] spelling refers to.
     ///
     /// Replay needs this: a trace records a failure by its stable name, and
     /// reproducing that failure means turning the name back into a kind.
     #[must_use]
     pub fn from_name(name: &str) -> Option<Self> {
-        Some(match name {
-            "WT_ERR_INVALID_ARGUMENT" => Self::InvalidArgument,
-            "WT_ERR_NOT_FOUND" => Self::NotFound,
-            "WT_ERR_MANIFEST" => Self::Manifest,
-            "WT_ERR_PERMISSION_DENIED" => Self::PermissionDenied,
-            "WT_ERR_LOAD" => Self::Load,
-            "WT_ERR_TRAP" => Self::Trap,
-            "WT_ERR_LIMIT_EXCEEDED" => Self::LimitExceeded,
-            "WT_ERR_INTERNAL" => Self::Internal,
-            "WT_ERR_SIGNATURE_INVALID" => Self::SignatureInvalid,
-            _ => return None,
-        })
+        Self::ALL
+            .iter()
+            .find(|(_, spelling)| *spelling == name)
+            .map(|(kind, _)| *kind)
     }
 
     /// Stable spelling, matching the C enumerator name.
     #[must_use]
     pub fn name(self) -> &'static str {
-        match self {
-            Self::InvalidArgument => "WT_ERR_INVALID_ARGUMENT",
-            Self::NotFound => "WT_ERR_NOT_FOUND",
-            Self::Manifest => "WT_ERR_MANIFEST",
-            Self::PermissionDenied => "WT_ERR_PERMISSION_DENIED",
-            Self::Load => "WT_ERR_LOAD",
-            Self::Trap => "WT_ERR_TRAP",
-            Self::LimitExceeded => "WT_ERR_LIMIT_EXCEEDED",
-            Self::Internal => "WT_ERR_INTERNAL",
-            Self::SignatureInvalid => "WT_ERR_SIGNATURE_INVALID",
-        }
+        Self::ALL
+            .iter()
+            .find(|(kind, _)| *kind == self)
+            .map_or("WT_ERR_INTERNAL", |(_, spelling)| spelling)
     }
 }
 
@@ -112,6 +114,16 @@ impl Error {
         Self::new(ErrorKind::Internal, message)
     }
 
+    /// An error for a manifest that could not be read, parsed, or expanded.
+    pub fn manifest(message: impl Into<String>) -> Self {
+        Self::new(ErrorKind::Manifest, message)
+    }
+
+    /// An error for a component that could not be compiled or instantiated.
+    pub fn load(message: impl Into<String>) -> Self {
+        Self::new(ErrorKind::Load, message)
+    }
+
     /// The category of failure.
     #[must_use]
     pub fn kind(&self) -> ErrorKind {
@@ -152,28 +164,28 @@ mod tests {
         assert_eq!(ErrorKind::Trap as i32, 6);
         assert_eq!(ErrorKind::LimitExceeded as i32, 7);
         assert_eq!(ErrorKind::Internal as i32, 8);
+        assert_eq!(ErrorKind::SignatureInvalid as i32, 9);
     }
 
     #[test]
     fn every_kind_round_trips_through_its_name() {
-        for kind in [
-            ErrorKind::InvalidArgument,
-            ErrorKind::NotFound,
-            ErrorKind::Manifest,
-            ErrorKind::PermissionDenied,
-            ErrorKind::Load,
-            ErrorKind::Trap,
-            ErrorKind::LimitExceeded,
-            ErrorKind::Internal,
-        ] {
-            assert_eq!(ErrorKind::from_name(kind.name()), Some(kind));
+        // The table is the single source for both directions, and every kind
+        // has to be in it: the discriminants 1..=9 are all accounted for here.
+        for (index, (kind, spelling)) in ErrorKind::ALL.iter().enumerate() {
+            assert_eq!(
+                *kind as i32,
+                i32::try_from(index + 1).unwrap(),
+                "{spelling}"
+            );
+            assert_eq!(kind.name(), *spelling);
+            assert_eq!(ErrorKind::from_name(spelling), Some(*kind));
         }
         assert_eq!(ErrorKind::from_name("WT_ERR_NONSENSE"), None);
     }
 
     #[test]
     fn error_displays_its_message() {
-        let err = Error::new(ErrorKind::Manifest, "unknown key: fs.exec");
+        let err = Error::manifest("unknown key: fs.exec");
         assert_eq!(err.to_string(), "unknown key: fs.exec");
         assert_eq!(err.kind(), ErrorKind::Manifest);
         assert_eq!(err.kind().name(), "WT_ERR_MANIFEST");

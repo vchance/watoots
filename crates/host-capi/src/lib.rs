@@ -19,7 +19,10 @@
 //! # Panics
 //!
 //! Unwinding across the FFI boundary is undefined behaviour, so every entry
-//! point catches panics and turns them into `WT_ERR_INTERNAL`.
+//! point that returns a [`wt_status`] catches panics and turns them into
+//! `WT_ERR_INTERNAL`. The rest -- constructors, accessors, `_delete`s and the
+//! `_name` tables -- do nothing that can panic short of allocation failure,
+//! which aborts rather than unwinds.
 
 #![allow(non_camel_case_types)]
 #![allow(clippy::missing_safety_doc)]
@@ -70,6 +73,25 @@ impl From<ErrorKind> for wt_status {
             // nothing failing to compile. `every_error_kind_has_its_own_status`
             // is what notices.
             _ => Self::WT_ERR_INTERNAL,
+        }
+    }
+}
+
+impl wt_status {
+    /// The `ErrorKind` a non-`WT_OK` status stands for, when a C host function
+    /// reports one back. `WT_OK` is not an error and maps to `Internal`; the
+    /// one caller checks for it first.
+    fn kind(self) -> ErrorKind {
+        match self {
+            Self::WT_ERR_INVALID_ARGUMENT => ErrorKind::InvalidArgument,
+            Self::WT_ERR_NOT_FOUND => ErrorKind::NotFound,
+            Self::WT_ERR_MANIFEST => ErrorKind::Manifest,
+            Self::WT_ERR_PERMISSION_DENIED => ErrorKind::PermissionDenied,
+            Self::WT_ERR_LOAD => ErrorKind::Load,
+            Self::WT_ERR_TRAP => ErrorKind::Trap,
+            Self::WT_ERR_LIMIT_EXCEEDED => ErrorKind::LimitExceeded,
+            Self::WT_ERR_SIGNATURE_INVALID => ErrorKind::SignatureInvalid,
+            Self::WT_OK | Self::WT_ERR_INTERNAL => ErrorKind::Internal,
         }
     }
 }
@@ -197,7 +219,7 @@ impl From<Ceiling> for wt_ceiling {
 /// Every string is NUL-terminated and **borrowed for the duration of the
 /// callback** — copy what you keep. A field that does not apply to this event's
 /// `kind` is NULL for a string, and unspecified for a number or an enum: read
-/// the `kind` first. The field list below says which kinds set what.
+/// the `kind` first. The comment on each field says which kinds set it.
 ///
 /// **No field here carries an argument value or a log message body.** That is
 /// the whole reason this is not a `wt_trace_event_t`: an audit line has to be
@@ -281,6 +303,9 @@ pub struct wt_error_t {
 
 /// Builder for a host. Consumed by [`wt_host_builder_build`].
 pub struct wt_host_builder_t {
+    /// `None` once `wt_host_builder_build` has taken it, whether or not the
+    /// build succeeded: a failed build spends the builder too, because the
+    /// Rust builder was moved into `HostBuilder::build`.
     inner: Option<HostBuilder>,
 }
 
@@ -389,6 +414,77 @@ unsafe fn borrow_str<'a>(ptr: *const c_char, what: &str) -> Result<&'a str, Erro
         .map_err(|_| Error::invalid_argument(format!("{what} is not valid UTF-8")))
 }
 
+/// Borrow `len` bytes behind a pointer, rejecting NULL by name.
+///
+/// `(NULL, 0)` is rejected too. Every caller here reads a component or a
+/// signature, and an empty one of either is an error the next step reports
+/// better than "wasm must not be NULL" would.
+unsafe fn borrow_bytes<'a>(ptr: *const u8, len: usize, what: &str) -> Result<&'a [u8], Error> {
+    if ptr.is_null() {
+        return Err(Error::invalid_argument(format!("{what} must not be NULL")));
+    }
+    Ok(unsafe { std::slice::from_raw_parts(ptr, len) })
+}
+
+/// Borrow the object behind a handle, rejecting NULL by name.
+unsafe fn borrow<'a, T>(ptr: *const T, what: &str) -> Result<&'a T, Error> {
+    if ptr.is_null() {
+        return Err(Error::invalid_argument(format!("{what} must not be NULL")));
+    }
+    Ok(unsafe { &*ptr })
+}
+
+/// Mutably borrow the object behind a handle, rejecting NULL by name.
+unsafe fn borrow_mut<'a, T>(ptr: *mut T, what: &str) -> Result<&'a mut T, Error> {
+    if ptr.is_null() {
+        return Err(Error::invalid_argument(format!("{what} must not be NULL")));
+    }
+    Ok(unsafe { &mut *ptr })
+}
+
+/// Check an out-parameter for NULL by name, before doing the work that would
+/// fill it.
+fn out_param<T>(ptr: *mut T, what: &str) -> Result<*mut T, Error> {
+    if ptr.is_null() {
+        return Err(Error::invalid_argument(format!("{what} must not be NULL")));
+    }
+    Ok(ptr)
+}
+
+/// Borrow `len` C strings from an array of pointers, rejecting a NULL array
+/// (unless `len` is zero) and a NULL or non-UTF-8 entry by index.
+unsafe fn borrow_strs<'a>(
+    array: *const *const c_char,
+    len: usize,
+    what: &str,
+) -> Result<Vec<&'a str>, Error> {
+    if array.is_null() && len != 0 {
+        return Err(Error::invalid_argument(format!("{what} must not be NULL")));
+    }
+    (0..len)
+        .map(|index| {
+            let raw = unsafe { *array.add(index) };
+            unsafe { borrow_str(raw, &format!("{what}[{index}]")) }
+        })
+        .collect()
+}
+
+/// The one result a WIT 0.2 function may return, or an error for a world that
+/// has moved past that.
+fn single_result<T>(export: &str, results: Vec<T>) -> Result<Option<T>, Error> {
+    let mut results = results.into_iter();
+    let first = results.next();
+    match results.len() {
+        0 => Ok(first),
+        // WIT 0.2 functions return at most one value, so more is a signal that
+        // the world moved on rather than something to paper over.
+        more => Err(Error::internal(format!(
+            "{export} returned {} values; the C API expects at most one",
+            more + 1
+        ))),
+    }
+}
+
 fn into_c_string(text: &str) -> Result<*mut c_char, Error> {
     CString::new(text)
         .map(CString::into_raw)
@@ -399,10 +495,16 @@ fn into_c_string(text: &str) -> Result<*mut c_char, Error> {
 // Version and status
 // ---------------------------------------------------------------------------
 
-/// Library version, e.g. `"0.0.0"`. Never NULL; static storage.
+/// Library version, e.g. `"0.7.0"`: the crate's own, so a release bump moves
+/// it. Never NULL; static storage.
 #[unsafe(no_mangle)]
 pub extern "C" fn wt_version_string() -> *const c_char {
-    c"0.1.0".as_ptr()
+    const VERSION: &CStr =
+        match CStr::from_bytes_with_nul(concat!(env!("CARGO_PKG_VERSION"), "\0").as_bytes()) {
+            Ok(version) => version,
+            Err(_) => c"0.0.0",
+        };
+    VERSION.as_ptr()
 }
 
 /// Stable spelling of a status code, e.g. `"WT_ERR_MANIFEST"`. Never NULL.
@@ -489,14 +591,13 @@ pub extern "C" fn wt_ceiling_name(ceiling: wt_ceiling) -> *const c_char {
 
 /// Copy a C string into one watoots owns, for returning from a host function.
 ///
-/// Returns NULL if `text` is NULL or contains a NUL byte.
+/// Returns NULL only if `text` is NULL: a C string cannot hold an interior NUL.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn wt_string_new(text: *const c_char) -> *mut c_char {
     if text.is_null() {
         return ptr::null_mut();
     }
-    let borrowed = unsafe { CStr::from_ptr(text) };
-    CString::new(borrowed.to_bytes()).map_or(ptr::null_mut(), CString::into_raw)
+    CString::from(unsafe { CStr::from_ptr(text) }).into_raw()
 }
 
 /// Free a string produced by this library. NULL is ignored.
@@ -565,19 +666,34 @@ pub unsafe extern "C" fn wt_host_builder_delete(builder: *mut wt_host_builder_t)
 }
 
 /// Apply `edit` to the builder in place.
+///
+/// `edit` cannot fail, on purpose: the Rust builder's setters consume `self`,
+/// so a fallible edit that returned early would leave the slot empty and every
+/// later call reporting "already built". Anything that can fail -- reading a
+/// file, parsing TOML -- is done before this is called.
 unsafe fn with_builder(
     builder: *mut wt_host_builder_t,
-    edit: impl FnOnce(HostBuilder) -> Result<HostBuilder, Error>,
+    edit: impl FnOnce(HostBuilder) -> HostBuilder,
 ) -> Result<(), Error> {
-    if builder.is_null() {
-        return Err(Error::invalid_argument("builder must not be NULL"));
-    }
-    let slot = unsafe { &mut (*builder).inner };
-    let current = slot
-        .take()
-        .ok_or_else(|| Error::invalid_argument("this builder was already built"))?;
-    *slot = Some(edit(current)?);
+    let slot = unsafe { builder_slot(builder) }?;
+    let current = slot.take().expect("builder_slot checked it is present");
+    *slot = Some(edit(current));
     Ok(())
+}
+
+/// The slot a live builder sits in, refusing a NULL handle or a spent one.
+///
+/// Checked before any work an entry point does on the builder's behalf, so a
+/// NULL builder is reported as such rather than as whatever that work found
+/// first -- a missing manifest file, say.
+unsafe fn builder_slot<'a>(
+    builder: *mut wt_host_builder_t,
+) -> Result<&'a mut Option<HostBuilder>, Error> {
+    let slot = &mut unsafe { borrow_mut(builder, "builder") }?.inner;
+    if slot.is_none() {
+        return Err(Error::invalid_argument("this builder was already built"));
+    }
+    Ok(slot)
 }
 
 /// Read the manifest from a TOML file.
@@ -588,8 +704,10 @@ pub unsafe extern "C" fn wt_host_builder_manifest_from_file(
     error_out: *mut *mut wt_error_t,
 ) -> wt_status {
     guard(error_out, || {
+        unsafe { builder_slot(builder) }?;
         let path = unsafe { borrow_str(path, "path") }?;
-        unsafe { with_builder(builder, |b| b.manifest_from_file(path)) }
+        let manifest = Manifest::from_file(path)?;
+        unsafe { with_builder(builder, |b| b.manifest(manifest)) }
     })
 }
 
@@ -603,7 +721,7 @@ pub unsafe extern "C" fn wt_host_builder_manifest_from_string(
     guard(error_out, || {
         let toml = unsafe { borrow_str(toml, "toml") }?;
         let manifest = Manifest::parse(toml)?;
-        unsafe { with_builder(builder, |b| Ok(b.manifest(manifest))) }
+        unsafe { with_builder(builder, |b| b.manifest(manifest)) }
     })
 }
 
@@ -618,7 +736,7 @@ pub unsafe extern "C" fn wt_host_builder_var(
     guard(error_out, || {
         let name = unsafe { borrow_str(name, "name") }?;
         let value = unsafe { borrow_str(value, "value") }?;
-        unsafe { with_builder(builder, |b| Ok(b.var(name, value))) }
+        unsafe { with_builder(builder, |b| b.var(name, value)) }
     })
 }
 
@@ -638,7 +756,7 @@ pub unsafe extern "C" fn wt_host_builder_cache_dir(
 ) -> wt_status {
     guard(error_out, || {
         let dir = unsafe { borrow_str(dir, "dir") }?;
-        unsafe { with_builder(builder, |b| Ok(b.cache_dir(dir))) }
+        unsafe { with_builder(builder, |b| b.cache_dir(dir)) }
     })
 }
 
@@ -651,23 +769,49 @@ pub unsafe extern "C" fn wt_host_builder_provide_interface(
 ) -> wt_status {
     guard(error_out, || {
         let interface = unsafe { borrow_str(iface, "interface") }?;
-        unsafe { with_builder(builder, |b| Ok(b.provide_interface(interface))) }
+        unsafe { with_builder(builder, |b| b.provide_interface(interface)) }
     })
 }
 
 /// A C function pointer plus its userdata, promised to be thread-safe.
-struct Callback {
-    func: wt_host_func_t,
+///
+/// `F` is the non-`Option` function type, so a wrapper only exists once the
+/// NULL check at registration has passed and nothing downstream has to unwrap
+/// it again.
+struct CCallback<F: Copy> {
+    func: F,
     userdata: *mut c_void,
 }
 
-// SAFETY: watoots does not serialise calls into a host function, so the C side
-// has to make its callback and userdata thread-safe. This is stated in the
-// documentation for `wt_host_func_t`; the alternative is a lock on every
-// import crossing, which would tax every single-threaded embedder to protect
-// a case they do not have.
-unsafe impl Send for Callback {}
-unsafe impl Sync for Callback {}
+// SAFETY: watoots does not serialise calls into a host function, a log sink or
+// an audit hook, so the C side has to make its callback and userdata
+// thread-safe. This is stated in the documentation for each callback type; the
+// alternative is a lock on every crossing, which would tax every
+// single-threaded embedder to protect a case they do not have.
+unsafe impl<F: Copy> Send for CCallback<F> {}
+unsafe impl<F: Copy> Sync for CCallback<F> {}
+
+impl<F: Copy> CCallback<F> {
+    /// Wrap a callback the C side registered, refusing a NULL one by name.
+    fn new(func: Option<F>, userdata: *mut c_void, what: &str) -> Result<Self, Error> {
+        let func =
+            func.ok_or_else(|| Error::invalid_argument(format!("{what} must not be NULL")))?;
+        Ok(Self { func, userdata })
+    }
+}
+
+type Callback = CCallback<
+    unsafe extern "C" fn(
+        *mut c_void,
+        *const *const c_char,
+        usize,
+        *mut *mut c_char,
+        *mut *mut wt_error_t,
+    ) -> wt_status,
+>;
+type Sink =
+    CCallback<unsafe extern "C" fn(*mut c_void, wt_log_level, *const c_char, *const c_char)>;
+type Auditor = CCallback<unsafe extern "C" fn(*mut c_void, *const c_char, *const wt_audit_event_t)>;
 
 /// Serve one function of one interface to plugins.
 ///
@@ -684,34 +828,17 @@ pub unsafe extern "C" fn wt_host_builder_host_func(
     guard(error_out, || {
         let interface = unsafe { borrow_str(iface, "interface") }?.to_string();
         let func = unsafe { borrow_str(func, "func") }?.to_string();
-        if implementation.is_none() {
-            return Err(Error::invalid_argument("implementation must not be NULL"));
-        }
-        let callback = Callback {
-            func: implementation,
-            userdata,
-        };
+        let callback = Callback::new(implementation, userdata, "implementation")?;
 
         unsafe {
             with_builder(builder, move |b| {
-                Ok(b.host_func(&interface, &func, move |call| {
+                b.host_func(&interface, &func, move |call| {
                     dispatch_host_func(&callback, call)
-                }))
+                })
             })
         }
     })
 }
-
-/// A C log sink plus its userdata, promised to be thread-safe.
-struct Sink {
-    func: wt_log_sink_t,
-    userdata: *mut c_void,
-}
-
-// SAFETY: identical to `Callback` above, and for the same reason — a sink is
-// entered inline on the guest's call, from whatever thread made it.
-unsafe impl Send for Sink {}
-unsafe impl Sync for Sink {}
 
 /// Receive the plugin's `wasi:logging` messages.
 ///
@@ -730,17 +857,11 @@ pub unsafe extern "C" fn wt_host_builder_log_sink(
     error_out: *mut *mut wt_error_t,
 ) -> wt_status {
     guard(error_out, || {
-        if sink.is_none() {
-            return Err(Error::invalid_argument("sink must not be NULL"));
-        }
-        let sink = Sink {
-            func: sink,
-            userdata,
-        };
+        let sink = Sink::new(sink, userdata, "sink")?;
 
         unsafe {
             with_builder(builder, move |b| {
-                Ok(b.log_sink(move |record| dispatch_log(&sink, record)))
+                b.log_sink(move |record| dispatch_log(&sink, record))
             })
         }
     })
@@ -757,10 +878,9 @@ fn dispatch_log(sink: &Sink, record: &LogRecord<'_>) {
     let message = CString::new(record.message())
         .unwrap_or_else(|_| c"<message contained a NUL byte>".to_owned());
 
-    // SAFETY: both strings outlive the call, and the sink is non-null because
-    // it was checked at registration.
+    // SAFETY: both strings outlive the call.
     unsafe {
-        (sink.func.expect("checked at registration"))(
+        (sink.func)(
             sink.userdata,
             record.level().into(),
             context.as_ptr(),
@@ -768,17 +888,6 @@ fn dispatch_log(sink: &Sink, record: &LogRecord<'_>) {
         );
     }
 }
-
-/// A C audit hook plus its userdata, promised to be thread-safe.
-struct Auditor {
-    func: wt_audit_hook_t,
-    userdata: *mut c_void,
-}
-
-// SAFETY: identical to `Sink` above, and for the same reason — a decision is
-// reported inline where it is made, from whatever thread made the call.
-unsafe impl Send for Auditor {}
-unsafe impl Sync for Auditor {}
 
 /// Observe every authorisation decision: what a plugin was permitted to do, and
 /// what it was refused.
@@ -807,17 +916,11 @@ pub unsafe extern "C" fn wt_host_builder_audit_hook(
     error_out: *mut *mut wt_error_t,
 ) -> wt_status {
     guard(error_out, || {
-        if hook.is_none() {
-            return Err(Error::invalid_argument("hook must not be NULL"));
-        }
-        let auditor = Auditor {
-            func: hook,
-            userdata,
-        };
+        let auditor = Auditor::new(hook, userdata, "hook")?;
 
         unsafe {
             with_builder(builder, move |b| {
-                Ok(b.audit_hook(std::sync::Arc::new(auditor) as std::sync::Arc<dyn AuditHook>))
+                b.audit_hook(std::sync::Arc::new(auditor) as std::sync::Arc<dyn AuditHook>)
             })
         }
     })
@@ -840,25 +943,68 @@ fn audit_string(text: &str) -> CString {
     CString::new(text).unwrap_or_else(|_| c"<contained a NUL byte>".to_owned())
 }
 
+/// Owned storage for the optional strings of one audit event.
+///
+/// Each stays alive until the callback returns; the `wt_audit_event_t` only
+/// points at them. A field that does not apply to the event stays `None` and
+/// crosses as NULL.
+#[derive(Default)]
+struct AuditStrings {
+    sha256: Option<CString>,
+    import: Option<CString>,
+    requirement: Option<CString>,
+    grant_key: Option<CString>,
+    reason: Option<CString>,
+    limit_key: Option<CString>,
+}
+
+impl AuditStrings {
+    /// Record which import decided an event, and what it needed.
+    fn set_import(&mut self, import: Option<&str>, requirement: Option<Requirement>) {
+        self.import = import.map(audit_string);
+        if let Some(requirement) = requirement {
+            self.requirement = Some(audit_string(requirement.name()));
+            self.grant_key = Some(audit_string(requirement.grant_key()));
+        }
+    }
+
+    /// A load or reload refused: the same four fields either way.
+    fn set_refused(
+        &mut self,
+        sha256: &str,
+        import: Option<&str>,
+        requirement: Option<Requirement>,
+        reason: &str,
+    ) {
+        self.sha256 = Some(audit_string(sha256));
+        self.set_import(import, requirement);
+        self.reason = Some(audit_string(reason));
+    }
+
+    /// Point the C struct's string fields at this storage.
+    fn fill(&self, fields: &mut wt_audit_event_t) {
+        fn ptr_of(text: &Option<CString>) -> *const c_char {
+            text.as_ref().map_or(ptr::null(), |s| s.as_ptr())
+        }
+        fields.sha256 = ptr_of(&self.sha256);
+        fields.import = ptr_of(&self.import);
+        fields.requirement = ptr_of(&self.requirement);
+        fields.grant_key = ptr_of(&self.grant_key);
+        fields.reason = ptr_of(&self.reason);
+        fields.limit_key = ptr_of(&self.limit_key);
+    }
+}
+
 /// Bridge one authorisation decision out to C.
 ///
 /// Everything handed over is owned by this stack frame and borrowed by the
 /// callback, which is what lets the C side see names without a free per event.
-#[allow(clippy::too_many_lines)]
 fn dispatch_audit(auditor: &Auditor, event: &AuditEvent<'_>) {
     // The rendered line first, because it is what most hosts will forward, and
     // because building it cannot depend on the borrows below.
     let line = audit_string(&event.to_string());
     let plugin = audit_string(event.plugin());
-
-    // Owned storage for the optional strings. Each stays alive until the
-    // callback returns; `fields` only points at them.
-    let mut sha256: Option<CString> = None;
-    let mut import: Option<CString> = None;
-    let mut requirement: Option<CString> = None;
-    let mut grant_key: Option<CString> = None;
-    let mut reason: Option<CString> = None;
-    let mut limit_key: Option<CString> = None;
+    let mut strings = AuditStrings::default();
 
     let mut fields = wt_audit_event_t {
         kind: wt_audit_kind::WT_AUDIT_LOADED,
@@ -880,110 +1026,80 @@ fn dispatch_audit(auditor: &Auditor, event: &AuditEvent<'_>) {
 
     // One arm per variant rather than a `_`: a decision added to the Rust enum
     // must not reach C as a silently mislabelled one.
-    let set_requirement = |req: Option<Requirement>| -> (Option<CString>, Option<CString>) {
-        match req {
-            None => (None, None),
-            Some(req) => (
-                Some(audit_string(req.name())),
-                Some(audit_string(req.grant_key())),
-            ),
-        }
-    };
-
-    match event {
+    fields.kind = match event {
         AuditEvent::Loaded {
-            sha256: digest,
-            imports: count,
-            ..
+            sha256, imports, ..
         } => {
-            fields.kind = wt_audit_kind::WT_AUDIT_LOADED;
-            sha256 = Some(audit_string(digest));
-            fields.imports = *count as u64;
+            strings.sha256 = Some(audit_string(sha256));
+            fields.imports = *imports as u64;
+            wt_audit_kind::WT_AUDIT_LOADED
         }
-        AuditEvent::LoadedUnverified { sha256: digest, .. } => {
-            fields.kind = wt_audit_kind::WT_AUDIT_LOADED_UNVERIFIED;
-            sha256 = Some(audit_string(digest));
+        AuditEvent::LoadedUnverified { sha256, .. } => {
+            strings.sha256 = Some(audit_string(sha256));
+            wt_audit_kind::WT_AUDIT_LOADED_UNVERIFIED
         }
         AuditEvent::LoadRefused {
-            sha256: digest,
-            import: which,
-            requirement: req,
-            reason: why,
-            ..
-        }
-        | AuditEvent::ReloadRefused {
-            sha256: digest,
-            import: which,
-            requirement: req,
-            reason: why,
+            sha256,
+            import,
+            requirement,
+            reason,
             ..
         } => {
-            fields.kind = if matches!(event, AuditEvent::LoadRefused { .. }) {
-                wt_audit_kind::WT_AUDIT_LOAD_REFUSED
-            } else {
-                wt_audit_kind::WT_AUDIT_RELOAD_REFUSED
-            };
-            sha256 = Some(audit_string(digest));
-            import = which.map(audit_string);
-            (requirement, grant_key) = set_requirement(*req);
-            reason = Some(audit_string(why));
+            strings.set_refused(sha256, *import, *requirement, reason);
+            wt_audit_kind::WT_AUDIT_LOAD_REFUSED
+        }
+        AuditEvent::ReloadRefused {
+            sha256,
+            import,
+            requirement,
+            reason,
+            ..
+        } => {
+            strings.set_refused(sha256, *import, *requirement, reason);
+            wt_audit_kind::WT_AUDIT_RELOAD_REFUSED
         }
         AuditEvent::ImportDecided {
-            import: which,
-            requirement: req,
+            import,
+            requirement,
             verdict,
             ..
         } => {
-            fields.kind = wt_audit_kind::WT_AUDIT_IMPORT;
-            import = Some(audit_string(which));
-            (requirement, grant_key) = set_requirement(Some(*req));
+            strings.set_import(Some(import), Some(*requirement));
             fields.verdict = (*verdict).into();
+            wt_audit_kind::WT_AUDIT_IMPORT
         }
         AuditEvent::Reloaded {
-            sha256: digest,
-            reloads,
-            ..
+            sha256, reloads, ..
         } => {
-            fields.kind = wt_audit_kind::WT_AUDIT_RELOADED;
-            sha256 = Some(audit_string(digest));
+            strings.sha256 = Some(audit_string(sha256));
             fields.reloads = *reloads;
+            wt_audit_kind::WT_AUDIT_RELOADED
         }
         AuditEvent::LogAdmitted { level, .. } => {
-            fields.kind = wt_audit_kind::WT_AUDIT_LOG_ADMITTED;
             fields.level = (*level).into();
             fields.level_known = true;
+            wt_audit_kind::WT_AUDIT_LOG_ADMITTED
         }
         AuditEvent::LogSuppressed { level, ceiling, .. } => {
-            fields.kind = wt_audit_kind::WT_AUDIT_LOG_SUPPRESSED;
             if let Some(level) = level {
                 fields.level = (*level).into();
                 fields.level_known = true;
             }
             fields.ceiling_level = (*ceiling).into();
+            wt_audit_kind::WT_AUDIT_LOG_SUPPRESSED
         }
         AuditEvent::CeilingSpent { limit, .. } => {
-            fields.kind = wt_audit_kind::WT_AUDIT_CEILING_SPENT;
             fields.ceiling = (*limit).into();
-            limit_key = Some(audit_string(limit.manifest_key()));
+            strings.limit_key = Some(audit_string(limit.manifest_key()));
+            wt_audit_kind::WT_AUDIT_CEILING_SPENT
         }
-    }
-
-    fields.sha256 = sha256.as_ref().map_or(ptr::null(), |s| s.as_ptr());
-    fields.import = import.as_ref().map_or(ptr::null(), |s| s.as_ptr());
-    fields.requirement = requirement.as_ref().map_or(ptr::null(), |s| s.as_ptr());
-    fields.grant_key = grant_key.as_ref().map_or(ptr::null(), |s| s.as_ptr());
-    fields.reason = reason.as_ref().map_or(ptr::null(), |s| s.as_ptr());
-    fields.limit_key = limit_key.as_ref().map_or(ptr::null(), |s| s.as_ptr());
+    };
+    strings.fill(&mut fields);
 
     // SAFETY: every pointer in `fields` points at storage owned by this frame
-    // and outliving the call, and the hook is non-null because it was checked
-    // at registration.
+    // and outliving the call.
     unsafe {
-        (auditor.func.expect("checked at registration"))(
-            auditor.userdata,
-            line.as_ptr(),
-            &raw const fields,
-        );
+        (auditor.func)(auditor.userdata, line.as_ptr(), &raw const fields);
     }
 }
 
@@ -1002,10 +1118,9 @@ fn dispatch_host_func(callback: &Callback, call: &HostCall<'_>) -> Result<Vec<Va
     let mut result: *mut c_char = ptr::null_mut();
     let mut error: *mut wt_error_t = ptr::null_mut();
 
-    // SAFETY: the pointers live for the duration of the call, and the callback
-    // is non-null because it was checked at registration.
+    // SAFETY: the pointers live for the duration of the call.
     let status = unsafe {
-        (callback.func.expect("checked at registration"))(
+        (callback.func)(
             callback.userdata,
             argv.as_ptr(),
             argv.len(),
@@ -1022,7 +1137,7 @@ fn dispatch_host_func(callback: &Callback, call: &HostCall<'_>) -> Result<Vec<Va
         };
         unsafe { wt_error_delete(error) };
         unsafe { wt_string_delete(result) };
-        return Err(Error::new(status_to_kind(status), message));
+        return Err(Error::new(status.kind(), message));
     }
     unsafe { wt_error_delete(error) };
 
@@ -1045,19 +1160,6 @@ fn dispatch_host_func(callback: &Callback, call: &HostCall<'_>) -> Result<Vec<Va
     Ok(vec![watoots::from_wave(ty, &text)?])
 }
 
-fn status_to_kind(status: wt_status) -> ErrorKind {
-    match status {
-        wt_status::WT_ERR_INVALID_ARGUMENT => ErrorKind::InvalidArgument,
-        wt_status::WT_ERR_NOT_FOUND => ErrorKind::NotFound,
-        wt_status::WT_ERR_MANIFEST => ErrorKind::Manifest,
-        wt_status::WT_ERR_PERMISSION_DENIED => ErrorKind::PermissionDenied,
-        wt_status::WT_ERR_LOAD => ErrorKind::Load,
-        wt_status::WT_ERR_TRAP => ErrorKind::Trap,
-        wt_status::WT_ERR_LIMIT_EXCEEDED => ErrorKind::LimitExceeded,
-        _ => ErrorKind::Internal,
-    }
-}
-
 /// Split every plugin's time into guest, host-call and marshalling.
 ///
 /// Opt-in, because a call hook then fires on every host/guest transition. Read
@@ -1071,7 +1173,7 @@ pub unsafe extern "C" fn wt_host_builder_profile(
     error_out: *mut *mut wt_error_t,
 ) -> wt_status {
     guard(error_out, || unsafe {
-        with_builder(builder, |b| Ok(b.profile()))
+        with_builder(builder, HostBuilder::profile)
     })
 }
 
@@ -1100,14 +1202,14 @@ pub unsafe extern "C" fn wt_host_builder_profile_guest_samples(
         }
         unsafe {
             with_builder(builder, |b| {
-                Ok(b.profile_guest_samples(std::time::Duration::from_millis(interval_ms)))
+                b.profile_guest_samples(std::time::Duration::from_millis(interval_ms))
             })
         }
     })
 }
 
-/// Build the host. The builder is consumed but must still be freed with
-/// [`wt_host_builder_delete`].
+/// Build the host. The builder is consumed, whether or not the build succeeds,
+/// and must still be freed with [`wt_host_builder_delete`].
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn wt_host_builder_build(
     builder: *mut wt_host_builder_t,
@@ -1115,12 +1217,11 @@ pub unsafe extern "C" fn wt_host_builder_build(
     error_out: *mut *mut wt_error_t,
 ) -> wt_status {
     guard(error_out, || {
-        if builder.is_null() || host_out.is_null() {
-            return Err(Error::invalid_argument(
-                "builder and host_out must not be NULL",
-            ));
-        }
-        let inner = unsafe { (*builder).inner.take() }
+        let builder = unsafe { borrow_mut(builder, "builder") }?;
+        let host_out = out_param(host_out, "host_out")?;
+        let inner = builder
+            .inner
+            .take()
             .ok_or_else(|| Error::invalid_argument("this builder was already built"))?;
         let host = inner.build()?;
         unsafe { *host_out = Box::into_raw(Box::new(wt_host_t { inner: host })) };
@@ -1141,12 +1242,19 @@ pub unsafe extern "C" fn wt_host_delete(host: *mut wt_host_t) {
 }
 
 unsafe fn borrow_host<'a>(host: *const wt_host_t) -> Result<&'a Host, Error> {
-    if host.is_null() {
-        return Err(Error::invalid_argument("host must not be NULL"));
-    }
-    Ok(unsafe { &(*host).inner })
+    Ok(&unsafe { borrow(host, "host") }?.inner)
 }
 
+unsafe fn borrow_plugin<'a>(plugin: *const wt_plugin_t) -> Result<&'a wt_plugin_t, Error> {
+    unsafe { borrow(plugin, "plugin") }
+}
+
+unsafe fn borrow_plugin_mut<'a>(plugin: *mut wt_plugin_t) -> Result<&'a mut wt_plugin_t, Error> {
+    unsafe { borrow_mut(plugin, "plugin") }
+}
+
+/// Box a loaded plugin into the out-parameter, which was checked for NULL
+/// before the load so a bad pointer costs nothing.
 fn wrap_plugin(plugin: Plugin, plugin_out: *mut *mut wt_plugin_t) -> Result<(), Error> {
     let name = CString::new(plugin.name())
         .map_err(|_| Error::internal("plugin name contained a NUL byte"))?;
@@ -1171,9 +1279,7 @@ pub unsafe extern "C" fn wt_host_load(
     guard(error_out, || {
         let host = unsafe { borrow_host(host) }?;
         let path = unsafe { borrow_str(path, "path") }?;
-        if plugin_out.is_null() {
-            return Err(Error::invalid_argument("plugin_out must not be NULL"));
-        }
+        let plugin_out = out_param(plugin_out, "plugin_out")?;
         wrap_plugin(host.load(path)?, plugin_out)
     })
 }
@@ -1191,12 +1297,8 @@ pub unsafe extern "C" fn wt_host_load_binary(
     guard(error_out, || {
         let host = unsafe { borrow_host(host) }?;
         let name = unsafe { borrow_str(name, "name") }?;
-        if wasm.is_null() || plugin_out.is_null() {
-            return Err(Error::invalid_argument(
-                "wasm and plugin_out must not be NULL",
-            ));
-        }
-        let bytes = unsafe { std::slice::from_raw_parts(wasm, wasm_len) };
+        let bytes = unsafe { borrow_bytes(wasm, wasm_len, "wasm") }?;
+        let plugin_out = out_param(plugin_out, "plugin_out")?;
         wrap_plugin(host.load_binary(name, bytes)?, plugin_out)
     })
 }
@@ -1223,13 +1325,9 @@ pub unsafe extern "C" fn wt_host_load_binary_signed(
     guard(error_out, || {
         let host = unsafe { borrow_host(host) }?;
         let name = unsafe { borrow_str(name, "name") }?;
-        if wasm.is_null() || signature.is_null() || plugin_out.is_null() {
-            return Err(Error::invalid_argument(
-                "wasm, signature and plugin_out must not be NULL",
-            ));
-        }
-        let bytes = unsafe { std::slice::from_raw_parts(wasm, wasm_len) };
-        let sig = unsafe { std::slice::from_raw_parts(signature, signature_len) };
+        let bytes = unsafe { borrow_bytes(wasm, wasm_len, "wasm") }?;
+        let sig = unsafe { borrow_bytes(signature, signature_len, "signature") }?;
+        let plugin_out = out_param(plugin_out, "plugin_out")?;
         wrap_plugin(host.load_binary_signed(name, bytes, sig)?, plugin_out)
     })
 }
@@ -1253,12 +1351,8 @@ pub unsafe extern "C" fn wt_host_inspect(
 ) -> wt_status {
     guard(error_out, || {
         let host = unsafe { borrow_host(host) }?;
-        if wasm.is_null() || report_out.is_null() {
-            return Err(Error::invalid_argument(
-                "wasm and report_out must not be NULL",
-            ));
-        }
-        let bytes = unsafe { std::slice::from_raw_parts(wasm, wasm_len) };
+        let bytes = unsafe { borrow_bytes(wasm, wasm_len, "wasm") }?;
+        let report_out = out_param(report_out, "report_out")?;
         let report = host.inspect(bytes)?;
         let text = report.summarize(host.manifest());
         unsafe { *report_out = into_c_string(&text)? };
@@ -1280,12 +1374,8 @@ pub unsafe extern "C" fn wt_host_inspect_imports(
 ) -> wt_status {
     guard(error_out, || {
         let host = unsafe { borrow_host(host) }?;
-        if wasm.is_null() || report_out.is_null() {
-            return Err(Error::invalid_argument(
-                "wasm and report_out must not be NULL",
-            ));
-        }
-        let bytes = unsafe { std::slice::from_raw_parts(wasm, wasm_len) };
+        let bytes = unsafe { borrow_bytes(wasm, wasm_len, "wasm") }?;
+        let report_out = out_param(report_out, "report_out")?;
         let report = host.inspect(bytes)?;
         unsafe { *report_out = into_c_string(&report.describe())? };
         Ok(())
@@ -1312,16 +1402,13 @@ pub unsafe extern "C" fn wt_host_check_targets(
 ) -> wt_status {
     guard(error_out, || {
         let host = unsafe { borrow_host(host) }?;
-        if wasm.is_null() {
-            return Err(Error::invalid_argument("wasm must not be NULL"));
-        }
+        let bytes = unsafe { borrow_bytes(wasm, wasm_len, "wasm") }?;
         let wit = unsafe { borrow_str(wit, "wit") }?;
         let world = if world.is_null() {
             None
         } else {
             Some(unsafe { borrow_str(world, "world") }?)
         };
-        let bytes = unsafe { std::slice::from_raw_parts(wasm, wasm_len) };
         host.check_targets(bytes, wit, world)
     })
 }
@@ -1390,12 +1477,9 @@ pub unsafe extern "C" fn wt_plugin_stats(
     error_out: *mut *mut wt_error_t,
 ) -> wt_status {
     guard(error_out, || {
-        if plugin.is_null() || stats_out.is_null() {
-            return Err(Error::invalid_argument(
-                "plugin and stats_out must not be NULL",
-            ));
-        }
-        let stats = unsafe { (*plugin).inner.stats() };
+        let plugin = unsafe { borrow_plugin(plugin) }?;
+        let stats_out = out_param(stats_out, "stats_out")?;
+        let stats = plugin.inner.stats();
         unsafe {
             *stats_out = wt_plugin_stats_t {
                 calls: stats.calls,
@@ -1509,11 +1593,9 @@ pub unsafe extern "C" fn wt_plugin_reload(
     error_out: *mut *mut wt_error_t,
 ) -> wt_status {
     guard(error_out, || {
-        if plugin.is_null() || wasm.is_null() {
-            return Err(Error::invalid_argument("plugin and wasm must not be NULL"));
-        }
-        let bytes = unsafe { std::slice::from_raw_parts(wasm, wasm_len) };
-        let report = unsafe { (*plugin).inner.reload(bytes) }?;
+        let plugin = unsafe { borrow_plugin_mut(plugin) }?;
+        let bytes = unsafe { borrow_bytes(wasm, wasm_len, "wasm") }?;
+        let report = plugin.inner.reload(bytes)?;
         write_reload_report(&report, report_out);
         Ok(())
     })
@@ -1536,14 +1618,10 @@ pub unsafe extern "C" fn wt_plugin_reload_signed(
     error_out: *mut *mut wt_error_t,
 ) -> wt_status {
     guard(error_out, || {
-        if plugin.is_null() || wasm.is_null() || signature.is_null() {
-            return Err(Error::invalid_argument(
-                "plugin, wasm and signature must not be NULL",
-            ));
-        }
-        let bytes = unsafe { std::slice::from_raw_parts(wasm, wasm_len) };
-        let sig = unsafe { std::slice::from_raw_parts(signature, signature_len) };
-        let report = unsafe { (*plugin).inner.reload_signed(bytes, sig) }?;
+        let plugin = unsafe { borrow_plugin_mut(plugin) }?;
+        let bytes = unsafe { borrow_bytes(wasm, wasm_len, "wasm") }?;
+        let sig = unsafe { borrow_bytes(signature, signature_len, "signature") }?;
+        let report = plugin.inner.reload_signed(bytes, sig)?;
         write_reload_report(&report, report_out);
         Ok(())
     })
@@ -1563,11 +1641,9 @@ pub unsafe extern "C" fn wt_plugin_reload_file(
     error_out: *mut *mut wt_error_t,
 ) -> wt_status {
     guard(error_out, || {
-        if plugin.is_null() {
-            return Err(Error::invalid_argument("plugin must not be NULL"));
-        }
+        let plugin = unsafe { borrow_plugin_mut(plugin) }?;
         let path = unsafe { borrow_str(path, "path") }?;
-        let report = unsafe { (*plugin).inner.reload_from_file(path) }?;
+        let report = plugin.inner.reload_from_file(path)?;
         write_reload_report(&report, report_out);
         Ok(())
     })
@@ -1718,12 +1794,8 @@ pub unsafe extern "C" fn wt_plugin_profile(
     error_out: *mut *mut wt_error_t,
 ) -> wt_status {
     guard(error_out, || {
-        if plugin.is_null() || profile_out.is_null() {
-            return Err(Error::invalid_argument(
-                "plugin and profile_out must not be NULL",
-            ));
-        }
-        let handle = unsafe { &mut *plugin };
+        let handle = unsafe { borrow_plugin_mut(plugin) }?;
+        let profile_out = out_param(profile_out, "profile_out")?;
         let profile = handle.inner.profile()?;
 
         handle.profile_rows = profile
@@ -1760,12 +1832,8 @@ pub unsafe extern "C" fn wt_plugin_profile_function(
     error_out: *mut *mut wt_error_t,
 ) -> wt_status {
     guard(error_out, || {
-        if plugin.is_null() || function_out.is_null() {
-            return Err(Error::invalid_argument(
-                "plugin and function_out must not be NULL",
-            ));
-        }
-        let rows = unsafe { &(*plugin).profile_rows };
+        let rows = &unsafe { borrow_plugin(plugin) }?.profile_rows;
+        let function_out = out_param(function_out, "function_out")?;
         let row = usize::try_from(index)
             .ok()
             .and_then(|index| rows.get(index))
@@ -1800,11 +1868,9 @@ pub unsafe extern "C" fn wt_plugin_write_guest_profile(
     error_out: *mut *mut wt_error_t,
 ) -> wt_status {
     guard(error_out, || {
-        if plugin.is_null() {
-            return Err(Error::invalid_argument("plugin must not be NULL"));
-        }
+        let plugin = unsafe { borrow_plugin_mut(plugin) }?;
         let path = unsafe { borrow_str(path, "path") }?;
-        unsafe { (*plugin).inner.write_guest_profile(path) }
+        plugin.inner.write_guest_profile(path)
     })
 }
 
@@ -1822,38 +1888,20 @@ pub unsafe extern "C" fn wt_plugin_call(
     error_out: *mut *mut wt_error_t,
 ) -> wt_status {
     guard(error_out, || {
-        if plugin.is_null() || result_out.is_null() {
-            return Err(Error::invalid_argument(
-                "plugin and result_out must not be NULL",
-            ));
-        }
-        if args.is_null() && args_len != 0 {
-            return Err(Error::invalid_argument("args must not be NULL"));
-        }
+        let plugin = unsafe { borrow_plugin_mut(plugin) }?;
+        let result_out = out_param(result_out, "result_out")?;
         let export = unsafe { borrow_str(export, "export") }?;
+        let borrowed = unsafe { borrow_strs(args, args_len, "args") }?;
 
-        let mut borrowed = Vec::with_capacity(args_len);
-        for index in 0..args_len {
-            let raw = unsafe { *args.add(index) };
-            borrowed.push(unsafe { borrow_str(raw, "argument") }?);
+        let results = plugin.inner.call_wave(export, &borrowed)?;
+        let result = single_result(export, results)?;
+        unsafe {
+            *result_out = match result {
+                None => ptr::null_mut(),
+                Some(text) => into_c_string(&text)?,
+            };
         }
-
-        let plugin = unsafe { &mut (*plugin).inner };
-        let results = plugin.call_wave(export, &borrowed)?;
-
-        unsafe { *result_out = ptr::null_mut() };
-        match results.len() {
-            0 => Ok(()),
-            1 => {
-                unsafe { *result_out = into_c_string(&results[0])? };
-                Ok(())
-            }
-            // WIT 0.2 functions return at most one value, so this is a signal
-            // that the world moved on rather than something to paper over.
-            more => Err(Error::internal(format!(
-                "{export} returned {more} values; the C API expects at most one"
-            ))),
-        }
+        Ok(())
     })
 }
 
@@ -1914,5 +1962,32 @@ mod status_tests {
     fn the_discriminants_line_up_with_error_kind() {
         assert_eq!(ErrorKind::SignatureInvalid as i32, 9);
         assert_eq!(wt_status::WT_ERR_SIGNATURE_INVALID as i32, 9);
+    }
+
+    /// A status a C host function returns comes back as the kind it names.
+    /// This is the reverse of `every_error_kind_has_its_own_status`, and it
+    /// had the same trapdoor: `SignatureInvalid` reached the guest as
+    /// `Internal` until this test existed.
+    #[test]
+    fn every_status_round_trips_to_its_kind() {
+        for status in [
+            wt_status::WT_ERR_INVALID_ARGUMENT,
+            wt_status::WT_ERR_NOT_FOUND,
+            wt_status::WT_ERR_MANIFEST,
+            wt_status::WT_ERR_PERMISSION_DENIED,
+            wt_status::WT_ERR_LOAD,
+            wt_status::WT_ERR_TRAP,
+            wt_status::WT_ERR_LIMIT_EXCEEDED,
+            wt_status::WT_ERR_INTERNAL,
+            wt_status::WT_ERR_SIGNATURE_INVALID,
+        ] {
+            assert_eq!(wt_status::from(status.kind()), status, "{status:?}");
+        }
+    }
+
+    #[test]
+    fn the_version_string_is_the_crates() {
+        let version = unsafe { CStr::from_ptr(wt_version_string()) };
+        assert_eq!(version.to_str().unwrap(), env!("CARGO_PKG_VERSION"));
     }
 }

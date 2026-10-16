@@ -25,33 +25,32 @@ use crate::{Error, ErrorKind, Result};
 
 /// A public key a plugin may be signed with, as it appeared in the manifest.
 #[derive(Debug, Clone)]
-pub struct TrustedKey {
-    /// Where it sat in `signature.keys`, so a refusal can name it without
-    /// printing key material.
+pub(crate) struct TrustedKey {
+    /// Where it sat in `signature.keys`. The tests check which key matched;
+    /// nothing reports it to a caller, so a refusal never names key material.
+    #[cfg_attr(not(test), allow(dead_code))]
     index: usize,
     key: VerifyingKey,
 }
 
 impl TrustedKey {
     /// Parse one PEM `SUBJECT PUBLIC KEY INFO` block — a `cosign.pub`, or the
-    /// output of `openssl ec -pubout`.
+    /// output of `openssl ec -pubout`. `index` is where it sat in
+    /// `signature.keys`, so a refusal can name it without printing key material.
     fn parse(index: usize, pem: &str) -> Result<Self> {
         let key = VerifyingKey::from_public_key_pem(pem.trim()).map_err(|err| {
-            Error::new(
-                ErrorKind::Manifest,
-                format!(
-                    "signature.keys[{index}] is not a PEM public key: {err}. Expected a \
+            Error::manifest(format!(
+                "signature.keys[{index}] is not a PEM public key: {err}. Expected a \
                      `-----BEGIN PUBLIC KEY-----` block holding a P-256 key, which is what \
                      `cosign public-key` and `openssl ec -pubout` write"
-                ),
-            )
+            ))
         })?;
         Ok(Self { index, key })
     }
 
     /// Which entry of `signature.keys` this is.
-    #[must_use]
-    pub fn index(&self) -> usize {
+    #[cfg(test)]
+    fn index(&self) -> usize {
         self.index
     }
 }
@@ -94,9 +93,10 @@ pub(crate) fn verify<'a>(
         ))
     })?;
 
-    // No short-circuit on the *first* key: `verify` is constant-time per key,
-    // and a caller learning which key failed first tells them nothing they
-    // could not learn by trying each themselves.
+    // Stops at the first key that verifies. The failure message below says
+    // only how many were tried, never which came closest: each `verify` is
+    // constant-time, and there is nothing a caller could learn from the order
+    // that they could not learn by trying each key themselves.
     keys.iter()
         .find(|trusted| trusted.key.verify(wasm, &parsed).is_ok())
         .ok_or_else(|| {

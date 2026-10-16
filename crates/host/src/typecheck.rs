@@ -18,24 +18,21 @@
 
 use wasmtime::component::{Type, Val};
 
-use crate::{Error, ErrorKind, Result};
+use crate::{Error, Result};
 
 /// Check every argument against its parameter, naming the first mismatch.
 pub(crate) fn check_args(
     plugin: &str,
     export: &str,
-    params: &[(String, Type)],
+    params: &[(&str, Type)],
     args: &[Val],
 ) -> Result<()> {
     if params.len() != args.len() {
-        return Err(Error::new(
-            ErrorKind::InvalidArgument,
-            format!(
-                "{plugin}: {export}: expected {} argument(s), got {}",
-                params.len(),
-                args.len()
-            ),
-        ));
+        return Err(Error::invalid_argument(format!(
+            "{plugin}: {export}: expected {} argument(s), got {}",
+            params.len(),
+            args.len()
+        )));
     }
     for (index, ((name, ty), val)) in params.iter().zip(args).enumerate() {
         if let Err(Mismatch {
@@ -49,13 +46,10 @@ pub(crate) fn check_args(
             } else {
                 format!(" at {path}")
             };
-            return Err(Error::new(
-                ErrorKind::InvalidArgument,
-                format!(
-                    "{plugin}: {export}: argument {index} ({name}){at}: type mismatch: \
+            return Err(Error::invalid_argument(format!(
+                "{plugin}: {export}: argument {index} ({name}){at}: type mismatch: \
                      expected {expected}, found {found}"
-                ),
-            ));
+            )));
         }
     }
     Ok(())
@@ -108,7 +102,6 @@ fn conforms(val: &Val, ty: &Type) -> std::result::Result<(), Mismatch> {
         | (Type::Float64, Val::Float64(_))
         | (Type::Char, Val::Char(_))
         | (Type::String, Val::String(_))
-        | (Type::Enum(_), Val::Enum(_))
         | (Type::Own(_) | Type::Borrow(_), Val::Resource(_))
         | (Type::Future(_), Val::Future(_))
         | (Type::Stream(_), Val::Stream(_))
@@ -167,6 +160,14 @@ fn conforms(val: &Val, ty: &Type) -> std::result::Result<(), Mismatch> {
                 conforms(item, &item_ty).map_err(|m| m.under(&format!(".{index}")))?;
             }
         }
+        (Type::Enum(enum_), Val::Enum(case)) => {
+            if !enum_.names().any(|known| known == case) {
+                return Err(Mismatch::shaped(
+                    format!("a case of {}", describe_type(ty)),
+                    "an unknown case",
+                ));
+            }
+        }
         (Type::Variant(variant), Val::Variant(case, payload)) => {
             let Some(found) = variant.cases().find(|c| c.name == case) else {
                 return Err(Mismatch::shaped(
@@ -174,24 +175,12 @@ fn conforms(val: &Val, ty: &Type) -> std::result::Result<(), Mismatch> {
                     "an unknown case",
                 ));
             };
-            match (found.ty, payload) {
-                (Some(payload_ty), Some(payload)) => {
-                    conforms(payload, &payload_ty).map_err(|m| m.under(&format!(".{case}")))?;
-                }
-                (None, None) => {}
-                (Some(_), None) => {
-                    return Err(Mismatch::shaped(
-                        format!("a payload for case `{case}`"),
-                        "none",
-                    ));
-                }
-                (None, Some(_)) => {
-                    return Err(Mismatch::shaped(
-                        format!("no payload for case `{case}`"),
-                        "one",
-                    ));
-                }
-            }
+            conforms_payload(
+                found.ty.as_ref(),
+                payload.as_deref(),
+                &format!("case `{case}`"),
+            )
+            .map_err(|m| m.under(&format!(".{case}")))?;
         }
         (Type::Option(option), Val::Option(payload)) => {
             if let Some(payload) = payload {
@@ -203,18 +192,8 @@ fn conforms(val: &Val, ty: &Type) -> std::result::Result<(), Mismatch> {
                 Ok(payload) => ("ok", result.ok(), payload),
                 Err(payload) => ("err", result.err(), payload),
             };
-            match (declared, payload) {
-                (Some(payload_ty), Some(payload)) => {
-                    conforms(payload, &payload_ty).map_err(|m| m.under(&format!(".{side}")))?;
-                }
-                (None, None) => {}
-                (Some(_), None) => {
-                    return Err(Mismatch::shaped(format!("a payload for `{side}`"), "none"));
-                }
-                (None, Some(_)) => {
-                    return Err(Mismatch::shaped(format!("no payload for `{side}`"), "one"));
-                }
-            }
+            conforms_payload(declared.as_ref(), payload.as_deref(), &format!("`{side}`"))
+                .map_err(|m| m.under(&format!(".{side}")))?;
         }
         (Type::Flags(flags), Val::Flags(set)) => {
             for name in set {
@@ -230,6 +209,24 @@ fn conforms(val: &Val, ty: &Type) -> std::result::Result<(), Mismatch> {
         _ => return Err(Mismatch::here(ty, val)),
     }
     Ok(())
+}
+
+/// A variant case or a result side either carries a payload or does not, and
+/// the value has to agree with the type about which.
+///
+/// `what` names the case or side for the message. A mismatch inside the payload
+/// is reported at the payload's own path; the caller prefixes the step.
+fn conforms_payload(
+    declared: Option<&Type>,
+    payload: Option<&Val>,
+    what: &str,
+) -> std::result::Result<(), Mismatch> {
+    match (declared, payload) {
+        (Some(payload_ty), Some(payload)) => conforms(payload, payload_ty),
+        (None, None) => Ok(()),
+        (Some(_), None) => Err(Mismatch::shaped(format!("a payload for {what}"), "none")),
+        (None, Some(_)) => Err(Mismatch::shaped(format!("no payload for {what}"), "one")),
+    }
 }
 
 /// A type as WIT would spell it, one level deep.

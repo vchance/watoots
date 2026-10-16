@@ -125,23 +125,25 @@ impl Trace {
         })
     }
 
-    /// Every distinct `(interface, function)` the plugin called out to.
+    /// Every distinct `(interface, function)` the plugin called out to, in
+    /// first-seen order.
     ///
-    /// Replay uses this to know which host functions its mock has to serve.
+    /// What the recording exercised, which is not the same as what the
+    /// component declares: replay serves the declared set (from the component
+    /// itself) and uses this only to report on a trace.
     #[must_use]
     pub fn imported_functions(&self) -> Vec<(String, String)> {
-        let mut seen: Vec<(String, String)> = Vec::new();
-        for event in &self.events {
-            if let Event::ImportCall {
-                interface, func, ..
-            } = event
-            {
-                let pair = (interface.clone(), func.clone());
-                if !seen.contains(&pair) {
-                    seen.push(pair);
-                }
-            }
-        }
-        seen
+        let mut seen = std::collections::BTreeSet::new();
+        self.events
+            .iter()
+            .filter_map(|event| match event {
+                Event::ImportCall {
+                    interface, func, ..
+                } => Some((interface.as_str(), func.as_str())),
+                _ => None,
+            })
+            .filter(|pair| seen.insert(*pair))
+            .map(|(interface, func)| (interface.to_string(), func.to_string()))
+            .collect()
     }
 }

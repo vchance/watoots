@@ -18,10 +18,11 @@
 // pipeline without trial and error.
 //
 // The honest caveat, and half of why this example was written: images cross
-// the C API as WAVE *text*, because `wt_plugin_call` takes `const char* const*`
-// and there is no binary path. It works. It is not free. examples/README.md
-// says what it costs, and the profile printed at the end of every run says the
-// same thing from the other side.
+// the C API here as WAVE *text*, through `wt_plugin_call`. That is a choice,
+// kept on purpose so the cost is visible -- examples/README.md says what it
+// is, and the profile printed at the end of every run says the same thing from
+// the other side. The typed path (`wt::Val::Bytes`, `wt_plugin_call_vals`) is
+// what examples/host-cpp-preview uses, and what a codec host should use.
 
 #include <algorithm>
 #include <array>
@@ -87,7 +88,14 @@ std::vector<unsigned char> ReadPixels(wave::WaveReader& reader,
   pixels.reserve(static_cast<size_t>(expected));
   reader.Expect('[');
   while (reader.Ok() && !reader.Peek(']')) {
-    pixels.push_back(static_cast<unsigned char>(reader.Number()));
+    // A `list<u8>` carries bytes, and a plugin that writes `300` has broken
+    // its world; truncating it to 44 would hide that and ship a wrong pixel.
+    const uint32_t value = reader.Number();
+    if (value > 255) {
+      reader.Reject("a pixel byte of " + std::to_string(value));
+      break;
+    }
+    pixels.push_back(static_cast<unsigned char>(value));
     if (!reader.Take(',')) {
       break;
     }
@@ -244,32 +252,6 @@ const std::array<std::string, 256>& Decimals() {
     return table;
   }();
   return kTable;
-}
-
-// Escape a string for WAVE, as examples/host-cpp does: values cross the
-// boundary as text, so the host quotes what it sends.
-std::string WaveString(std::string_view text) {
-  std::string out = "\"";
-  for (const char character : text) {
-    switch (character) {
-      case '"':
-        out += "\\\"";
-        break;
-      case '\\':
-        out += "\\\\";
-        break;
-      case '\n':
-        out += "\\n";
-        break;
-      case '\t':
-        out += "\\t";
-        break;
-      default:
-        out += character;
-    }
-  }
-  out += '"';
-  return out;
 }
 
 // The image, as the WAVE text `wt_plugin_call` takes.
@@ -469,7 +451,7 @@ wt::Result<Step> ParseStep(std::string_view spelling) {
   // the plugin can resolve.
   return Step{
       .kind = "lut",
-      .wave = "lut(" + WaveString(arguments) + ")",
+      .wave = "lut(" + wave::Quote(arguments) + ")",
       .label = "lut(" + std::string(arguments) + ")",
   };
 }

@@ -1,10 +1,13 @@
-// A reader for the slice of WAVE the example worlds' values are written in.
+// WAVE text for the C++ example hosts that use the text path: a quoter for
+// what they send, and a reader for the slice of WAVE the example worlds'
+// values come back in.
 //
-// Shared by the C++ example hosts and nothing else. It lives in examples/ and
-// not in the library on purpose: results cross the C API as text, and what an
-// application actually has to do to read one should be visible in the examples
-// rather than hidden behind a dependency. Two hosts needing the same two
-// hundred lines is the reason it is a header rather than a copy.
+// Shared by examples/host-cpp and examples/host-cpp-asset and nothing else
+// (examples/host-cpp-preview takes the typed path and needs neither). It lives
+// in examples/ and not in the library on purpose: what an application actually
+// has to do to speak text to a plugin should be visible in the examples rather
+// than hidden behind a dependency. Two hosts needing the same lines is the
+// reason it is a header rather than a copy.
 
 #ifndef WATOOTS_EXAMPLES_WAVE_READER_HPP_
 #define WATOOTS_EXAMPLES_WAVE_READER_HPP_
@@ -22,8 +25,42 @@ namespace wave {
 // A value the plugin returned that this host cannot read. Deliberately not
 // WT_ERR_INVALID_ARGUMENT: the argument was ours, the answer is theirs, and
 // conflating the two sends the reader to the wrong file.
-wt::Error Unreadable(const std::string& message) {
+inline wt::Error Unreadable(const std::string& message) {
   return {WT_ERR_INTERNAL, "the plugin's answer did not parse: " + message};
+}
+
+// ---------------------------------------------------------------------------
+// Writing WAVE
+// ---------------------------------------------------------------------------
+
+// Quote a string for WAVE. Values cross the text path as text, so a host has
+// to escape what it sends the same way it would for any other textual
+// protocol. The escapes are the ones `WaveReader::Text` reads back.
+inline std::string Quote(std::string_view text) {
+  std::string out = "\"";
+  for (const char character : text) {
+    switch (character) {
+      case '"':
+        out += "\\\"";
+        break;
+      case '\\':
+        out += "\\\\";
+        break;
+      case '\n':
+        out += "\\n";
+        break;
+      case '\r':
+        out += "\\r";
+        break;
+      case '\t':
+        out += "\\t";
+        break;
+      default:
+        out += character;
+    }
+  }
+  out += '"';
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -109,27 +146,17 @@ class WaveReader {
     return std::string(text_.substr(start, at_ - start));
   }
 
+  // An unsigned integer that fits a `u32`.
   uint32_t Number() {
-    SkipSpace();
-    const size_t start = at_;
-    uint64_t value = 0;
-    while (Ok() && at_ < text_.size() && text_.at(at_) >= '0' &&
-           text_.at(at_) <= '9') {
-      value = (value * 10) + static_cast<uint64_t>(text_.at(at_) - '0');
-      if (value > UINT32_MAX) {
-        Reject("a number too large for u32 " + Here());
-        return 0;
-      }
-      ++at_;
-    }
-    if (at_ == start) {
-      Reject("expected a number " + Here());
+    const uint64_t value = Number64();
+    if (Ok() && value > UINT32_MAX) {
+      Reject("a number too large for u32 " + Here());
       return 0;
     }
     return static_cast<uint32_t>(value);
   }
 
-  // The same, for a `u64` payload such as `truncated(N)`.
+  // An unsigned integer that fits a `u64`, such as a `truncated(N)` payload.
   uint64_t Number64() {
     SkipSpace();
     const size_t start = at_;
@@ -161,7 +188,11 @@ class WaveReader {
       if (character == '"') {
         return out;
       }
-      out += character == '\\' ? Escape() : std::string(1, character);
+      if (character == '\\') {
+        out += Escape();
+      } else {
+        out.push_back(character);
+      }
     }
     Reject("a string was never closed");
     return {};

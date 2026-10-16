@@ -11,6 +11,13 @@ use crate::{Error, Result};
 
 const MAGIC: &[u8; 4] = b"WTTR";
 
+/// Whether these bytes open like a binary trace. The text encoding starts
+/// with `watoots-trace`, so the two cannot be confused.
+#[must_use]
+pub fn is_binary(bytes: &[u8]) -> bool {
+    bytes.starts_with(MAGIC)
+}
+
 /// Encode a trace.
 #[must_use]
 pub fn to_bytes(trace: &Trace) -> Vec<u8> {

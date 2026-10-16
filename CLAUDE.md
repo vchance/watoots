@@ -47,7 +47,11 @@ same content as the published scoping page (read-only reference).
 - `crates/host-capi/`   cbindgen C API + `include/` C++ RAII header + CMake package;
                         `src/value.rs` is the typed `wt_val_t` path beside WAVE text
 - `crates/trace/`       trace format (WAVE text + binary), recorder shim, replay runner
-- `crates/cli/`         `watoots` binary: `inspect`, `run`, `record`, `replay`, `trace fmt`
+- `crates/cli/`         `watoots` binary, one module per subcommand family:
+                        `inspect.rs` (inspect, diff, wit semver-check), `run.rs`
+                        (run, profile, reload), `record.rs` (record, replay,
+                        trace fmt), `fuzz.rs`; `main.rs` dispatches and holds the
+                        one error type
 - `examples/wit/preview/` **the headline world**: a file-format decoder as the
                         untrusted plugin. Rust and C++ QOI decoders; the codec
                         parses input the user downloaded, under a policy that
@@ -65,7 +69,9 @@ same content as the published scoping page (read-only reference).
 - `examples/host-cpp/`  C++ host for the lint world, proving the C API
 - `examples/host-cpp-asset/` C++ host for the asset world: decodes PNG with stb,
                         routes a pipeline on `describe`, writes PNG back
-- `examples/common/`    the C++ hosts' shared WAVE reader
+- `examples/common/`    the WAVE quoter and reader the two text-path C++ hosts share
+- `tools/lib/`          what the shell scripts share: the demos' printers and
+                        signing block, and the LLVM 22 tool discovery
 - `docs/adr/`           architecture decision records (one file per decision)
 
 ## Naming (ADR-0001)

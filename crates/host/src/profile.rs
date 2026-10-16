@@ -370,10 +370,17 @@ impl ProfileState {
         let guest = self.wasm_nanos.saturating_sub(host);
 
         self.total.add(wall, guest, host);
-        self.exports
-            .entry(export.to_string())
-            .or_default()
-            .add(wall, guest, host);
+        // `get_mut` first: the export is in the map after its first call, and
+        // `entry` would allocate the key on every call just to find it.
+        match self.exports.get_mut(export) {
+            Some(row) => row.add(wall, guest, host),
+            None => {
+                self.exports
+                    .entry(export.to_string())
+                    .or_default()
+                    .add(wall, guest, host);
+            }
+        }
 
         // Per call, like fuel and the deadline. The lifetime totals above are
         // not.

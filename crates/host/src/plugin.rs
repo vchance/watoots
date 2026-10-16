@@ -6,13 +6,13 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use wasmtime::component::{Component, Linker, ResourceTable, Type, Val};
+use wasmtime::component::{Component, Func, Linker, ResourceTable, Type, Val};
 use wasmtime::{Engine, GuestProfiler, Store, StoreLimits, StoreLimitsBuilder, UpdateDeadline};
 use wasmtime_wasi::{FsPerms, WasiCtx, WasiCtxView, WasiView};
 
 use crate::audit::{AuditEvent, AuditHook, Ceiling};
 use crate::host::{
-    HostFunc, LoadKind, LogRecord, LogSink, epoch_ticks, plugin_dir_var, read_component, sha256_hex,
+    HostFunc, LoadKind, LogRecord, LogSink, epoch_ticks, plugin_dir_var, read_component,
 };
 use crate::imports::GrantReport;
 use crate::manifest::{Limits, LogLevel, Manifest};
@@ -248,11 +248,6 @@ struct LogBudget {
 }
 
 impl LogBudget {
-    /// Messages and bytes spent during the call in progress.
-    fn used(&self) -> (u64, u64) {
-        (self.messages_used, self.bytes_used)
-    }
-
     fn new(limits: &Limits) -> Self {
         Self {
             bytes_allowed: limits.log_bytes,
@@ -373,6 +368,10 @@ pub struct Plugin {
     /// with. Kept so a reload resolves it the same way rather than quietly
     /// changing what the manifest granted.
     vars: BTreeMap<String, String>,
+    /// SHA-256 of the bytes this instance runs, lowercase hex. Empty unless an
+    /// audit hook is installed, because it is computed for the audit trail and
+    /// nothing else reads it.
+    sha256: String,
 }
 
 impl fmt::Debug for Plugin {
@@ -400,13 +399,10 @@ impl Plugin {
         let wasi = build_wasi_ctx(manifest)?;
 
         let memory = usize::try_from(manifest.limits.memory).map_err(|_| {
-            Error::new(
-                ErrorKind::InvalidArgument,
-                format!(
-                    "limits.memory of {} bytes does not fit in this host's address space",
-                    manifest.limits.memory
-                ),
-            )
+            Error::invalid_argument(format!(
+                "limits.memory of {} bytes does not fit in this host's address space",
+                manifest.limits.memory
+            ))
         })?;
 
         // The sampler is built before the store because it needs the component
@@ -457,7 +453,7 @@ impl Plugin {
 
         let mut linker: Linker<State> = Linker::new(engine);
         wasmtime_wasi::p2::add_to_linker_sync(&mut linker)
-            .map_err(|err| Error::new(ErrorKind::Internal, format!("wiring WASI: {err:?}")))?;
+            .map_err(|err| Error::internal(format!("wiring WASI: {err:#}")))?;
 
         install_logging(&mut linker, name, wiring)?;
         install_host_funcs(&mut linker, name, wiring)?;
@@ -467,12 +463,9 @@ impl Plugin {
         // not just before the first call.
         arm(&mut store, &manifest.limits, name)?;
 
-        let instance = linker.instantiate(&mut store, component).map_err(|err| {
-            Error::new(
-                ErrorKind::Load,
-                format!("{name}: instantiation failed: {err:?}"),
-            )
-        })?;
+        let instance = linker
+            .instantiate(&mut store, component)
+            .map_err(|err| Error::load(format!("{name}: instantiation failed: {err:#}")))?;
 
         // Instantiation ran guest code with the call hook already installed.
         // That time belongs to no call, so drop it rather than let the first
@@ -492,7 +485,14 @@ impl Plugin {
             profiling,
             host: host.clone(),
             vars,
+            sha256: String::new(),
         })
+    }
+
+    /// Attach the digest the loader already computed.
+    pub(crate) fn with_digest(mut self, sha256: String) -> Self {
+        self.sha256 = sha256;
+        self
     }
 
     /// The name this plugin was loaded under.
@@ -578,6 +578,7 @@ impl Plugin {
     /// guest profiles do not survive at all — the sampler is bound to one
     /// compiled component — so call [`Plugin::write_guest_profile`] before
     /// reloading if you want them.
+    ///
     /// Under a manifest with `signature.keys` this refuses, because a reload is
     /// exactly where an unverified replacement must not slip in; use
     /// [`Plugin::reload_signed`].
@@ -604,6 +605,7 @@ impl Plugin {
     /// directory the replacement came from. The plugin keeps the name it was
     /// registered under even when the file is named differently — a reload
     /// replaces code, not identity.
+    ///
     /// Reads the signature from `<path>.sig` when the manifest asks for one,
     /// exactly as [`Host::load`] does.
     pub fn reload_from_file(&mut self, path: impl AsRef<Path>) -> Result<ReloadReport> {
@@ -628,15 +630,6 @@ impl Plugin {
         vars: BTreeMap<String, String>,
         signature: Option<&[u8]>,
     ) -> Result<ReloadReport> {
-        // Hashed here as well as inside `instantiate_plugin`, and only when a
-        // hook is installed: the reload's own verdict is reached after that
-        // function has returned, and "which bytes am I running now" is the whole
-        // point of recording a reload.
-        let digest = self
-            .audit
-            .as_ref()
-            .map_or_else(String::new, |_| sha256_hex(wasm));
-
         // 1. Build the replacement, through the same function `Host::load`
         //    uses: the same compile, the same import intersection, the same
         //    refusal. Reload has no load path of its own to forget a check in,
@@ -648,6 +641,9 @@ impl Plugin {
         let mut fresh =
             self.host
                 .instantiate_plugin(&self.name, wasm, vars, LoadKind::Reload, signature)?;
+        // Computed once, in there, and only when a hook is listening. "Which
+        // bytes am I running now" is the whole point of recording a reload.
+        let digest = fresh.sha256.clone();
 
         // 2. Ask the outgoing instance for its state, if it has any to give.
         let saved = match self.save_state() {
@@ -716,24 +712,21 @@ impl Plugin {
         let ty = func.ty(&self.store);
         let results: Vec<Type> = ty.results().collect();
         if ty.params().len() != 0 || results.len() != 1 {
-            return Err(Error::new(
-                ErrorKind::InvalidArgument,
-                format!(
-                    "{}: {SAVE_STATE_EXPORT} must take no parameters and return \
+            return Err(Error::invalid_argument(format!(
+                "{}: {SAVE_STATE_EXPORT} must take no parameters and return \
                      exactly one value; this one takes {} and returns {}",
-                    self.name,
-                    ty.params().len(),
-                    results.len()
-                ),
-            ));
+                self.name,
+                ty.params().len(),
+                results.len()
+            )));
         }
 
         let mut values = self.call(SAVE_STATE_EXPORT, &[])?;
         let value = values.pop().ok_or_else(|| {
-            Error::new(
-                ErrorKind::Internal,
-                format!("{}: {SAVE_STATE_EXPORT} returned nothing", self.name),
-            )
+            Error::internal(format!(
+                "{}: {SAVE_STATE_EXPORT} returned nothing",
+                self.name
+            ))
         })?;
         Ok(Some((
             value,
@@ -755,30 +748,24 @@ impl Plugin {
         let ty = func.ty(&self.store);
         let params: Vec<Type> = ty.params().map(|(_, ty)| ty).collect();
         if params.len() != 1 || ty.results().len() != 0 {
-            return Err(Error::new(
-                ErrorKind::InvalidArgument,
-                format!(
-                    "{}: {RESTORE_STATE_EXPORT} must take exactly one parameter \
+            return Err(Error::invalid_argument(format!(
+                "{}: {RESTORE_STATE_EXPORT} must take exactly one parameter \
                      and return nothing; this one takes {} and returns {}",
-                    self.name,
-                    params.len(),
-                    ty.results().len()
-                ),
-            ));
+                self.name,
+                params.len(),
+                ty.results().len()
+            )));
         }
 
         if params[0] != *saved_type {
-            return Err(Error::new(
-                ErrorKind::InvalidArgument,
-                format!(
-                    "{}: the outgoing build's {SAVE_STATE_EXPORT} returns {:?} \
+            return Err(Error::invalid_argument(format!(
+                "{}: the outgoing build's {SAVE_STATE_EXPORT} returns {:?} \
                      but the replacement's {RESTORE_STATE_EXPORT} takes {:?}. \
                      State crosses a reload as a typed value of one shape; \
                      changing that shape is changing the world, and watoots \
                      does not migrate state between versions of it.",
-                    self.name, saved_type, params[0]
-                ),
-            ));
+                self.name, saved_type, params[0]
+            )));
         }
 
         self.call(RESTORE_STATE_EXPORT, std::slice::from_ref(value))?;
@@ -830,19 +817,17 @@ impl Plugin {
     /// `stats().calls` on a plugin that has been reloaded, which is the visible
     /// consequence of the two answering different questions.
     pub fn profile(&self) -> Result<PluginProfile> {
-        self.store.data().profile.as_ref().map_or_else(
-            || {
-                Err(Error::new(
-                    ErrorKind::InvalidArgument,
-                    format!(
-                        "{}: profiling is not enabled; build the host with \
-                         HostBuilder::profile()",
-                        self.name
-                    ),
+        self.store
+            .data()
+            .profile
+            .as_ref()
+            .map(ProfileState::report)
+            .ok_or_else(|| {
+                Error::invalid_argument(format!(
+                    "{}: profiling is not enabled; build the host with HostBuilder::profile()",
+                    self.name
                 ))
-            },
-            |state| Ok(state.report()),
-        )
+            })
     }
 
     /// Write the sampled guest profile as Firefox Profiler JSON.
@@ -863,30 +848,25 @@ impl Plugin {
             .as_mut()
             .and_then(|state| state.guest.take())
             .ok_or_else(|| {
-                Error::new(
-                    ErrorKind::InvalidArgument,
-                    format!(
-                        "{}: no guest samples were collected; build the host with \
+                Error::invalid_argument(format!(
+                    "{}: no guest samples were collected; build the host with \
                          HostBuilder::profile_guest_samples(interval), and write \
                          the profile only once",
-                        self.name
-                    ),
-                )
+                    self.name
+                ))
             })?;
 
         let file = std::fs::File::create(path).map_err(|err| {
-            Error::new(
-                ErrorKind::InvalidArgument,
-                format!("cannot write {}: {err}", path.display()),
-            )
+            Error::invalid_argument(format!("cannot write {}: {err}", path.display()))
         })?;
         profiler
             .finish(std::io::BufWriter::new(file))
             .map_err(|err| {
-                Error::new(
-                    ErrorKind::Internal,
-                    format!("{}: writing {}: {err:?}", self.name, path.display()),
-                )
+                Error::internal(format!(
+                    "{}: writing {}: {err:?}",
+                    self.name,
+                    path.display()
+                ))
             })
     }
 
@@ -902,12 +882,12 @@ impl Plugin {
             .limits
             .fuel
             .map_or(0, |budget| budget.saturating_sub(remaining));
-        let log = self.store.data().log.used();
+        let log = self.store.data().log;
         let counters = &mut self.store.data_mut().counters;
         counters.calls += 1;
         counters.fuel_consumed += burned;
-        counters.log_messages += log.0;
-        counters.log_bytes += log.1;
+        counters.log_messages += log.messages_used;
+        counters.log_bytes += log.bytes_used;
     }
 
     /// Call an exported function by name.
@@ -925,25 +905,14 @@ impl Plugin {
         // dispatch overhead rather than quietly excluding it.
         let started = self.profiling.then(Instant::now);
 
-        let func = self
-            .instance
-            .get_func(&mut self.store, export)
-            .ok_or_else(|| {
-                Error::new(
-                    ErrorKind::NotFound,
-                    format!("{}: no exported function {export:?}", self.name),
-                )
-            })?;
+        let func = self.export_func(export)?;
 
         // Before anything is entered, so a host's own mistake -- a `string`
         // where the world says `u32` -- is an error for the host and not, as
         // wasmtime would otherwise make it, a trap that poisons the instance.
         // See `typecheck.rs`.
         let ty = func.ty(&self.store);
-        let params: Vec<(String, Type)> = ty
-            .params()
-            .map(|(name, ty)| (name.to_owned(), ty))
-            .collect();
+        let params: Vec<(&str, Type)> = ty.params().collect();
         crate::typecheck::check_args(&self.name, export, &params, args)?;
 
         let result_count = ty.results().len();
@@ -999,16 +968,17 @@ impl Plugin {
     /// world says it has, so nothing is spent being rejected by the canonical
     /// ABI. See `docs/adr/0008-fuzzing.md`.
     pub fn export_params(&mut self, export: &str) -> Result<Vec<Type>> {
-        let func = self
-            .instance
+        let func = self.export_func(export)?;
+        Ok(func.ty(&self.store).params().map(|(_, ty)| ty).collect())
+    }
+
+    /// Look up an export, or say that there is none by that name.
+    fn export_func(&mut self, export: &str) -> Result<Func> {
+        self.instance
             .get_func(&mut self.store, export)
             .ok_or_else(|| {
-                Error::new(
-                    ErrorKind::NotFound,
-                    format!("{}: no exported function {export:?}", self.name),
-                )
-            })?;
-        Ok(func.ty(&self.store).params().map(|(_, ty)| ty).collect())
+                Error::not_found(format!("{}: no exported function {export:?}", self.name))
+            })
     }
 
     /// Call an exported function, taking and returning WAVE text.
@@ -1017,29 +987,15 @@ impl Plugin {
     /// and the function's own type is what says how to read them. `"notes.md"`
     /// parses as a string because the world says the parameter is a string.
     pub fn call_wave(&mut self, export: &str, args: &[&str]) -> Result<Vec<String>> {
-        let params: Vec<wasmtime::component::Type> = {
-            let func = self
-                .instance
-                .get_func(&mut self.store, export)
-                .ok_or_else(|| {
-                    Error::new(
-                        ErrorKind::NotFound,
-                        format!("{}: no exported function {export:?}", self.name),
-                    )
-                })?;
-            func.ty(&self.store).params().map(|(_, ty)| ty).collect()
-        };
+        let params = self.export_params(export)?;
 
         if args.len() != params.len() {
-            return Err(Error::new(
-                ErrorKind::InvalidArgument,
-                format!(
-                    "{}: {export} takes {} argument(s), got {}",
-                    self.name,
-                    params.len(),
-                    args.len()
-                ),
-            ));
+            return Err(Error::invalid_argument(format!(
+                "{}: {export} takes {} argument(s), got {}",
+                self.name,
+                params.len(),
+                args.len()
+            )));
         }
 
         // Timed separately from the call itself. `Plugin::call` starts its
@@ -1156,6 +1112,50 @@ fn exhausted_transfer_budget(err: &wasmtime::Error) -> bool {
         .any(|cause| cause.to_string().contains("fuel allocated for hostcalls"))
 }
 
+/// One host-import crossing as a trace sees it: the call going out, the answer
+/// coming back.
+///
+/// Both import shims -- the logging one and the application's functions --
+/// report through here, so the two cannot drift in what a trace records about
+/// an import. `trace` being `None` makes `observe` a plain call.
+struct ImportCrossing<'a> {
+    trace: Option<&'a Arc<dyn TraceHook>>,
+    plugin: &'a str,
+    interface: &'a str,
+    func: &'a str,
+}
+
+impl ImportCrossing<'_> {
+    fn observe(
+        &self,
+        args: &[Val],
+        serve: impl FnOnce(&[Val]) -> Result<Vec<Val>>,
+    ) -> Result<Vec<Val>> {
+        if let Some(hook) = self.trace {
+            hook.on_event(&TraceEvent::ImportCall {
+                plugin: self.plugin,
+                interface: self.interface,
+                func: self.func,
+                args,
+            });
+        }
+        let outcome = serve(args);
+        if let Some(hook) = self.trace {
+            let reported = match &outcome {
+                Ok(values) => Outcome::Returned(values),
+                Err(err) => Outcome::Failed(err),
+            };
+            hook.on_event(&TraceEvent::ImportReturn {
+                plugin: self.plugin,
+                interface: self.interface,
+                func: self.func,
+                outcome: reported,
+            });
+        }
+        outcome
+    }
+}
+
 /// Install `wasi:logging` on the linker, if the manifest grants it.
 ///
 /// Not routed through [`install_host_funcs`] on purpose. Registering it as a
@@ -1178,10 +1178,9 @@ fn install_logging(linker: &mut Linker<State>, plugin: &str, wiring: &Wiring<'_>
         let owned_plugin = plugin.to_string();
 
         let mut instance = linker.instance(interface).map_err(|err| {
-            Error::new(
-                ErrorKind::Internal,
-                format!("{plugin}: cannot define interface {interface:?}: {err:?}"),
-            )
+            Error::internal(format!(
+                "{plugin}: cannot define interface {interface:?}: {err:?}"
+            ))
         })?;
 
         instance
@@ -1195,39 +1194,26 @@ fn install_logging(linker: &mut Linker<State>, plugin: &str, wiring: &Wiring<'_>
                 // Recorded before the ceiling filters, so a trace is the
                 // plugin's full account of what it thought was happening rather
                 // than the subset this host's policy chose to print.
-                if let Some(hook) = &trace {
-                    hook.on_event(&TraceEvent::ImportCall {
-                        plugin: &owned_plugin,
-                        interface,
-                        func: LOGGING_FUNC,
-                        args: params,
-                    });
-                }
-
-                let outcome = deliver_log(
-                    store.data_mut(),
-                    ceiling,
-                    sink.as_ref(),
-                    audit.as_ref(),
-                    &owned_plugin,
-                    params,
-                );
-
-                if let Some(hook) = &trace {
-                    let reported = match &outcome {
-                        Ok(()) => Outcome::Returned(&[]),
-                        Err(err) => Outcome::Failed(err),
-                    };
-                    hook.on_event(&TraceEvent::ImportReturn {
-                        plugin: &owned_plugin,
-                        interface,
-                        func: LOGGING_FUNC,
-                        outcome: reported,
-                    });
-                }
+                let crossing = ImportCrossing {
+                    trace: trace.as_ref(),
+                    plugin: &owned_plugin,
+                    interface,
+                    func: LOGGING_FUNC,
+                };
+                let outcome = crossing.observe(params, |_| {
+                    deliver_log(
+                        store.data_mut(),
+                        ceiling,
+                        sink.as_ref(),
+                        audit.as_ref(),
+                        &owned_plugin,
+                        params,
+                    )
+                    .map(|()| Vec::new())
+                });
 
                 match outcome {
-                    Ok(()) => Ok(()),
+                    Ok(_) => Ok(()),
                     // A ceiling, not a misbehaviour: the marker survives the
                     // backtrace wasmtime layers on, so the caller sees
                     // LimitExceeded rather than Trap.
@@ -1238,10 +1224,9 @@ fn install_logging(linker: &mut Linker<State>, plugin: &str, wiring: &Wiring<'_>
                 }
             })
             .map_err(|err| {
-                Error::new(
-                    ErrorKind::Internal,
-                    format!("{plugin}: cannot define {interface}#{LOGGING_FUNC}: {err:?}"),
-                )
+                Error::internal(format!(
+                    "{plugin}: cannot define {interface}#{LOGGING_FUNC}: {err:?}"
+                ))
             })?;
     }
     Ok(())
@@ -1263,15 +1248,12 @@ fn deliver_log(
     params: &[Val],
 ) -> Result<()> {
     let [Val::Enum(level), Val::String(context), Val::String(message)] = params else {
-        return Err(Error::new(
-            ErrorKind::Internal,
-            format!(
-                "{plugin}: {LOGGING_VERSIONED}#{LOGGING_FUNC} was called with \
+        return Err(Error::internal(format!(
+            "{plugin}: {LOGGING_VERSIONED}#{LOGGING_FUNC} was called with \
                  {} argument(s) of an unexpected shape; \
                  this host implements wasi:logging@0.1.0-draft",
-                params.len()
-            ),
-        ));
+            params.len()
+        )));
     };
 
     let bytes = (context.len() as u64).saturating_add(message.len() as u64);
@@ -1333,10 +1315,9 @@ fn deliver_log(
 fn install_host_funcs(linker: &mut Linker<State>, plugin: &str, wiring: &Wiring<'_>) -> Result<()> {
     for (interface, funcs) in wiring.host_funcs {
         let mut instance = linker.instance(interface).map_err(|err| {
-            Error::new(
-                ErrorKind::Internal,
-                format!("{plugin}: cannot define interface {interface:?}: {err:?}"),
-            )
+            Error::internal(format!(
+                "{plugin}: cannot define interface {interface:?}: {err:?}"
+            ))
         })?;
 
         for (func_name, host_func) in funcs {
@@ -1356,36 +1337,22 @@ fn install_host_funcs(linker: &mut Linker<State>, plugin: &str, wiring: &Wiring<
                         profile.serving(&owned_interface, &owned_func);
                     }
 
-                    if let Some(hook) = &trace {
-                        hook.on_event(&TraceEvent::ImportCall {
-                            plugin: &owned_plugin,
-                            interface: &owned_interface,
-                            func: &owned_func,
-                            args: params,
-                        });
-                    }
-
                     // The world's own declaration of what this function
                     // returns, so a text-based host can answer in the right
                     // type rather than guessing from the literal.
-                    let result_types: Vec<wasmtime::component::Type> = ty.results().collect();
-                    let outcome = host_func(&crate::host::HostCall {
-                        args: params,
-                        result_types: &result_types,
+                    let result_types: Vec<Type> = ty.results().collect();
+                    let crossing = ImportCrossing {
+                        trace: trace.as_ref(),
+                        plugin: &owned_plugin,
+                        interface: &owned_interface,
+                        func: &owned_func,
+                    };
+                    let outcome = crossing.observe(params, |args| {
+                        host_func(&crate::host::HostCall {
+                            args,
+                            result_types: &result_types,
+                        })
                     });
-
-                    if let Some(hook) = &trace {
-                        let reported = match &outcome {
-                            Ok(values) => Outcome::Returned(values),
-                            Err(err) => Outcome::Failed(err),
-                        };
-                        hook.on_event(&TraceEvent::ImportReturn {
-                            plugin: &owned_plugin,
-                            interface: &owned_interface,
-                            func: &owned_func,
-                            outcome: reported,
-                        });
-                    }
 
                     let values = outcome.map_err(|err| {
                         wasmtime::Error::msg(format!(
@@ -1402,14 +1369,18 @@ fn install_host_funcs(linker: &mut Linker<State>, plugin: &str, wiring: &Wiring<
                             results.len()
                         )));
                     }
-                    results.clone_from_slice(&values);
+                    // Moved, not cloned: on this path a `list<u8>` is a
+                    // `Vec<Val>` at 48 bytes per element, and `values` is
+                    // dropped on the next line anyway.
+                    for (slot, value) in results.iter_mut().zip(values) {
+                        *slot = value;
+                    }
                     Ok(())
                 })
                 .map_err(|err| {
-                    Error::new(
-                        ErrorKind::Internal,
-                        format!("{plugin}: cannot define {interface}#{func_name}: {err:?}"),
-                    )
+                    Error::internal(format!(
+                        "{plugin}: cannot define {interface}#{func_name}: {err:?}"
+                    ))
                 })?;
         }
     }
@@ -1425,12 +1396,9 @@ fn arm(store: &mut Store<State>, limits: &Limits, name: &str) -> Result<()> {
     // manifest is the only place any ceiling comes from.
     store.set_hostcall_fuel(usize::try_from(limits.transfer).unwrap_or(usize::MAX));
     if let Some(fuel) = limits.fuel {
-        store.set_fuel(fuel).map_err(|err| {
-            Error::new(
-                ErrorKind::Internal,
-                format!("{name}: cannot set fuel: {err:?}"),
-            )
-        })?;
+        store
+            .set_fuel(fuel)
+            .map_err(|err| Error::internal(format!("{name}: cannot set fuel: {err:?}")))?;
     }
     // Deadlines are counted in epoch ticks; see EPOCH_TICK in host.rs. The
     // budget knows about both `limits.timeout` and the sampling interval, and
@@ -1458,12 +1426,7 @@ fn build_sampler(
     };
     GuestProfiler::new_component(engine, name, interval, component.clone(), [])
         .map(Some)
-        .map_err(|err| {
-            Error::new(
-                ErrorKind::Internal,
-                format!("{name}: cannot start the guest profiler: {err:?}"),
-            )
-        })
+        .map_err(|err| Error::internal(format!("{name}: cannot start the guest profiler: {err:?}")))
 }
 
 /// Observe every host↔guest transition, for the three buckets and for the
@@ -1508,7 +1471,7 @@ fn install_epoch_callback(store: &mut Store<State>) {
                 .data_mut()
                 .profile
                 .as_mut()
-                .map_or(std::time::Duration::ZERO, ProfileState::sample_delta);
+                .map_or(Duration::ZERO, ProfileState::sample_delta);
             profiler.sample(&store, delta);
         }
         let state = store.data_mut();
@@ -1614,10 +1577,9 @@ impl wasmtime_wasi::HostMonotonicClock for SteppingClock {
 
 fn preopen(builder: &mut wasmtime_wasi::WasiCtxBuilder, path: &str, perms: FsPerms) -> Result<()> {
     builder.preopened_dir(path, path, perms).map_err(|err| {
-        Error::new(
-            ErrorKind::Manifest,
-            format!("cannot preopen {path:?} granted by the manifest: {err}"),
-        )
+        Error::manifest(format!(
+            "cannot preopen {path:?} granted by the manifest: {err}"
+        ))
     })?;
     Ok(())
 }

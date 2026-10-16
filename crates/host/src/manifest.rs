@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use serde::Deserialize;
 
-use crate::{Error, ErrorKind, Result};
+use crate::{Error, Result};
 
 /// Memory ceiling applied when the manifest does not set one.
 ///
@@ -106,8 +106,7 @@ impl SignaturePolicy {
     pub fn validate(&self) -> Result<()> {
         match (self.keys.is_empty(), self.required) {
             // Said nothing at all. The case this exists to catch.
-            (true, None) => Err(Error::new(
-                ErrorKind::Manifest,
+            (true, None) => Err(Error::manifest(
                 "this policy file does not say whether plugins must be signed. \
                  Add a `[signature]` section with `keys = [\"<PEM public key>\"]` \
                  to require a signature, or `required = false` to state that this \
@@ -116,15 +115,13 @@ impl SignaturePolicy {
                  look the same in a file someone reviews",
             )),
             // Trusted keys, and also opted out of using them.
-            (false, Some(false)) => Err(Error::new(
-                ErrorKind::Manifest,
+            (false, Some(false)) => Err(Error::manifest(
                 "signature.required = false contradicts signature.keys. Remove \
                  the keys to run unsigned, or drop `required = false` to verify \
                  against them",
             )),
             // Required, with nothing that could ever satisfy it.
-            (true, Some(true)) => Err(Error::new(
-                ErrorKind::Manifest,
+            (true, Some(true)) => Err(Error::manifest(
                 "signature.required = true but signature.keys is empty, so no \
                  plugin could ever load. List at least one PEM public key",
             )),
@@ -501,25 +498,20 @@ impl Manifest {
     /// "not granted" — that would fail open at review time, where someone sees
     /// `fs.raed` in a diff and assumes it did something.
     pub fn parse(toml_text: &str) -> Result<Self> {
-        toml::from_str(toml_text).map_err(|err| Error::new(ErrorKind::Manifest, err.to_string()))
+        toml::from_str(toml_text).map_err(|err| Error::manifest(err.to_string()))
     }
 
     /// Read and parse a manifest from disk.
     pub fn from_file(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
         let text = std::fs::read_to_string(path).map_err(|err| {
-            Error::new(
-                ErrorKind::Manifest,
-                format!("cannot read manifest {}: {err}", path.display()),
-            )
+            Error::manifest(format!("cannot read manifest {}: {err}", path.display()))
         })?;
         let manifest = Self::parse(&text)?;
-        manifest.signature.validate().map_err(|err| {
-            Error::new(
-                ErrorKind::Manifest,
-                format!("{}: {}", path.display(), err.message()),
-            )
-        })?;
+        manifest
+            .signature
+            .validate()
+            .map_err(|err| Error::manifest(format!("{}: {}", path.display(), err.message())))?;
         Ok(manifest)
     }
 
@@ -554,26 +546,20 @@ fn expand(input: &str, vars: &BTreeMap<String, String>) -> Result<String> {
     while let Some(start) = rest.find("${") {
         out.push_str(&rest[..start]);
         let after = &rest[start + 2..];
-        let end = after.find('}').ok_or_else(|| {
-            Error::new(
-                ErrorKind::Manifest,
-                format!("unterminated `${{` in {input:?}"),
-            )
-        })?;
+        let end = after
+            .find('}')
+            .ok_or_else(|| Error::manifest(format!("unterminated `${{` in {input:?}")))?;
         let name = &after[..end];
         let value = vars.get(name).ok_or_else(|| {
             let known: Vec<&str> = vars.keys().map(String::as_str).collect();
-            Error::new(
-                ErrorKind::Manifest,
-                format!(
-                    "unknown variable `${{{name}}}` in {input:?}; defined: {}",
-                    if known.is_empty() {
-                        "(none)".to_string()
-                    } else {
-                        known.join(", ")
-                    }
-                ),
-            )
+            Error::manifest(format!(
+                "unknown variable `${{{name}}}` in {input:?}; defined: {}",
+                if known.is_empty() {
+                    "(none)".to_string()
+                } else {
+                    known.join(", ")
+                }
+            ))
         })?;
         out.push_str(value);
         rest = &after[end + 1..];
@@ -586,6 +572,7 @@ fn expand(input: &str, vars: &BTreeMap<String, String>) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ErrorKind;
 
     fn vars(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
         pairs

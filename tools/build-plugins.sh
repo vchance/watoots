@@ -1,251 +1,222 @@
 #!/usr/bin/env bash
 # Build the sample plugins.
 #
-#   tools/build-plugins.sh [rust|rust-asset|rust-qoi|rust-farbfeld|cpp|cpp-asset|cpp-qoi|js|js-asset|js-qoi|py|py-asset|py-qoi]...
+#   tools/build-plugins.sh [<target>]...
 #
 # With no arguments, builds every guest whose toolchain is available and skips
-# the rest with a note. Each needs a different toolchain, which is the point:
-# the host does not care which one produced the component.
+# the rest with a note. Naming a target whose toolchain is missing is an
+# error: a CI step that asks for `cpp-qoi` must not pass by building nothing.
+# Each guest needs a different toolchain, which is the point: the host does not
+# care which one produced the component.
+#
+# The targets are the rows of the table at the bottom; `--list` prints them.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 root=$PWD
 
-want() {
-  [ "${#targets[@]}" -eq 0 ] && return 0
-  for requested in "${targets[@]}"; do
-    [ "$requested" = "$1" ] && return 0
-  done
-  return 1
+# ---------------------------------------------------------------------------
+# Toolchains, probed once
+# ---------------------------------------------------------------------------
+
+have_rust_target() {
+  [ -n "${rust_ready:-}" ] && return "$rust_ready"
+  if rustup target list --installed 2>/dev/null | grep -q wasm32-wasip2; then
+    rust_ready=0
+  else
+    rust_ready=1
+  fi
+  return $rust_ready
 }
 
-targets=("$@")
+have_npm() { command -v npm >/dev/null 2>&1; }
+have_python() { command -v python3 >/dev/null 2>&1; }
 
-if want rust; then
-  if rustup target list --installed 2>/dev/null | grep -q wasm32-wasip2; then
-    echo "==> rust-lint"
-    cargo build --manifest-path examples/plugins/rust-lint/Cargo.toml \
-      --target wasm32-wasip2 --release
-    cp examples/plugins/rust-lint/target/wasm32-wasip2/release/rust_lint.wasm \
-      examples/plugins/rust-lint/rust_lint.wasm
-  else
-    echo "skip rust-lint: rustup target add wasm32-wasip2"
-  fi
-fi
-
-if want rust-asset; then
-  # A second Rust guest, and the only sample that needs a capability: `lut`
-  # opens its lookup table itself. Its own target, not folded into `rust`,
-  # because the two prove different things and CI names the one it wants.
-  if rustup target list --installed 2>/dev/null | grep -q wasm32-wasip2; then
-    echo "==> rust-asset"
-    cargo build --manifest-path examples/plugins/rust-asset/Cargo.toml \
-      --target wasm32-wasip2 --release
-    cp examples/plugins/rust-asset/target/wasm32-wasip2/release/rust_asset.wasm \
-      examples/plugins/rust-asset/rust_asset.wasm
-  else
-    echo "skip rust-asset: rustup target add wasm32-wasip2"
-  fi
-fi
-
-if want rust-qoi; then
-  # The preview world's reference guest: a QOI decoder, the codec on the
-  # untrusted side. Its own target for the same reason the others are.
-  if rustup target list --installed 2>/dev/null | grep -q wasm32-wasip2; then
-    echo "==> rust-qoi"
-    cargo build --manifest-path examples/plugins/rust-qoi/Cargo.toml \
-      --target wasm32-wasip2 --release
-    cp examples/plugins/rust-qoi/target/wasm32-wasip2/release/rust_qoi.wasm \
-      examples/plugins/rust-qoi/rust_qoi.wasm
-  else
-    echo "skip rust-qoi: rustup target add wasm32-wasip2"
-  fi
-fi
-
-if want rust-farbfeld; then
-  # The preview world's second format, so that a previewer with two decoders
-  # installed is dispatching between two codecs rather than two copies of one.
-  if rustup target list --installed 2>/dev/null | grep -q wasm32-wasip2; then
-    echo "==> rust-farbfeld"
-    cargo build --manifest-path examples/plugins/rust-farbfeld/Cargo.toml \
-      --target wasm32-wasip2 --release
-    cp examples/plugins/rust-farbfeld/target/wasm32-wasip2/release/rust_farbfeld.wasm \
-      examples/plugins/rust-farbfeld/rust_farbfeld.wasm
-  else
-    echo "skip rust-farbfeld: rustup target add wasm32-wasip2"
-  fi
-fi
-
-if want js; then
-  if command -v npm >/dev/null 2>&1; then
-    echo "==> js-lint"
-    (cd examples/plugins/js-lint && npm install --silent && npm run --silent build)
-  else
-    echo "skip js-lint: npm not found"
-  fi
-fi
-
-if want js-asset; then
-  # The third asset guest. Its own target for the same reason `rust-asset` is
-  # not folded into `rust`: the two prove different things, and CI names the
-  # one it wants.
-  #
-  # `--wit wit` rather than `--wit ../../wit/asset`: this guest compiles against
-  # `examples/plugins/js-asset/wit`, a world that `include`s `asset-plugin` and
-  # adds the two `wasi:filesystem` imports `lut` needs. StarlingMonkey exposes
-  # no file API to JavaScript and a guest may only import what its world
-  # declares, so the filesystem has to be named out loud here where the other
-  # guests inherit it from their runtime. `wit/js-asset.wit` says so at length.
-  # The contract itself is reached through a symlink at `wit/deps/asset`, so
-  # there is one copy of the world rather than two.
-  if command -v npm >/dev/null 2>&1; then
-    echo "==> js-asset"
-    (cd examples/plugins/js-asset && npm install --silent && npm run --silent build)
-  else
-    echo "skip js-asset: npm not found"
-  fi
-fi
-
-if want py; then
-  if command -v python3 >/dev/null 2>&1; then
-    echo "==> py-lint"
-    cd "$root/examples/plugins/py-lint"
-    [ -d .venv ] || python3 -m venv .venv
-    ./.venv/bin/pip install --quiet componentize-py
-    ./.venv/bin/componentize-py -d ../../wit/lint -w lint-plugin \
-      componentize app -o py_lint.wasm
-    cd "$root"
-  else
-    echo "skip py-lint: python3 not found"
-  fi
-fi
-
-if want py-asset; then
-  # The fourth asset guest, and the only one that needs nothing added to the
-  # world: CPython is linked against wasi-libc, which does the preopen prefix
-  # match inside `open`, so `-d ../../wit/asset` is the contract unmodified.
-  if command -v python3 >/dev/null 2>&1; then
-    echo "==> py-asset"
-    cd "$root/examples/plugins/py-asset"
-    [ -d .venv ] || python3 -m venv .venv
-    ./.venv/bin/pip install --quiet componentize-py
-    ./.venv/bin/componentize-py -d ../../wit/asset -w asset-plugin \
-      componentize app -o py_asset.wasm
-    cd "$root"
-  else
-    echo "skip py-asset: python3 not found"
-  fi
-fi
-
-if want cpp || want cpp-asset || want cpp-qoi; then
-  # wasi-sdk is a 172MB tarball with no Homebrew formula, so it is found rather
-  # than required: set WASI_SDK_PATH, or drop it in one of the usual places.
-  # Found once and shared, because both C++ guests need the same two tools and
-  # a second copy of this search is a second thing to keep in step.
+# wasi-sdk is a 172MB tarball with no Homebrew formula, so it is found rather
+# than required: set WASI_SDK_PATH, or drop it in one of the usual places.
+# Found once and shared, because every C++ guest needs the same two tools and a
+# second copy of this search is a second thing to keep in step.
+have_wasi_sdk() {
+  [ -n "${cpp_ready:-}" ] && return "$cpp_ready"
+  cpp_ready=1
+  cpp_skip="no wasi-sdk (set WASI_SDK_PATH; see CONTRIBUTING.md)"
   sdk=${WASI_SDK_PATH:-}
   if [ -z "$sdk" ]; then
     for candidate in "$HOME"/.local/share/wasi-sdk-* /opt/wasi-sdk "$HOME"/wasi-sdk; do
       [ -x "$candidate/bin/wasm32-wasip2-clang++" ] && sdk=$candidate && break
     done
   fi
-  cpp_ready=no
-  cpp_skip="no wasi-sdk (set WASI_SDK_PATH; see CONTRIBUTING.md)"
   if [ -n "$sdk" ] && [ -x "$sdk/bin/wasm32-wasip2-clang++" ]; then
     if command -v wit-bindgen >/dev/null 2>&1; then
-      cpp_ready=yes
+      cpp_ready=0
     else
       cpp_skip="wit-bindgen not found (cargo install wit-bindgen-cli)"
     fi
   fi
-fi
+  return $cpp_ready
+}
 
-if want cpp; then
-  if [ "$cpp_ready" = yes ]; then
-    echo "==> cpp-lint"
-    cd "$root/examples/plugins/cpp-lint"
-    # Regenerated every build: the bindings are a function of the WIT, so a
-    # stale copy is a silent disagreement with the world everyone else compiled.
-    wit-bindgen c ../../wit/lint --world lint-plugin --out-dir bindings >/dev/null
-    # The generated bindings are C. Compiling them with clang++ mangles the
-    # component-type force-link symbol and the link fails on a name nothing
-    # explains, so they get their own C compile.
-    "$sdk/bin/wasm32-wasip2-clang" -std=c11 -O2 -I. -c bindings/lint_plugin.c -o bindings.o
-    "$sdk/bin/wasm32-wasip2-clang++" -std=c++20 -O2 -fno-exceptions -fno-rtti -I. \
-      -o cpp_lint.wasm lint.cc bindings.o bindings/lint_plugin_component_type.o
-    cd "$root"
-  else
-    echo "skip cpp-lint: $cpp_skip"
-  fi
-fi
+# ---------------------------------------------------------------------------
+# One builder per toolchain
+# ---------------------------------------------------------------------------
 
-if want cpp-asset; then
-  # The second C++ guest, and the one that has to agree with rust-asset on
-  # every output byte. Its own target for the same reason `rust-asset` is not
-  # folded into `rust`: the two prove different things.
-  if [ "$cpp_ready" = yes ]; then
-    echo "==> cpp-asset"
-    cd "$root/examples/plugins/cpp-asset"
-    wit-bindgen c ../../wit/asset --world asset-plugin --out-dir bindings >/dev/null
-    # C bindings with clang, C++ with clang++ -- see the note above cpp-lint.
-    "$sdk/bin/wasm32-wasip2-clang" -std=c11 -O2 -I. -c bindings/asset_plugin.c -o bindings.o
-    # `-ffp-contract=off` on top of cpp-lint's flags. `gain` is a multiply and
-    # an add, which is exactly the shape a compiler is allowed to fuse; wasm has
-    # no fma instruction so it cannot happen here, and the flag says so out loud
-    # rather than relying on the target to keep the guests in agreement.
-    "$sdk/bin/wasm32-wasip2-clang++" -std=c++20 -O2 -fno-exceptions -fno-rtti \
-      -ffp-contract=off -I. \
-      -o cpp_asset.wasm asset.cc bindings.o bindings/asset_plugin_component_type.o
-    cd "$root"
-  else
-    echo "skip cpp-asset: $cpp_skip"
-  fi
-fi
+# A Rust guest: `cargo build` for wasm32-wasip2, then the artifact copied next
+# to its sources, where the hosts and tests look for it.
+#   build_rust <dir>
+build_rust() {
+  local dir=examples/plugins/$1 name=${1//-/_}
+  cargo build --manifest-path "$dir/Cargo.toml" --target wasm32-wasip2 --release
+  cp "$dir/target/wasm32-wasip2/release/$name.wasm" "$dir/$name.wasm"
+}
 
-if want js-qoi; then
-  # The third QOI decoder, in JavaScript. Its bill is the JS engine's, not the
-  # decoder's: StarlingMonkey links the wall clock and the filesystem
-  # interfaces whether or not the script touches them.
-  if command -v npm >/dev/null 2>&1; then
-    echo "==> js-qoi"
-    (cd examples/plugins/js-qoi && npm install --silent && npm run --silent build)
-  else
-    echo "skip js-qoi: npm not found"
-  fi
-fi
+# A JavaScript guest: ComponentizeJS, driven by the package's own build script.
+#   build_js <dir>
+build_js() {
+  (cd "examples/plugins/$1" && npm install --silent && npm run --silent build)
+}
 
-if want py-qoi; then
-  # The fourth, in Python. CPython links every wasi:sockets interface at
-  # startup, which is the whole reason `net = "linked"` exists.
-  if command -v python3 >/dev/null 2>&1; then
-    echo "==> py-qoi"
-    cd "$root/examples/plugins/py-qoi"
+# A Python guest: componentize-py in a venv the directory keeps.
+#   build_py <dir> <wit dir, relative to the guest> <world>
+build_py() {
+  local dir=examples/plugins/$1 name=${1//-/_}
+  (
+    cd "$dir"
     [ -d .venv ] || python3 -m venv .venv
     ./.venv/bin/pip install --quiet componentize-py
-    ./.venv/bin/componentize-py -d ../../wit/preview -w decoder \
-      componentize app -o py_qoi.wasm
-    cd "$root"
-  else
-    echo "skip py-qoi: python3 not found"
-  fi
+    ./.venv/bin/componentize-py -d "$2" -w "$3" componentize app -o "$name.wasm"
+  )
+}
+
+# A C++ guest, with wasi-sdk.
+#
+# The bindings are regenerated every build: they are a function of the WIT, so
+# a stale copy is a silent disagreement with the world everyone else compiled.
+# They are C, and are compiled with clang: compiling them with clang++ mangles
+# the component-type force-link symbol and the link fails on a name nothing
+# explains. `wasm32-wasip2-clang++` emits a component directly.
+#   build_cpp <dir> <wit dir, relative to the guest> <world> <source.cc> [extra flags]...
+build_cpp() {
+  local dir=examples/plugins/$1 wit=$2 world=$3 source=$4 name=${1//-/_}
+  shift 4
+  local bindings=${world//-/_}
+  (
+    cd "$dir"
+    wit-bindgen c "$wit" --world "$world" --out-dir bindings >/dev/null
+    "$sdk/bin/wasm32-wasip2-clang" -std=c11 -O2 -I. -c "bindings/$bindings.c" -o bindings.o
+    "$sdk/bin/wasm32-wasip2-clang++" -std=c++20 -O2 -fno-exceptions -fno-rtti -I. "$@" \
+      -o "$name.wasm" "$source" bindings.o "bindings/${bindings}_component_type.o"
+  )
+}
+
+# ---------------------------------------------------------------------------
+# The targets
+# ---------------------------------------------------------------------------
+
+# One function per target, so the table below reads as a list of what exists
+# and each row's reason for existing sits with its build line. The directory
+# under examples/plugins is the target name; the `.wasm` is the name with `_`.
+target_rust() { build_rust rust-lint; }
+# A second Rust guest, and the only sample that needs a capability: `lut`
+# opens its lookup table itself.
+target_rust_asset() { build_rust rust-asset; }
+# The preview world's reference guest: a QOI decoder, the codec on the
+# untrusted side.
+target_rust_qoi() { build_rust rust-qoi; }
+# The preview world's second format, so that a previewer with two decoders
+# installed is dispatching between two codecs rather than two copies of one.
+target_rust_farbfeld() { build_rust rust-farbfeld; }
+
+target_js() { build_js js-lint; }
+# `js-asset` compiles against its own `wit/`, a world that `include`s
+# `asset-plugin` and adds the two `wasi:filesystem` imports `lut` needs:
+# StarlingMonkey exposes no file API to JavaScript and a guest may only import
+# what its world declares. `wit/js-asset.wit` says so at length.
+target_js_asset() { build_js js-asset; }
+# The third QOI decoder. Its bill is the JS engine's, not the decoder's:
+# StarlingMonkey links the wall clock and the filesystem whether or not the
+# script touches them.
+target_js_qoi() { build_js js-qoi; }
+
+target_py() { build_py py-lint ../../wit/lint lint-plugin; }
+# The one asset guest that needs nothing added to the world: CPython is linked
+# against wasi-libc, which does the preopen prefix match inside `open`.
+target_py_asset() { build_py py-asset ../../wit/asset asset-plugin; }
+# CPython links every wasi:sockets interface at startup, which is the whole
+# reason `net = "linked"` exists.
+target_py_qoi() { build_py py-qoi ../../wit/preview decoder; }
+
+target_cpp() { build_cpp cpp-lint ../../wit/lint lint-plugin lint.cc; }
+# The C++ guest that has to agree with rust-asset on every output byte.
+# `-ffp-contract=off`: `gain` is a multiply and an add, which is exactly the
+# shape a compiler is allowed to fuse; wasm has no fma instruction so it cannot
+# happen here, and the flag says so out loud rather than relying on the target.
+target_cpp_asset() { build_cpp cpp-asset ../../wit/asset asset-plugin asset.cc -ffp-contract=off; }
+# Notable for what it does *not* import: no clock, because it never reaches for
+# one and wasi-libc links only what is touched. Compare rust-qoi.
+target_cpp_qoi() { build_cpp cpp-qoi ../../wit/preview decoder qoi.cc; }
+
+# name | toolchain
+table='
+rust          rust
+rust-asset    rust
+rust-qoi      rust
+rust-farbfeld rust
+js            js
+js-asset      js
+js-qoi        js
+py            py
+py-asset      py
+py-qoi        py
+cpp           cpp
+cpp-asset     cpp
+cpp-qoi       cpp
+'
+
+# Whether the toolchain for a row is present; sets `skip_reason` when not.
+toolchain_ready() {
+  case $1 in
+    rust) have_rust_target || { skip_reason="rustup target add wasm32-wasip2"; return 1; } ;;
+    js) have_npm || { skip_reason="npm not found"; return 1; } ;;
+    py) have_python || { skip_reason="python3 not found"; return 1; } ;;
+    cpp) have_wasi_sdk || { skip_reason=$cpp_skip; return 1; } ;;
+  esac
+}
+
+if [ "${1:-}" = "--list" ]; then
+  echo "$table" | awk 'NF { print $1 }'
+  exit 0
 fi
 
-if want cpp-qoi; then
-  # The preview world's C++ guest. Notable for what it does *not* import: no
-  # clock, because it never reaches for one and wasi-libc links only what is
-  # touched. Compare rust-qoi, whose `std` brings a clock regardless.
-  if [ "$cpp_ready" = yes ]; then
-    echo "==> cpp-qoi"
-    cd "$root/examples/plugins/cpp-qoi"
-    wit-bindgen c ../../wit/preview --world decoder --out-dir bindings >/dev/null
-    # C bindings with clang, C++ with clang++ -- see the note above cpp-lint.
-    "$sdk/bin/wasm32-wasip2-clang" -std=c11 -O2 -I. -c bindings/decoder.c -o bindings.o
-    "$sdk/bin/wasm32-wasip2-clang++" -std=c++20 -O2 -fno-exceptions -fno-rtti -I. \
-      -o cpp_qoi.wasm qoi.cc bindings.o bindings/decoder_component_type.o
-    cd "$root"
-  else
-    echo "skip cpp-qoi: $cpp_skip"
+requested=("$@")
+for name in "${requested[@]}"; do
+  echo "$table" | awk -v n="$name" '$1 == n { found = 1 } END { exit !found }' ||
+    { echo "unknown target $name; tools/build-plugins.sh --list names them" >&2; exit 2; }
+done
+
+wanted() {
+  [ "${#requested[@]}" -eq 0 ] && return 0
+  local r
+  for r in "${requested[@]}"; do [ "$r" = "$1" ] && return 0; done
+  return 1
+}
+
+failed=0
+while read -r name toolchain; do
+  [ -n "$name" ] || continue
+  wanted "$name" || continue
+  if ! toolchain_ready "$toolchain"; then
+    if [ "${#requested[@]}" -eq 0 ]; then
+      echo "skip $name: $skip_reason"
+    else
+      echo "cannot build $name: $skip_reason" >&2
+      failed=1
+    fi
+    continue
   fi
-fi
+  echo "==> $name"
+  "target_${name//-/_}"
+done <<<"$table"
 
 echo
 echo "built components:"
 ls -1 examples/plugins/*/*.wasm 2>/dev/null || echo "  (none)"
+exit $failed

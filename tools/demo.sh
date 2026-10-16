@@ -8,9 +8,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-bold() { printf '\n\033[1m%s\033[0m\n' "$*"; }
-dim() { printf '\033[2m%s\033[0m\n' "$*"; }
-step() { printf '\n\033[1;36m── %s\033[0m\n\n' "$*"; }
+. tools/lib/demo.sh
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
@@ -26,30 +24,8 @@ dim "$($watoots --version), plugin $(wc -c <"$plugin" | tr -d ' ') bytes"
 
 # Sign the plugin, so the rest of the demo runs verified rather than printing a
 # warning at every step. This is also the shortest honest demonstration of the
-# feature: the same key that makes step 1 quiet makes step 8 refuse a tamper.
-#
-# openssl produces exactly what `cosign sign-blob --key` does -- ECDSA P-256
-# over SHA-256, base64 -- and is far likelier to be installed. If it is missing
-# the demo still runs; it just runs unsigned, and says so, which is the true
-# state of affairs rather than a hidden fallback.
-signed=""
-if command -v openssl >/dev/null 2>&1; then
-  openssl ecparam -name prime256v1 -genkey -noout -out "$work/demo.key" 2>/dev/null
-  openssl ec -in "$work/demo.key" -pubout -out "$work/demo.pub" 2>/dev/null
-  openssl dgst -sha256 -sign "$work/demo.key" -out "$work/plugin.der" "$plugin" 2>/dev/null
-  openssl base64 -A -in "$work/plugin.der" -out "$plugin.sig" 2>/dev/null
-  {
-    # The shipped policy ends with its own `[signature] required = false`;
-    # drop it rather than appending a second section and colliding.
-    sed '/^\[signature\]/,$d' "$policy"
-    printf '\n[signature]\nkeys = ["""\n'
-    cat "$work/demo.pub"
-    printf '"""]\n'
-  } > "$work/signed.toml"
-  policy="$work/signed.toml"
-  signed=yes
-  trap 'rm -rf "$work" "$plugin.sig"' EXIT
-fi
+# feature: the same key that makes step 1 quiet makes step 9 refuse a tamper.
+sign_demo_components "$plugin"
 
 # ---------------------------------------------------------------------------
 step "1. Load a plugin and call it"
@@ -84,7 +60,7 @@ $watoots record "$plugin" -m "$policy" \
   -c lint -o "$work/bug.wave" \
   -- '"notes.md"' '"TODO: ship it\n"' >/dev/null
 echo
-cat "$work/bug.wave" | sed -n '/^export-call/,$p'
+sed -n '/^export-call/,$p' "$work/bug.wave"
 dim "(the manifest travels in the header, above)"
 
 # ---------------------------------------------------------------------------
@@ -155,15 +131,11 @@ fi
 
 # ---------------------------------------------------------------------------
 if [ -n "$signed" ]; then
-  step "8. And it has to be the plugin you signed"
+  step "9. And it has to be the plugin you signed"
   dim "Every step above ran verified -- the plugin was signed with a throwaway"
   dim "key and the policy lists its public half. Change one byte and:"
   echo
-  cp "$plugin" "$work/tampered.wasm"
-  cp "$plugin.sig" "$work/tampered.wasm.sig"
-  # Flip a byte in the middle, well past the header. The point is that the
-  # signature covers the bytes, not that this particular edit is meaningful.
-  printf 'X' | dd of="$work/tampered.wasm" bs=1 seek=4096 conv=notrunc 2>/dev/null
+  tamper_demo_component "$plugin"
   dim "\$ watoots run tampered.wasm -m signed.toml -c name"
   echo
   if $watoots run "$work/tampered.wasm" -m "$policy" \

@@ -10,9 +10,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-bold() { printf '\n\033[1m%s\033[0m\n' "$*"; }
-dim() { printf '\033[2m%s\033[0m\n' "$*"; }
-step() { printf '\n\033[1;36m── %s\033[0m\n\n' "$*"; }
+. tools/lib/demo.sh
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
@@ -33,29 +31,9 @@ dim "decoder $(wc -c <"$decoder" | tr -d ' ') bytes; previewer is C++ over the C
 # precisely the thing you want to know came from who you think -- it parses
 # what the user downloaded -- so the flagship example should carry the
 # flagship check rather than leave it to the linter's demo.
-#
-# openssl produces exactly what `cosign sign-blob --key` does. Without it the
-# demo still runs, unsigned, and says so.
-signed=""
 farbfeld=examples/plugins/rust-farbfeld/rust_farbfeld.wasm
 [ -f "$farbfeld" ] || tools/build-plugins.sh rust-farbfeld >/dev/null
-if command -v openssl >/dev/null 2>&1; then
-  openssl ecparam -name prime256v1 -genkey -noout -out "$work/demo.key" 2>/dev/null
-  openssl ec -in "$work/demo.key" -pubout -out "$work/demo.pub" 2>/dev/null
-  for component in "$decoder" "$farbfeld"; do
-    openssl dgst -sha256 -sign "$work/demo.key" -out "$work/sig.der" "$component" 2>/dev/null
-    openssl base64 -A -in "$work/sig.der" -out "$component.sig" 2>/dev/null
-  done
-  {
-    sed '/^\[signature\]/,$d' "$policy"
-    printf '\n[signature]\nkeys = ["""\n'
-    cat "$work/demo.pub"
-    printf '"""]\n'
-  } > "$work/signed.toml"
-  policy="$work/signed.toml"
-  signed=yes
-  trap 'rm -rf "$work" "$decoder.sig" "$farbfeld.sig"' EXIT
-fi
+sign_demo_components "$decoder" "$farbfeld"
 
 # ---------------------------------------------------------------------------
 step "1. What does a codec need?"
@@ -109,9 +87,7 @@ if [ -n "$signed" ]; then
   dim "Every step above ran verified: both decoders were signed with a throwaway"
   dim "key and the policy lists its public half. Replace one byte of a codec and:"
   echo
-  cp "$decoder" "$work/tampered.wasm"
-  cp "$decoder.sig" "$work/tampered.wasm.sig"
-  printf 'X' | dd of="$work/tampered.wasm" bs=1 seek=4096 conv=notrunc 2>/dev/null
+  tamper_demo_component "$decoder"
   dim "\$ host_cpp_preview policy.toml blocks.qoi out.png tampered.wasm"
   echo
   if $preview "$policy" "$fixtures/blocks.qoi" "$work/t.png" "$work/tampered.wasm"; then
@@ -131,7 +107,7 @@ dim "Record the same call the viewer made, and the report is a file."
 echo
 dim "\$ watoots record rust_qoi.wasm -m policy.toml -c decode -o bug.wave -- <bomb bytes>"
 echo
-bytes=$(python3 -c "print('['+','.join(map(str,open('$fixtures/bomb.qoi','rb').read()))+']')")
+bytes="[$(od -An -v -tu1 "$fixtures/bomb.qoi" | tr -s ' \n' ',' | sed 's/^,//; s/,$//')]"
 $watoots record "$decoder" -m "$policy" -c decode -o "$work/bug.wave" -- "$bytes" 2>&1 | grep -E "^(watoots:|wrote)" | sed "s|$work/||" || true
 echo
 dim "The call failed and the trace was written anyway: a failure is the recording"
