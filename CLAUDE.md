@@ -160,9 +160,11 @@ M5 shipped: `docs/MANIFEST.md`, a root `SECURITY.md` (reporting policy)
 alongside `docs/SECURITY.md` (threat model), `CONTRIBUTING.md`,
 `CODE_OF_CONDUCT.md`, issue forms, a manifest-first README, `tools/demo.sh`,
 `CHANGELOG.md`. The repo is public at `github.com/vchance/watoots` and crate
-metadata points at it. Tags `v0.0.0` through `v0.7.1`
-are all on the remote; **crates.io has only the `0.0.0` name placeholders** and
-no release is published there, so the README tells people to build from the tag.
+metadata points at it. Tags `v0.0.0` through `v0.7.1` are all on the remote.
+**v0.7.1 is the first version published to crates.io** (2026-10-16, all four
+crates); before it the registry held only the `0.0.0` name placeholders.
+Publishing is part of the release checklist from here on, and needs Von's
+token.
 
 **Current release: v0.7.1** (2026-10-16): Wasmtime 48.0.5 -> 48.0.6 (twelve
 advisories, one an 8.8 `wasmtime-wasi` filesystem sandbox escape reachable

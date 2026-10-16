@@ -1,8 +1,9 @@
 # watoots
 
-> **v0.7.1 is tagged, not published.** crates.io holds only the `0.0.0`
-> placeholders that reserve the names, so build from the tag. The API can still
-> change between 0.x releases. Everything below works and is tested in CI.
+> **v0.7.1** is on crates.io: `cargo add watoots` for the host library,
+> `cargo install watoots-cli` for the `watoots` command, `watoots-capi` for the
+> C API and `watoots-trace` for record/replay. Pre-1.0: the API can still change
+> between 0.x releases. Everything below works and is tested in CI.
 
 Third-party code inside your native application, without your process's
 privileges — and when that code goes wrong, **the bug is a file**: a readable
@@ -351,8 +352,8 @@ Rust 1.95+ (whatever Wasmtime 48 requires), CMake 3.28+, a C++20 compiler.
 ## Status
 
 **v0.7.1**, pre-1.0: the API can still move between 0.x releases. Both halves
-work and are tested end to end in CI. crates.io holds only the `0.0.0`
-placeholders that reserve the names, so build from the tag.
+work and are tested end to end in CI. All four crates are on crates.io at this
+version; the tags on GitHub match them one for one.
 
 See [docs/SPEC.md](docs/SPEC.md) for what is deliberately *not* built,
 [CHANGELOG.md](CHANGELOG.md) for what changed and what breaks, and
