@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.7.1] — 2026-10-16
 
 A code-quality pass over every crate, the C++ header, the example hosts and the
 tool scripts: duplicated logic folded into one place, hot-path allocations
@@ -741,7 +741,7 @@ First release. Both halves of the project work end to end.
 See [docs/SECURITY.md](docs/SECURITY.md) for what the sandbox does and does not
 protect against.
 
-[Unreleased]: https://github.com/vchance/watoots/compare/v0.7.0...HEAD
+[0.7.1]: https://github.com/vchance/watoots/releases/tag/v0.7.1
 [0.7.0]: https://github.com/vchance/watoots/releases/tag/v0.7.0
 [0.6.1]: https://github.com/vchance/watoots/releases/tag/v0.6.1
 [0.6.0]: https://github.com/vchance/watoots/releases/tag/v0.6.0

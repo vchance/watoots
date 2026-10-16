@@ -156,12 +156,17 @@ M5 shipped: `docs/MANIFEST.md`, a root `SECURITY.md` (reporting policy)
 alongside `docs/SECURITY.md` (threat model), `CONTRIBUTING.md`,
 `CODE_OF_CONDUCT.md`, issue forms, a manifest-first README, `tools/demo.sh`,
 `CHANGELOG.md`. The repo is public at `github.com/vchance/watoots` and crate
-metadata points at it. Tags `v0.0.0` through `v0.7.0`
+metadata points at it. Tags `v0.0.0` through `v0.7.1`
 are all on the remote; **crates.io has only the `0.0.0` name placeholders** and
 no release is published there, so the README tells people to build from the tag.
 
-**Current release: v0.7.0** (2026-10-07): the typed C API path, the argument
-precheck, and the replay-first README. Before it, **v0.6.1** (2026-10-03) was a **security release**. Wasmtime
+**Current release: v0.7.1** (2026-10-16): a code-quality pass with no new
+features -- duplicated plumbing folded together across every crate, the C++
+header and the tools, several hot-path copies removed, and the latent bugs the
+pass turned up fixed (a `wt_version_string` stuck at `0.1.0`, `tidy.sh` never
+having linted the previewer, `record` reading its inputs twice). `signature`
+became a private module. Before it, **v0.7.0** (2026-10-07) shipped the typed
+C API path, the argument precheck, and the replay-first README, and before that **v0.6.1** (2026-10-03) was a **security release**. Wasmtime
 48.0.2 -> 48.0.5 clears ten advisories including a 9.3 critical, one of which
 (RUSTSEC-2026-0316) was a hole in `limits.transfer` and aimed at `Val`-API
 hosts specifically -- which watoots is by design. Found by running `cargo audit`
