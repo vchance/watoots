@@ -4,7 +4,9 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.7.1] — 2026-10-16
+
+**A security release as well as a code-quality pass. Anyone on 0.7.0 or earlier should move.**
 
 ### Security
 
@@ -18,12 +20,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   realloc that calls back into the host) and
   [RUSTSEC-2026-0363](https://rustsec.org/advisories/RUSTSEC-2026-0363)
   (6.2: component handle tables charged to no limit). A dependency bump
-  only; no API changed. **0.7.1 and 0.7.0 ship the vulnerable 48.0.5**; the
-  release that carries this is the one to be on.
+  only; no API changed. 0.7.0 and everything before it ship the vulnerable
+  48.0.5.
 
-## [0.7.1] — 2026-10-16
-
-A code-quality pass over every crate, the C++ header, the example hosts and the
+The rest of this release is a code-quality pass over every crate, the C++ header, the example hosts and the
 tool scripts: duplicated logic folded into one place, hot-path allocations
 removed, and comments that had drifted from the code corrected. No API was
 removed; the public surface changed in three small ways, listed under Changed.
@@ -758,7 +758,6 @@ First release. Both halves of the project work end to end.
 See [docs/SECURITY.md](docs/SECURITY.md) for what the sandbox does and does not
 protect against.
 
-[Unreleased]: https://github.com/vchance/watoots/compare/v0.7.1...HEAD
 [0.7.1]: https://github.com/vchance/watoots/releases/tag/v0.7.1
 [0.7.0]: https://github.com/vchance/watoots/releases/tag/v0.7.0
 [0.6.1]: https://github.com/vchance/watoots/releases/tag/v0.6.1

@@ -19,8 +19,8 @@ same content as the published scoping page (read-only reference).
   behind an advisory. **And gate on its exit code, not its output**: on
   2026-10-16 it reported twelve new advisories (one an 8.8 filesystem sandbox
   escape) and 0.7.1 was tagged anyway, because the run was piped through
-  `tail` and the failure never stopped the chain. 48.0.6 landed on `main`
-  minutes later; v0.7.1 is tagged with the vulnerable lock.
+  `tail` and the failure never stopped the chain. The tag was rewritten onto
+  the 48.0.6 commit the same hour, before anything pointed at it.
 - Guest target: **WASI 0.2.x**. Do not depend on `wasmtime-wasi::p3`: it
   documents that security fixes limited to wasip3 get no patch release, which a
   sandbox cannot take. ADR-0013 records the two conditions that would change
@@ -164,8 +164,10 @@ metadata points at it. Tags `v0.0.0` through `v0.7.1`
 are all on the remote; **crates.io has only the `0.0.0` name placeholders** and
 no release is published there, so the README tells people to build from the tag.
 
-**Current release: v0.7.1** (2026-10-16): a code-quality pass with no new
-features -- duplicated plumbing folded together across every crate, the C++
+**Current release: v0.7.1** (2026-10-16): Wasmtime 48.0.5 -> 48.0.6 (twelve
+advisories, one an 8.8 `wasmtime-wasi` filesystem sandbox escape reachable
+through `permissions.fs.write`; anyone on 0.7.0 should move) plus a
+code-quality pass with no new features -- duplicated plumbing folded together across every crate, the C++
 header and the tools, several hot-path copies removed, and the latent bugs the
 pass turned up fixed (a `wt_version_string` stuck at `0.1.0`, `tidy.sh` never
 having linted the previewer, `record` reading its inputs twice). `signature`
