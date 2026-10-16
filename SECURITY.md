@@ -26,8 +26,8 @@ here and it will get routed.
 
 **0.7.x** is the supported line. Fixes land on `main` and go out in the next
 0.7.x tag and to crates.io; there is no backport branch, and older lines are
-not maintained. The `0.0.0` entries on crates.io are the placeholders that
-reserved the names — they contain no working code and receive no fixes.
+not maintained. The `0.0.0` entries on crates.io were the placeholders that
+reserved the names; they contain no working code and are yanked.
 
 ## What is in scope
 

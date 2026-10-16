@@ -162,7 +162,8 @@ alongside `docs/SECURITY.md` (threat model), `CONTRIBUTING.md`,
 `CHANGELOG.md`. The repo is public at `github.com/vchance/watoots` and crate
 metadata points at it. Tags `v0.0.0` through `v0.7.1` are all on the remote.
 **v0.7.1 is the first version published to crates.io** (2026-10-16, all four
-crates); before it the registry held only the `0.0.0` name placeholders.
+crates); before it the registry held only the `0.0.0` name placeholders, which
+are now yanked.
 Publishing is part of the release checklist from here on, and needs Von's
 token.
 
