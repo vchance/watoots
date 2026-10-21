@@ -207,3 +207,15 @@ reachability — `net = "deny"` (the default) refuses the import, `net = "linked
 allows it with nothing reachable, and there is no host allowlist because
 nothing at this layer could enforce one (ADR-0012); and replay must serve
 every import a component *declares*, not just the ones a recording exercised.
+
+## Worktree cleanup
+
+Subagents started with `isolation: "worktree"` get a worktree under `.claude/worktrees/agent-*`.
+Claude Code removes it automatically only if the subagent left no changes, so any subagent that
+commits leaves its worktree behind.
+
+- After merging a subagent's branch, remove its worktree: `git worktree remove .claude/worktrees/<name>`.
+  Keep the branch; delete it separately only if asked.
+- Before ending a session, run `git worktree list` and remove any `.claude/worktrees/*` entry whose
+  branch is merged into `main` and has no uncommitted changes, then run `git worktree prune`.
+- Never remove a worktree with uncommitted changes or unpushed commits. Report it instead.
