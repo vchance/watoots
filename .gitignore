@@ -30,3 +30,6 @@ __pycache__/
 
 # Standalone tool crates under tools/ have their own target directories.
 /tools/*/target
+
+# Claude Code agent worktrees
+.claude/worktrees/
