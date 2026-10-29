@@ -33,3 +33,7 @@ __pycache__/
 
 # Claude Code agent worktrees
 .claude/worktrees/
+
+# Local agent files (agent-rules)
+CLAUDE.local.md
+.claude/settings.local.json

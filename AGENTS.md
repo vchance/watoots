@@ -1,0 +1,270 @@
+# Agent instructions
+
+<!-- agent-rules:begin (managed by agent-rules/scripts/sync.py; edit it there, not here) -->
+
+## Shared rules
+
+These apply to every repo. Repo-specific sections below override them where they conflict.
+
+### Git and worktrees
+
+- Several sessions may run against this repo at once. Never switch the branch of a checkout you
+  did not create; work in your own worktree instead.
+- Never force-push a shared branch. After a merge, keep the branch; delete it only if asked.
+- Subagents started with `isolation: "worktree"` get a worktree under `.claude/worktrees/agent-*`,
+  which is left behind if the subagent committed. After merging its branch, run
+  `git worktree remove .claude/worktrees/<name>`.
+- Before ending a session, run `git worktree list` and remove any `.claude/worktrees/*` entry whose
+  branch is merged into `main` and has no uncommitted changes, then `git worktree prune`.
+  Never remove a worktree with uncommitted changes or unpushed commits; report it instead.
+
+### Pull requests
+
+Every change reaches `main` through a pull request, and a PR is merged without asking
+the owner once all of these hold:
+
+1. **Branch and PR.** Never push to `main`. Branch from an up-to-date
+   `origin/main`, one topic per PR. The title says what changes; the body says why, the
+   commands you ran to verify it with their results, and what you did not do or could not check.
+2. **Independent review.** Spawn the `pr-reviewer` agent with the PR number. It gets the diff and the
+   code, not your conclusions. The author never reviews its own PR.
+3. **Design review for anything visual.** If the PR changes what a person sees (screens, UI
+   components, styles, icons, rendered or charted output, documents meant to be viewed), also spawn
+   the `design-ux-reviewer` agent. It runs the built app and looks at it.
+4. **Findings resolved.** Fix every blocking and should-fix finding in new commits, then have the
+   same reviewer check the fixes. A finding stays unfixed only if that reviewer agrees it can.
+5. **Checks green.** Every CI check on the latest commit passes. Where no workflow covers the change,
+   the build, lint and test commands this file lists pass locally and are reported in the PR. Never
+   skip, disable or edit a check to get green.
+6. **Merge.** Once 1 to 5 hold, `gh pr merge <number> --merge` without asking. A PR that misses any
+   of them waits for the owner; say in the PR which one and why.
+
+Never force-push a shared branch or rewrite someone else's PR branch. Answer every human review
+comment with a fix or a reason.
+
+### Verifying work
+
+- Before calling a task done, run the build, lint and test commands this file lists. If one could
+  not run, say so; don't report it as passing.
+- Gate on exit codes, not output. `cmd | tail` and `cmd ; echo $?` hide a failing `cmd`.
+- Fix warnings and lint findings. Don't disable `-Werror`-style flags, grow a baseline, or add a
+  suppression without a one-line reason next to it.
+
+### Boundaries
+
+- Don't edit a sibling repo from here. Flag the change it needs instead.
+- Keep secrets out of files, commits and command lines (`ps` shows arguments); pass them through
+  the environment.
+- Decisions this file reserves for the owner (releases, publishing, major dependency bumps,
+  deferred work) are not yours to make. Ask.
+- Match the surrounding code's naming, idiom and comment density.
+
+<!-- agent-rules:end -->
+
+## What this is
+A Rust crate + C API that turns "I have a Wasmtime dependency" into "I have a
+sandboxed plugin system" for native apps, using the WebAssembly component model.
+Second piece: WIT-level record/replay of host↔component crossings, so a plugin
+bug can be replayed (and kept as a regression test) without the host app.
+
+Read `docs/SPEC.md` before doing anything. It is the source of truth for scope,
+milestones, and what we deliberately do NOT build. `docs/scoping.html` is the
+same content as the published scoping page (read-only reference).
+
+## Hard constraints
+- Engine: **Wasmtime 48.x** (LTS line). Do not bump majors without an ADR.
+  **Take its patches promptly**: on 2026-10-02 the line got ten advisories at
+  once, one of them 9.3 critical and one a hole in `limits.transfer` that hit
+  `Val`-API hosts specifically. `cargo audit` is the check; run it when cutting
+  a release rather than trusting the weekly job, which can be up to seven days
+  behind an advisory. **And gate on its exit code, not its output**: on
+  2026-10-16 it reported twelve new advisories (one an 8.8 filesystem sandbox
+  escape) and 0.7.1 was tagged anyway, because the run was piped through
+  `tail` and the failure never stopped the chain. The tag was rewritten onto
+  the 48.0.6 commit the same hour, before anything pointed at it.
+- Guest target: **WASI 0.2.x**. Do not depend on `wasmtime-wasi::p3`: it
+  documents that security fixes limited to wasip3 get no patch release, which a
+  sandbox cannot take. ADR-0013 records the two conditions that would change
+  this, so check it rather than re-arguing. The permission model stays
+  0.3-shaped (per-interface grants; no `wasi:io` assumptions) and
+  `crates/host/tests/wasip3_shape.rs` enforces that against wasmtime-wasi 48's
+  own p3 WIT — note that `clocks` is the one package split across two
+  capabilities, so its match arm is exhaustive on purpose.
+- **C API is a v0.1 deliverable**, not a follow-on. Every public Rust API
+  should be designed with a C surface in mind (opaque handles, no generics
+  across the boundary, error codes + message strings).
+- Default-deny everything: no network, no filesystem, no wall clock unless
+  the manifest grants it. `[signature]` has no default at all: a policy *file*
+  must state `keys` or `required = false`, because an opt-in security control
+  nobody opts into protects nobody (ADR-0014 and its addendum). `Manifest::parse`
+  stays permissive on purpose -- traces embed their manifest and replay by
+  parsing it back -- so running unsigned warns on stderr and emits a
+  `loaded-unverified` audit event instead.
+- We complement Wasmtime's `rr` feature, which records at the *same* level we
+  do — wasmtime#11284's goal is "to purely capture guest-host boundary
+  crossings". What it names as a non-goal is a human-readable trace format,
+  "an independent tool over the low-level trace". That is us. We never record
+  guest memory or engine state. We do not reimplement `wasm-tools component
+  semver-check` or `targets` — call/wrap them.
+
+## Layout
+- `crates/host/`        core library (`Host`, `Plugin`, manifest, limits, registry, cache)
+- `crates/host-capi/`   cbindgen C API + `include/` C++ RAII header + CMake package;
+                        `src/value.rs` is the typed `wt_val_t` path beside WAVE text
+- `crates/trace/`       trace format (WAVE text + binary), recorder shim, replay runner
+- `crates/cli/`         `watoots` binary, one module per subcommand family:
+                        `inspect.rs` (inspect, diff, wit semver-check), `run.rs`
+                        (run, profile, reload), `record.rs` (record, replay,
+                        trace fmt), `fuzz.rs`; `main.rs` dispatches and holds the
+                        one error type
+- `examples/wit/preview/` **the headline world**: a file-format decoder as the
+                        untrusted plugin. Rust and C++ QOI decoders; the codec
+                        parses input the user downloaded, under a policy that
+                        grants nothing the codec asked for
+- `examples/fixtures/preview/` the bomb (a valid QOI claiming 1 GiB), a
+                        truncated file, a renamed one, and the reference image,
+                        generated by `tools/make-preview-fixtures` with the
+                        reference `qoi` crate
+- `examples/host-cpp-preview/` the viewer: N decoders, dispatch on magic bytes,
+                        the bomb refused by `limits.memory` through the C API
+- `examples/wit/lint/`  the lint world (four guests); the hermetic test fixture
+- `examples/wit/asset/` the asset-pipeline world (four guests); host owns the codec
+- `examples/plugins/`   ten guests: Rust, C++ (wasi-sdk), JS (ComponentizeJS),
+                        Python (componentize-py)
+- `examples/host-cpp/`  C++ host for the lint world, proving the C API
+- `examples/host-cpp-asset/` C++ host for the asset world: decodes PNG with stb,
+                        routes a pipeline on `describe`, writes PNG back
+- `examples/common/`    the WAVE quoter and reader the two text-path C++ hosts share
+- `tools/lib/`          what the shell scripts share: the demos' printers and
+                        signing block, and the LLVM 22 tool discovery
+- `docs/adr/`           architecture decision records (one file per decision)
+
+## Naming (ADR-0001)
+- Project/crate/CLI: `watoots`. Crates: `watoots` (host), `watoots-capi`, `watoots-trace`, `watoots-cli`.
+- C prefix: `wt_` (types `wt_host_t`, functions `wt_host_new`). Header `watoots.h`, C++ `watoots.hpp`.
+- Env vars: `WATOOTS_*`.
+
+## Conventions
+- Rust 2024 edition, MSRV = whatever Wasmtime 48 requires.
+- C/C++ (ADR-0003): Google style, C++20 floor for shipped headers, no
+  exceptions. `cmake --preset dev && ctest --preset dev`; `tools/format.sh
+  --check` and `tools/tidy.sh` must pass. clang-tidy needs `brew install llvm`.
+- `cargo clippy --all-targets -- -D warnings` and `cargo fmt --check` must pass.
+- Any decision listed under "Open decisions" in the spec gets an ADR in
+  `docs/adr/NNNN-title.md` when made. Don't silently pick. ADR-0001 (name), ADR-0002 (license: Apache-2.0 WITH LLVM-exception), and
+  ADR-0003 (C++ toolchain), ADR-0004 (WAVE), ADR-0005 (cargo from
+  CMake), ADR-0006 (`wasi:logging` yes, guest-emitted metrics no) and
+  ADR-0007 (link `wit-component`, don't shell out), ADR-0008 (proptest on
+  stable; record/replay is the fuzzing oracle), ADR-0009 (profile at the
+  boundary; the timeout outranks the sampler) and ADR-0010 (reload carries
+  state as WIT values; checkpoint is not buildable), ADR-0011 (an audit trail is
+  a third hook) and ADR-0012 (no `permissions.net` host allowlist; `net` is
+  `"deny"` or `"linked"`) ADR-0013 (stay on WASI 0.2; conditions for p3) and
+  ADR-0014 (pinned-key signature verification at load; no Sigstore keyless)
+  are done.
+- Prefer `wasmtime::component::Val` + WAVE for dynamic calls; `bindgen!` only
+  where the Rust host has a static world.
+- Tests live next to code; integration tests under `crates/*/tests/` use the
+  sample plugins in `examples/`.
+
+## Environment notes (as of 2026-09-06)
+- Rust 1.97.1, cargo 1.97.1, CMake 4.4.3 present. MSRV is 1.95 (Wasmtime 48).
+- `wasm32-wasip2` target **is installed**.
+- `wasm-tools`, `wac` and `cargo-component` are **not** installed. Host tests
+  build their components from WAT inline, which keeps them hermetic.
+- **`wit-bindgen-cli` 0.61.1 and wasi-sdk 34 are installed** for the C++ guest,
+  the latter at `~/.local/share/wasi-sdk-34.0-arm64-macos`. `wasm32-wasip2-clang++`
+  emits a component directly — `wasm-component-ld` ships with the SDK, so there
+  is no `wasm-tools component new` step. The generated bindings are C and must
+  be compiled with `clang`, not `clang++`, or the component-type force-link
+  symbol is mangled and the link fails on a name nothing explains.
+- **LLVM 22 is the pinned major for clang-format and clang-tidy** (ADR-0003).
+  `brew install llvm@22`; `tools/format.sh` and `tools/tidy.sh` find it without
+  configuration, and `format.sh` warns if it falls back to another version.
+  Ubuntu's archive ships 18, whose Google style disagrees — that is why CI
+  installs from `apt.llvm.org` rather than `apt-get install clang-format`.
+
+## Milestones (from the spec)
+M1 spike → M2 host core → M3 C API + polyglot proof (first publishable) →
+M4 record/replay → M5 ship v0.1 → M6 v0.2 from feedback.
+Current: **M6**. M1-M5 are done and v0.2.0 is tagged. `crates/host` has the
+engine, manifest, import-intersection check, per-call limits, registry,
+precompile cache, dynamic `Val`/WAVE calls, determinism knobs and the trace
+hook; `crates/host-capi` has the cbindgen C API, the C++ RAII header and an
+installable CMake package; `crates/trace` has the trace format (text + binary),
+recorder and replay runner; `crates/cli` has `watoots inspect|diff|run|record|replay|
+trace fmt`. `examples/` has three WIT worlds: `preview` (the headline -- a file-format
+decoder as the untrusted plugin, Rust and C++, with a bomb fixture that
+`limits.memory` refuses), `lint` (small, hermetic, the smoke test) and `asset`
+(an image pipeline with variants, a result, large `list<u8>` payloads and a
+filesystem capability). Ten guests, ten policies derived from what each
+toolchain actually imports, and three C++ hosts. The README leads with the
+previewer; `lint` is presented as the test fixture it is.
+
+M6 so far: `inspect` rewritten as a capability summary plus `--targets` and
+`wit semver-check`; property tests whose oracle is record/replay; `PluginStats`;
+a boundary profiler; reload; an audit trail (ADR-0011); a compiled-component
+cache; signature verification at load (ADR-0014); and `watoots diff`.
+**Every v0.2 candidate in the spec is done.**
+
+0.7.0 (2026-10-07): a typed `wt_val_t` path through the C API (ADR-0004
+addendum), `Plugin::call` type-checking arguments *before* entering the
+component (a mismatch found by wasmtime inside the call poisons the instance
+-- `crates/host/src/typecheck.rs` says why), the README re-led with replay,
+real crate READMEs, and a Releasing section in CONTRIBUTING. `cargo publish
+--workspace --dry-run` passes; publishing itself is Von's call.
+
+Decided since: no `permissions.net` allowlist (ADR-0012, breaking) and stay on
+WASI 0.2 with written conditions for p3 (ADR-0013).
+
+M5 shipped: `docs/MANIFEST.md`, a root `SECURITY.md` (reporting policy)
+alongside `docs/SECURITY.md` (threat model), `CONTRIBUTING.md`,
+`CODE_OF_CONDUCT.md`, issue forms, a manifest-first README, `tools/demo.sh`,
+`CHANGELOG.md`. The repo is public at `github.com/vchance/watoots` and crate
+metadata points at it. Tags `v0.0.0` through `v0.7.1` are all on the remote.
+**v0.7.1 is the first version published to crates.io** (2026-10-16, all four
+crates); before it the registry held only the `0.0.0` name placeholders, which
+are now yanked.
+Publishing is part of the release checklist from here on, and needs Von's
+token.
+
+**Current release: v0.7.1** (2026-10-16): Wasmtime 48.0.5 -> 48.0.6 (twelve
+advisories, one an 8.8 `wasmtime-wasi` filesystem sandbox escape reachable
+through `permissions.fs.write`; anyone on 0.7.0 should move) plus a
+code-quality pass with no new features -- duplicated plumbing folded together across every crate, the C++
+header and the tools, several hot-path copies removed, and the latent bugs the
+pass turned up fixed (a `wt_version_string` stuck at `0.1.0`, `tidy.sh` never
+having linted the previewer, `record` reading its inputs twice). `signature`
+became a private module. Before it, **v0.7.0** (2026-10-07) shipped the typed
+C API path, the argument precheck, and the replay-first README, and before that **v0.6.1** (2026-10-03) was a **security release**. Wasmtime
+48.0.2 -> 48.0.5 clears ten advisories including a 9.3 critical, one of which
+(RUSTSEC-2026-0316) was a hole in `limits.transfer` and aimed at `Val`-API
+hosts specifically -- which watoots is by design. Found by running `cargo audit`
+during the release, not by the weekly job. Plus two fixes to shipped 0.6.0 --
+concurrent first loads of one component compiled it once per thread, and the
+previewer read a dangling `string_view` -- plus QOI decoders in JS and Python,
+farbfeld as a second format, and the CI coverage that found the second bug
+(the example hosts and the demos had never run there). Anyone on 0.6.0 should
+move. 0.4.0 shipped signing off by default and is the other release to leave.
+
+**Work landing after a tag goes in the CHANGELOG's `[Unreleased]` section, not
+the tagged one.** Appending to a released version's entry claims things that
+version does not contain, which is how a breaking change and a security fix
+briefly came to be filed under an already-shipped 0.3.0. Check `git tag` before
+editing a version heading. Releasing bumps `version` in `Cargo.toml` plus the
+four path dependencies, the README banner, SECURITY.md's supported line, and
+the CHANGELOG link refs; the tag is annotated.
+
+**Announcing is Von's call and is not to be raised.** It is the last M5 item on
+paper; do not offer it, recommend it, or list it as outstanding.
+
+Four things the real guests taught us, worth knowing before debugging a denial:
+a `wasm32-wasip2` Rust guest imports `wasi:clocks/monotonic-clock` and
+`wasi:cli/environment` via `std` whether or not the author uses them; a WIT
+interface imported only for its types has no callable functions and is not a
+capability (`Requirement::TypesOnly`); CPython links `wasi:sockets`
+unconditionally, which is why `net` grants the *import* separately from any
+reachability — `net = "deny"` (the default) refuses the import, `net = "linked"`
+allows it with nothing reachable, and there is no host allowlist because
+nothing at this layer could enforce one (ADR-0012); and replay must serve
+every import a component *declares*, not just the ones a recording exercised.
