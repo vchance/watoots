@@ -1,0 +1,7 @@
+#!/bin/sh
+# Rejects a direct push to the default branch (core R3). Enable once per clone: git config core.hooksPath .githooks
+# (AGENTS.md › Commands should list that line; the hook is inert until it is set.)
+default=$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##'); default=${default:-main}
+while read local_ref local_sha remote_ref remote_sha; do
+  case "$remote_ref" in refs/heads/$default) echo "pre-push: direct push to $default is not allowed; open a PR"; exit 1;; esac
+done

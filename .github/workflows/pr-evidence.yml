@@ -1,0 +1,23 @@
+# .github/workflows/pr-evidence.yml (proposed; seconds, no checkout)
+# Checks the PR body has the classification block and an evidence table; posts nothing, just fails the check.
+name: pr-evidence
+on: { pull_request: { types: [opened, edited, synchronize, reopened] } }
+permissions: { pull-requests: read }
+jobs:
+  pr-evidence:
+    name: pr-evidence
+    # Repo/org variable RUNS_ON_SMALL (JSON list of labels) selects the runner; unset = GitHub-hosted ubuntu-24.04,
+    # which fails when the account cannot use hosted runners and then blocks every merge through merge.sh.
+    runs-on: ${{ fromJSON(vars.RUNS_ON_SMALL || '["ubuntu-24.04"]') }}
+    timeout-minutes: 2
+    steps:
+      - env:
+          BODY: ${{ github.event.pull_request.body }}
+        run: |
+          ok=1; B=$(printf '%s' "$BODY" | tr -d '\r')
+          printf '%s\n' "$B" | grep -qE '^- Tier: (low|standard|high|emergency)[[:space:]]*$' || { echo "::error::PR body must state exactly one tier: '- Tier: low|standard|high|emergency'"; ok=0; }
+          printf '%s\n' "$B" | grep -qE '^\| *Check *\| *Result' || { echo "::error::PR body lacks the evidence table"; ok=0; }
+          printf '%s\n' "$B" | grep -qiE 'head: `?[0-9a-f]{7,}' || { echo "::error::PR body lacks head SHA"; ok=0; }
+          printf '%s\n' "$B" | grep -qE '^## Acceptance criteria' || { echo "::error::PR body lacks '## Acceptance criteria' (core R11)"; ok=0; }
+          printf '%s\n' "$B" | grep -qE '^## Resources left' || { echo "::error::PR body lacks '## Resources left' (core R10)"; ok=0; }
+          test $ok = 1
