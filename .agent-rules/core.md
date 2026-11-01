@@ -1,6 +1,6 @@
-# Shared agent standard — core v0.1.7
+# Shared agent standard — core v0.1.8
 
-Policy id: `agent-rules/policy/core.md`  ·  Version: 0.1.7  ·  Digest: computed by scripts/pin.py
+Policy id: `agent-rules/policy/core.md`  ·  Version: 0.1.8  ·  Digest: computed by scripts/pin.py
 Applies to every repository whose `AGENTS.md` declares `policy: agent-rules/core@0.1.x`.
 The repository's `AGENTS.md` overlay and `PROFILE.md` add to this file. Composition rules are in §5.
 
