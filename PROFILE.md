@@ -68,7 +68,7 @@ run on `fromJSON(vars.RUNS_ON_SMALL || '["ubuntu-24.04"]')`; the variable is uns
 
 ## Merge authority
 - Low/Standard: `.agent-rules/merge.sh <n>` once core R3–R6 hold (D5).
-- High: `.agent-rules/merge.sh <n>` once core R3–R6 hold and the independent review verdict for the head is recorded (D5); no owner acceptance step (owner decision 2026-11-01). Emergency (e.g. a Wasmtime advisory fix): the PR names who declared it; follow-up PR within 7 days.
+- High: `.agent-rules/merge.sh <n>` once core R3–R6 hold and the independent review verdict `ready` for the head is recorded (D5); no owner acceptance step (owner decision 2026-11-01). Emergency (e.g. a Wasmtime advisory fix): declared only by the owner (vchance), never by the agent; the PR names the declarer; follow-up PR within 7 days.
 - Server-side enforcement available: **rulesets are available (public repo) but none are set.** Owner action (audit F2):
   add a `main` ruleset requiring a PR and the `rust`, `msrv`, `cpp`, `sanitizers` checks, blocking force-push and
   deletion. Until then the merge wrapper, the pre-push hook and the two policy workflows are the only mechanisms.
