@@ -10,7 +10,19 @@
 
 ## Reuse evidence
 - One CI run per head SHA produces the evidence. Author, code reviewer and specialists read the same run.
-- Build once: the build job uploads artifacts; test/lint jobs consume them (or share sccache/rust-cache keyed on lockfile).
+- Build once: the build job uploads artifacts; test/lint jobs consume them (or share sccache/rust-cache).
+- Key a build cache on **everything that changes the build**, not the lockfile alone, and check what the cache action
+  already hashes. `Swatinem/rust-cache` hashes the lockfile, toolchain files, every member crate's `Cargo.toml`,
+  `.cargo/config.toml` and `CARGO*`/`RUST*` env vars, but **not a virtual workspace's root `Cargo.toml`** (it is not a
+  member), which is where `[profile]` lives; and it saves only on a key miss. So in a virtual workspace a profile change
+  leaves every job restoring a stale build, rebuilding, and logging "Cache up-to-date" without saving (found in
+  historian, 2026-11-01). There, add `hashFiles('Cargo.toml')` to the key (in `shared-key` when that is set: it makes
+  rust-cache ignore `key`). A single-package repo needs nothing: its root is a member and already hashed. Confirm from the
+  logs: a miss then "Cache saved", and a re-run of the same SHA restoring the new key.
+- A Docker layer cache (`type=gha`) rebuilt every layer when the build context was **unchanged** (a cache-restored stage,
+  then `COPY --from=` missed; seen in historian, cause not established). Skip the image build when none of its inputs
+  changed, comparing with the PR base, or on main with the last *successful* main run. Details for Ubicloud runners:
+  `docs/adopting-ubicloud-runners.md` › Caching in the agent-rules repository (private; not copied into this repo).
 - Cancel superseded runs (`concurrency: {group: pr-${{ github.event.pull_request.number }}, cancel-in-progress: true}`).
 
 ## Revalidate the delta
