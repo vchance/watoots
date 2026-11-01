@@ -12,7 +12,8 @@ before editing and again whenever scope changes.
      public compatibility break; regulated behavior; new service, storage or major dependency; release controls or
      deployment identity; **any file under `AGENTS.md`, `PROFILE.md`, `.claude/`, `.github/`, reviewer definitions**;
      a change that reduces a safeguard (deleting a test, widening a permission, skipping a check).
-   - *Emergency*: production is down or data is at risk; the owner has named an approver.
+   - *Emergency*: production is down or data is at risk and the owner (or a human `PROFILE.md` names) has declared it; the
+     agent never declares one. The PR records the declarer and the dated follow-up PR (R11).
    Size and extension do not decide tier. A one-line Markdown edit that changes agent authority is High.
 3. **Triggered playbooks.** Code review always. Then from `PROFILE.md › Review triggers`: ux, technical-design,
    architecture, security, performance, observability. Name them; the reviewer loads only those.

@@ -29,7 +29,7 @@
 ## Reviews
 | Review | Reviewer | Verdict | Findings (blocking/should-fix/suggestion) | Re-review of fixes |
 |---|---|---|---|---|
-| code | pr-reviewer @ {{sha}} | ready once… | 0 / 2 / 3 | resolved @ {{sha}} |
+| code | pr-reviewer @ {{sha}} | pending (the reviewer writes `ready`, or `ready once blocking and should-fix are done`) | 0 / 0 / 0 | — |
 
 ## Limitations and not done
 {{what was not tested, platforms not covered, assumptions}}
@@ -38,10 +38,7 @@
 none | {{what, where, owner, expiry}}
 
 ## Release and operate (core R11)
-- Version/changelog: {{bumped / n/a}} · Deploy: {{how, when, by whom / n/a}} · Post-release watch: {{signal, duration / n/a}}
+- Version/changelog: {{bumped / n/a}} · Deploy: {{how, when, by whom / n/a}} · Post-release watch (required for high and emergency): {{signal, duration, rollback trigger / n/a}}
 
 ## Rollback
 {{revert commit / feature flag / migration down path}}
-
-## Owner acceptance (high tier only)
-`approved: {{sha}}` by {{owner}} — or "not required (standard tier)"
