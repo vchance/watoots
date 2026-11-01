@@ -80,7 +80,7 @@ R-rule gaps only (core §1): what the repository cannot yet satisfy, recorded wi
 D-rule is an override, not an exception: in force only as an `overrides: Dn` block in `AGENTS.md › Overrides` (core §5.2).
 | Id | Rule | Replacement | Rationale | Authority | Scope | Expiry/review |
 |---|---|---|---|---|---|---|
-| X1 | R5 (coverage of supported platforms and guests) | macOS and the C++/JS/Python guests are verified by hand (Lanes › Manual with evidence); in CI the e2e cases for absent guests are skipped and recorded as `skipped`, never as passed | CI has only the rustup toolchain and no macOS job (CONTRIBUTING.md › The sample plugins) | proposed — owner decision | `examples/plugins/{cpp,js,py}-*`, `crates/host/tests/{asset,preview}_e2e.rs`, macOS | review 2027-01-31 |
+| X1 | R5 (coverage of supported platforms and guests) | macOS and the C++/JS/Python guests are verified by hand (Lanes › Manual with evidence); in CI the e2e cases for absent guests return early inside the test (`crates/host/tests/asset_e2e.rs:26`, `:1281`), so `cargo test` reports them `ok`; whoever records the evidence writes those guests as `skipped`, never as passed | CI has only the rustup toolchain and no macOS job (CONTRIBUTING.md › The sample plugins) | proposed — owner decision | `examples/plugins/{cpp,js,py}-*`, `crates/host/tests/{asset,preview}_e2e.rs`, macOS | review 2027-01-31 |
 
 ### Proposed D-rule overrides (not in force)
 Moved into `AGENTS.md › Overrides` only once the owner accepts it; until then the core default stands as written.
