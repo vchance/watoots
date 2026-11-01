@@ -15,7 +15,7 @@ jobs:
           BODY: ${{ github.event.pull_request.body }}
         run: |
           ok=1; B=$(printf '%s' "$BODY" | tr -d '\r')
-          printf '%s\n' "$B" | grep -qE '^- Tier: (low|standard|high|emergency)[[:space:]]*$' || { echo "::error::PR body must state exactly one tier: '- Tier: low|standard|high|emergency'"; ok=0; }
+          [ "$(printf '%s\n' "$B" | grep -cE '^- Tier: (low|standard|high|emergency)[[:space:]]*$')" = 1 ] || { echo "::error::PR body must state exactly one tier: '- Tier: low|standard|high|emergency'"; ok=0; }
           printf '%s\n' "$B" | grep -qE '^\| *Check *\| *Result' || { echo "::error::PR body lacks the evidence table"; ok=0; }
           printf '%s\n' "$B" | grep -qiE 'head: `?[0-9a-f]{7,}' || { echo "::error::PR body lacks head SHA"; ok=0; }
           printf '%s\n' "$B" | grep -qE '^## Acceptance criteria' || { echo "::error::PR body lacks '## Acceptance criteria' (core R11)"; ok=0; }
