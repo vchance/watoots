@@ -33,3 +33,13 @@ __pycache__/
 
 # Claude Code agent worktrees
 .claude/worktrees/
+# agent-rules: shared .claude/ config is tracked; worktrees, settings.local.json and local memory are not
+!.claude/
+.claude/*
+!.claude/settings.json
+!.claude/agents/
+!.claude/skills/
+!.claude/commands/
+!.claude/rules/
+!.claude/hooks/
+CLAUDE.local.md
