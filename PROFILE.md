@@ -4,7 +4,7 @@
 |---|---|
 | Repository | vchance/watoots · default branch `main` · visibility **public** · GitHub plan Free (public repos can have rulesets; none are set today: `branches/main/protection` 404, `rulesets` `[]`, audit `evidence/remote-github.md`) |
 | Classification | library (Rust crate + C API, published on crates.io; the `watoots` CLI ships as `watoots-cli`). Milestone M6 (AGENTS.md › Milestones); current release v0.7.1 |
-| Accountable owner | Von Chance (vchance) — merge authority for **high** tier; approver of exceptions; sole holder of the crates.io token |
+| Accountable owner | Von Chance (vchance) — approver of exceptions and owner-reserved decisions (no merge-acceptance step since core 0.1.9); sole holder of the crates.io token |
 | Supported platforms | x86_64 Linux (Ubuntu, `ubuntu-latest`) = `CI` (all four `ci.yml` jobs incl. LeakSanitizer); macOS arm64 = `manual` (the owner's development machine: AGENTS.md › Environment notes, Homebrew LLVM 22, wasi-sdk arm64-macos; no macOS CI job); Windows = `nobody` (no docs claim it, no job builds it); guests: `wasm32-wasip2` Rust guests = `CI`, C++/JS/Python guests = `manual` (CI has only the rustup toolchain; CONTRIBUTING.md › The sample plugins) |
 | Toolchain | Rust stable in CI (`dtolnay/rust-toolchain@stable`, no `rust-toolchain.toml`); MSRV `rust-version = "1.95"` (`Cargo.toml`, checked by the `msrv` job); edition 2024; target `wasm32-wasip2`; Wasmtime 48.x; CMake 3.28+ with Ninja and presets `dev` / `asan` / `release` (`CMakePresets.json`); LLVM 22 clang-format/clang-tidy (ADR-0003; CI installs from apt.llvm.org); optional guest toolchains: wit-bindgen-cli + wasi-sdk (C++), ComponentizeJS (JS), componentize-py (Python) |
 | Required services for tests | none. Host tests build their components from inline WAT (hermetic); the C++ hosts' ctests and the asset/preview e2e suites need the guests built by `tools/build-plugins.sh` and skip a guest that is not on disk (a skip is not a pass, core R5) |
@@ -68,7 +68,7 @@ run on `fromJSON(vars.RUNS_ON_SMALL || '["ubuntu-24.04"]')`; the variable is uns
 
 ## Merge authority
 - Low/Standard: `.agent-rules/merge.sh <n>` once core R3–R6 hold (D5).
-- High: owner comments `approved: <sha>` before merge. Emergency (e.g. a Wasmtime advisory fix): owner; follow-up PR within 7 days.
+- High: `.agent-rules/merge.sh <n>` once core R3–R6 hold and the independent review verdict for the head is recorded (D5); no owner acceptance step (owner decision 2026-11-01). Emergency (e.g. a Wasmtime advisory fix): the PR names who declared it; follow-up PR within 7 days.
 - Server-side enforcement available: **rulesets are available (public repo) but none are set.** Owner action (audit F2):
   add a `main` ruleset requiring a PR and the `rust`, `msrv`, `cpp`, `sanitizers` checks, blocking force-push and
   deletion. Until then the merge wrapper, the pre-push hook and the two policy workflows are the only mechanisms.
