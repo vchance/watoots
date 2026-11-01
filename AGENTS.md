@@ -1,9 +1,35 @@
-# Agent instructions — agent-rules-pin
+# Agent instructions — watoots
 
 <!-- agent-rules manifest (checked by policy-drift; keep these lines exact) -->
 policy: agent-rules/core@0.1.x   ·   profile: PROFILE.md   ·   core-digest: 47e7296ccf51
 
 Read, in this order: (1) `.agent-rules/core.md` — the shared standard this repository follows; (2) `PROFILE.md`; (3) the sections below. Then classify the change (core R2) before editing anything.
+
+## Commands
+The gates CI runs (`.github/workflows/ci.yml`; CONTRIBUTING.md › The gates). Run from the repo root.
+
+```sh
+git config core.hooksPath .githooks   # once per clone: enables the pre-push guard (core R3)
+
+cargo build --workspace                                   # build
+cargo test --workspace                                    # all Rust tests (rust job; escalation, see PROFILE.md › Check selection)
+cargo test -p watoots-trace                               # one crate (packages: watoots, watoots-trace, watoots-capi, watoots-cli)
+cargo clippy --all-targets -- -D warnings                 # lint (fails on warnings)
+cargo fmt --all --check                                   # format check
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
+cargo build -p watoots-capi && git diff --exit-code -- crates/host-capi/include/watoots.h   # committed header is current
+
+# C/C++ (cpp and sanitizers jobs; LLVM 22, see Environment notes)
+tools/build-plugins.sh rust rust-asset rust-qoi rust-farbfeld   # the guests CI builds
+tools/format.sh --check
+cmake --preset dev && cmake --build --preset dev && ctest --preset dev
+tools/tidy.sh
+tools/demo.sh && tools/demo-preview.sh
+cmake --preset asan && cmake --build --preset asan && ctest --preset asan   # Linux for LeakSanitizer
+
+cargo +1.95 check --workspace --all-targets               # msrv job (needs that toolchain)
+cargo audit                                               # audit workflow; gate on the exit code
+```
 
 # watoots — project context
 
@@ -214,3 +240,13 @@ reachability — `net = "deny"` (the default) refuses the import, `net = "linked
 allows it with nothing reachable, and there is no host allowlist because
 nothing at this layer could enforce one (ADR-0012); and replay must serve
 every import a component *declares*, not just the ones a recording exercised.
+
+## Owner decisions
+Ask, don't decide. Each item restates a line above or in CONTRIBUTING.md; it adds no new rule.
+
+- Publishing to crates.io (`cargo publish --workspace`; needs Von's token), cutting or moving a tag, and the
+  version bump that goes with them (Milestones; CONTRIBUTING.md › Releasing).
+- Announcing anything. Do not raise, offer or recommend it (Milestones).
+- A Wasmtime major bump, or a move off WASI 0.2 (Hard constraints; ADR-0013): needs an ADR first.
+- Any "Open decisions" item in `docs/SPEC.md` (Conventions): ADR, not a silent pick.
+- Repository settings: rulesets, secret scanning, Dependabot (PROFILE.md › Merge authority).
