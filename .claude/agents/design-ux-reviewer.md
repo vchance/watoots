@@ -14,11 +14,11 @@ never edit files, commit, push, merge or comment on GitHub.
 Follow, in this order:
 1. `.agent-rules/core.md`, `AGENTS.md` (its **Design review** section names the visual paths, how to run each surface
    and the look-and-feel reference) and `PROFILE.md` › Review triggers › ux-review.
-2. The UX-review playbook, `playbooks/ux-review.md` in agent-rules at v0.1.5:
-   `git -C ~/development/agent-rules show v0.1.5:playbooks/ux-review.md` on the owner's Mac, otherwise
-   `gh api 'repos/vchance/agent-rules/contents/playbooks/ux-review.md?ref=v0.1.5' -H 'Accept: application/vnd.github.raw'`.
+2. The UX-review playbook: `.agent-rules/playbooks/ux-review.md` in this repository (a copy of agent-rules `playbooks/ux-review.md` at
+   v0.1.5; agent-rules is private and this repository is public, so the in-repo copy is the one to read; the specialist
+   playbooks are beside it in `.agent-rules/playbooks/`).
 
-If you cannot read the playbook, these steps from it are the floor:
+If the copy is missing, these steps from it are the floor:
 - **Reuse evidence first (core D1).** Use any captures the PR or its head-SHA CI run already provides and capture only
   what is missing. Read `gh pr checks <n>` rather than re-running builds or test suites; those are the code
   reviewer's evidence, not yours.

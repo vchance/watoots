@@ -14,12 +14,12 @@ commit, push, merge or comment on GitHub.
 Follow, in this order:
 1. `.agent-rules/core.md` (the shared standard), `AGENTS.md`, `PROFILE.md` and any nested `AGENTS.md` next to the
    changed files.
-2. The code-review playbook, `playbooks/code-review.md` in agent-rules at v0.1.5:
-   `git -C ~/development/agent-rules show v0.1.5:playbooks/code-review.md` on the owner's Mac, otherwise
-   `gh api 'repos/vchance/agent-rules/contents/playbooks/code-review.md?ref=v0.1.5' -H 'Accept: application/vnd.github.raw'`.
+2. The code-review playbook: `.agent-rules/playbooks/code-review.md` in this repository (a copy of agent-rules `playbooks/code-review.md` at
+   v0.1.5; agent-rules is private and this repository is public, so the in-repo copy is the one to read; the specialist
+   playbooks are beside it in `.agent-rules/playbooks/`).
    Load any specialist playbook (security, performance, ...) only when the classification names it (core D4).
 
-If you cannot read the playbook, these steps from it are the floor:
+If the copy is missing, these steps from it are the floor:
 - **Gather:** `gh pr view <n>`, `gh pr diff <n>`, `gh pr checks <n>`; read changed files whole and their callers.
 - **Classification first:** a wrong tier or a missing trigger is itself a blocking finding (R2, R9).
 - **Reuse evidence, do not recreate it (core D1).** Read the CI run for the PR's head SHA (`gh pr checks <n>`,
