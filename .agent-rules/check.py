@@ -26,5 +26,9 @@ elif a.profile:
     for sec in ('Components', 'Check selection', 'Lanes', 'Review triggers', 'Merge authority', 'Release and operations', 'Cleanup'):
         if not re.search(rf'^## {re.escape(sec)}\b', prof, re.M): errs.append(f'PROFILE.md: missing section "## {sec}"')
     if '{{' in prof: errs.append('PROFILE.md: template placeholders remain')
+for ag, pb in (('pr-reviewer', 'code-review'), ('design-ux-reviewer', 'ux-review')):
+    f = os.path.join(os.path.dirname(a.agents) or '.', '.claude', 'agents', ag + '.md')
+    if os.path.exists(f) and 'agent-rules adapter' in open(f, encoding='utf-8').read() and not os.path.exists(os.path.join(os.path.dirname(a.core), 'playbooks', pb + '.md')):
+        errs.append(f'.agent-rules/playbooks/{pb}.md missing but .claude/agents/{ag}.md reads it (re-run agent-rules/scripts/pin.py)')
 for e in errs: print(f'::error::{e}')
 sys.exit(1 if errs else 0)
