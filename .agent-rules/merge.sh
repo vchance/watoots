@@ -14,7 +14,7 @@ cs=json.load(sys.stdin); files=sys.argv[1].split()
 if not cs: print("not mergeable: the PR has no checks"); sys.exit(1)
 ok=("pass","success","skipping","skipped","neutral")
 bad=[c["name"] for c in cs if str(c.get("bucket") or c.get("state") or "").lower() not in ok]
-names=" ".join(c["name"] for c in cs)
+names=[c["name"] for c in cs]  # exact names: a check merely containing "pr-evidence" must not satisfy the requirement
 need=["pr-evidence"]
 if any(re.match(r"(.*/)?(AGENTS\.md|CLAUDE\.md|GEMINI\.md|PROFILE\.md|\.claude/|\.codex/|\.cursor/|\.github/|\.agent-rules/|\.githooks/)", f) for f in files): need.append("policy-drift")
 missing=[x for x in need if x not in names]
