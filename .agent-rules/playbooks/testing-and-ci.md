@@ -31,6 +31,9 @@
 - Never reuse a pass by PR number alone. Evidence is keyed by SHA.
 
 ## Runners (D9)
+- Public repositories keep GitHub-hosted runners on version-pinned labels (`ubuntu-24.04`, `macos-15`, `windows-2025`);
+  everything below applies to private repositories. Reason: hosted minutes are free for public repos, and a fork PR must
+  never run on the account's Ubicloud runners.
 - Default labels: `ubicloud-standard-2` for small jobs (policy-drift, pr-evidence, lint, docs), `ubicloud-standard-4` for
   build/test until measured. Make the size a `workflow_dispatch` input with the default as fallback
   (`runs-on: ${{ inputs.heavy || 'ubicloud-standard-4' }}`) so sizes can be measured without a code change; pick the size by

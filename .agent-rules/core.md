@@ -1,6 +1,6 @@
-# Shared agent standard — core v0.1.11
+# Shared agent standard — core v0.1.12
 
-Policy id: `agent-rules/policy/core.md`  ·  Version: 0.1.11  ·  Digest: computed by scripts/pin.py
+Policy id: `agent-rules/policy/core.md`  ·  Version: 0.1.12  ·  Digest: computed by scripts/pin.py
 Applies to every repository whose `AGENTS.md` declares `policy: agent-rules/core@0.1.x`.
 The repository's `AGENTS.md` overlay and `PROFILE.md` add to this file. Composition rules are in §5.
 
@@ -76,9 +76,14 @@ authority.
 - **D7 Finding severities:** blocking / should-fix / suggestion. Suggestions never block. Each finding carries file:line,
   trigger input or state, impact, confidence, and fix.
 - **D8 Verification gating.** Gate on exit codes, not output. No new warning suppressions without a one-line reason.
-- **D9 CI runners.** GitHub Actions jobs run on Ubicloud managed runners through the Ubicloud GitHub App
-  (`runs-on: ubicloud-standard-<N>`, `-arm` for arm64; Linux only), sized per job by measurement
-  (`playbooks/testing-and-ci.md › Runners`). A job that needs macOS or Windows (Xcode, MSBuild, a Windows-only toolchain)
+- **D9 CI runners.** In a **private** repository, GitHub Actions jobs run on Ubicloud managed runners through the Ubicloud
+  GitHub App (`runs-on: ubicloud-standard-<N>`, `-arm` for arm64; Linux only), sized per job by measurement
+  (`playbooks/testing-and-ci.md › Runners`). A **public** repository stays on GitHub-hosted runners (version-pinned
+  `ubuntu-24.04` and friends, never `-latest`): GitHub bills nothing for them there, and pull requests from forks must never
+  reach the account's paid runners (owner decision 2026-11-01). Its `CI runners` row says so. Because a fork's pull request
+  brings its own workflow file, the rule is enforced at the account, not in YAML: the Ubicloud App is installed on selected
+  private repositories only, organization `RUNS_ON*` variables are visible to private repositories only, and public
+  repositories require approval before a fork's workflow runs (owner settings, R8). A job that needs macOS or Windows (Xcode, MSBuild, a Windows-only toolchain)
   runs on a version-pinned GitHub-hosted label (`macos-15`, `windows-2025`; never `-latest`) and the profile lists it, with
   its reason, in the `CI runners` row (D9 allows it, so it is neither an exception nor an override). Self-hosted boxes are
   listed the same way, with their labels, their owner and until when. Connecting an account or
