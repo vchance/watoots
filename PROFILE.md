@@ -10,12 +10,12 @@
 | Required services for tests | none. Host tests build their components from inline WAT (hermetic); the C++ hosts' ctests and the asset/preview e2e suites need the guests built by `tools/build-plugins.sh` and skip a guest that is not on disk (a skip is not a pass, core R5) |
 | CI runners (D9) | GitHub-hosted: today `ubuntu-latest` (rust, msrv, cpp, sanitizers, rustsec) and `ubuntu-24.04` (policy workflows); pin `ubuntu-latest` → `ubuntu-24.04` in a follow-up — public repository, stays hosted (D9, owner decision 2026-11-01: free minutes; fork PRs never on paid runners); non-Ubicloud jobs (allowed by D9, listed here, not in Exceptions): none — Ubicloud coverage confirmed by: n/a (public repo keeps hosted runners); `RUNS_ON_SMALL` unset (fallback is the intended hosted label) |
 
-## Test matrix (core D10; BrowserStack)
-| Surface | Framework | PR fast lane (smoke) | Integration / release (full) | Binary or URL under test |
+## Device testing (core D10; simulators and emulators)
+| Surface | Test runner | PR fast lane (smoke) | Integration / release (full) | Where it runs |
 |---|---|---|---|---|
-| none | — | — | — | no web or mobile surface; D10 does not apply until one is added |
+| none | — | — | — | no mobile surface; D10 does not apply until one is added |
 
-Credentials: `BROWSERSTACK_USERNAME` / `BROWSERSTACK_ACCESS_KEY` at organization level, not yet set (owner). Parallels: owner decision (default 1 per platform).
+Web surfaces: the in-repo test suite the Components table lists is the browser evidence; no multi-browser matrix (core D10, 0.1.16).
 
 ## Components and critical paths
 Dependency graph (`crates/*/Cargo.toml`): `watoots-trace`, `watoots-capi` and `watoots-cli` depend on `watoots`; `watoots-cli` also on `watoots-trace`.
