@@ -1,4 +1,4 @@
-# Playbook: testing, impact-based selection and CI evidence (core R5, R6, D2)
+# Playbook: testing, impact-based selection and CI evidence (core R5, R6, D2, D9, D10)
 
 ## Select by impact
 1. Map changed paths → components (`PROFILE.md › Components`) → tests that cover them → transitive consumers.
@@ -30,11 +30,31 @@
   base branch, lockfiles, toolchain and CI config are unchanged. Otherwise re-run.
 - Never reuse a pass by PR number alone. Evidence is keyed by SHA.
 
+## Runners (D9)
+- Public repositories keep GitHub-hosted runners on version-pinned labels (`ubuntu-24.04`, `macos-15`, `windows-2025`);
+  everything below applies to private repositories. Reason: hosted minutes are free for public repos, and a fork PR must
+  never run on the account's Ubicloud runners.
+- Default labels: `ubicloud-standard-2` for small jobs (policy-drift, pr-evidence, lint, docs), `ubicloud-standard-4` for
+  build/test until measured. Make the size a `workflow_dispatch` input with the default as fallback
+  (`runs-on: ${{ inputs.heavy || 'ubicloud-standard-4' }}`) so sizes can be measured without a code change; pick the size by
+  cost per run (vCPU × rounded-up minutes), wall-clock as tie-breaker, and post the table in the PR.
+- Repo-level indirection stays: `fromJSON(vars.RUNS_ON_SMALL || '["ubuntu-24.04"]')` in the policy workflows switches to
+  Ubicloud when the owner sets the variable, with no code change. Hard-code a label only in a repo the owner confirmed is
+  covered by the Ubicloud app (the confirmation goes in the PR body); an uncovered label queues forever and never fails.
+- Runners are thrown away after each job: install prebuilt tools, `apt-get update` before install, cache with the normal
+  GitHub cache actions (Ubicloud serves them from its own store; `gh cache list` shows nothing). The clock is not
+  synchronised and disk latency varies between VMs: grep for wall-clock assertions and `timedatectl` before moving a suite.
+- macOS and Windows jobs stay on version-pinned GitHub-hosted labels, listed in the PROFILE `CI runners` row (D9); keep them to the lanes that
+  need them (an iOS `.ipa` for App Automate on main and release, not on every PR commit) because hosted macOS minutes cost
+  10× Linux. The long form with worked numbers lives in the agent-rules repository: `docs/adopting-ubicloud-runners.md`.
+
 ## Lanes (profile defines them)
 - PR fast lane: selected checks, target < 10 min.
 - Integration batch: full suite **once per merge to main** (push trigger), not once per PR commit. If merges are frequent,
   batch (run on a schedule every N hours when main moved) and attribute failures by bisect.
 - Scheduled: dependency advisories (time-dependent, so they must run on unchanged code), platform matrix, soak/fuzz.
+- Browser/device matrix (D10, `playbooks/device-cloud.md`): PR fast lane runs the smoke subset on one platform per surface;
+  the integration batch runs the full matrix; release runs the full matrix plus manual oracles.
 - Release: full matrix + packaging + manual oracles with recorded evidence.
 - Manual with evidence: result pasted with date, revision, operator.
 
