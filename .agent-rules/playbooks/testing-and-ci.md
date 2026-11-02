@@ -38,9 +38,16 @@
   build/test until measured. Make the size a `workflow_dispatch` input with the default as fallback
   (`runs-on: ${{ inputs.heavy || 'ubicloud-standard-4' }}`) so sizes can be measured without a code change; pick the size by
   cost per run (vCPU × rounded-up minutes), wall-clock as tie-breaker, and post the table in the PR.
-- Repo-level indirection stays: `fromJSON(vars.RUNS_ON_SMALL || '["ubuntu-24.04"]')` in the policy workflows switches to
-  Ubicloud when the owner sets the variable, with no code change. Hard-code a label only in a repo the owner confirmed is
-  covered by the Ubicloud app (the confirmation goes in the PR body); an uncovered label queues forever and never fails.
+- Write the labels in the workflow (`runs-on: ${{ inputs.heavy || 'ubicloud-standard-4' }}`); do not route product jobs
+  through `RUNS_ON` / `CONTAINER_RUNS_ON` variables (squishhoard's still pointed at self-hosted runners after the switch; the
+  owner clears them). The only variable indirection is `fromJSON(vars.RUNS_ON_SMALL || '["ubuntu-24.04"]')` in the two
+  policy workflows, so they move when the owner sets the variable; where hosted minutes are refused by billing (Synerlytics)
+  the owner sets it per repo or org. Switch once the owner has confirmed the App covers that organization or account (link
+  the statement in the PR body; no per-repo re-confirmation); an uncovered label queues forever and never fails.
+- GitHub reports Ubicloud runners as `self-hosted` (`runner.environment`). Never gate a step on "hosted only" (cache
+  steps, persistent builders); remove such conditions in the switch PR.
+- Keep one break-glass path named in the profile (a self-hosted runner left registered, or the owner re-labelling), because
+  an Ubicloud outage or exhausted credit queues every job, including the CI on a revert.
 - Runners are thrown away after each job: install prebuilt tools, `apt-get update` before install, cache with the normal
   GitHub cache actions (Ubicloud serves them from its own store; `gh cache list` shows nothing). The clock is not
   synchronised and disk latency varies between VMs: grep for wall-clock assertions and `timedatectl` before moving a suite.
@@ -53,9 +60,10 @@
 - Integration batch: full suite **once per merge to main** (push trigger), not once per PR commit. If merges are frequent,
   batch (run on a schedule every N hours when main moved) and attribute failures by bisect.
 - Scheduled: dependency advisories (time-dependent, so they must run on unchanged code), platform matrix, soak/fuzz.
-- Browser/device matrix (D10, `playbooks/device-cloud.md`): PR fast lane runs the smoke subset on one platform per surface;
-  the integration batch runs the full matrix; release runs the full matrix plus manual oracles.
-- Release: full matrix + packaging + manual oracles with recorded evidence.
+- Device tests (D10, `playbooks/device-testing.md`): PR fast lane runs the smoke subset on one simulator or emulator per
+  platform when D2 maps the change to the surface; the integration batch runs every target in the profile; release runs every
+  target plus manual oracles.
+- Release: every device target + packaging + manual oracles with recorded evidence.
 - Manual with evidence: result pasted with date, revision, operator.
 
 ## Record

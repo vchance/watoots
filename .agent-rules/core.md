@@ -1,6 +1,6 @@
-# Shared agent standard — core v0.1.12
+# Shared agent standard — core v0.1.16
 
-Policy id: `agent-rules/policy/core.md`  ·  Version: 0.1.12  ·  Digest: computed by scripts/pin.py
+Policy id: `agent-rules/policy/core.md`  ·  Version: 0.1.16  ·  Digest: computed by scripts/pin.py
 Applies to every repository whose `AGENTS.md` declares `policy: agent-rules/core@0.1.x`.
 The repository's `AGENTS.md` overlay and `PROFILE.md` add to this file. Composition rules are in §5.
 
@@ -78,28 +78,49 @@ authority.
 - **D8 Verification gating.** Gate on exit codes, not output. No new warning suppressions without a one-line reason.
 - **D9 CI runners.** In a **private** repository, GitHub Actions jobs run on Ubicloud managed runners through the Ubicloud
   GitHub App (`runs-on: ubicloud-standard-<N>`, `-arm` for arm64; Linux only), sized per job by measurement
-  (`playbooks/testing-and-ci.md › Runners`). A **public** repository stays on GitHub-hosted runners (version-pinned
-  `ubuntu-24.04` and friends, never `-latest`): GitHub bills nothing for them there, and pull requests from forks must never
-  reach the account's paid runners (owner decision 2026-11-01). Its `CI runners` row says so. Because a fork's pull request
-  brings its own workflow file, the rule is enforced at the account, not in YAML: the Ubicloud App is installed on selected
-  private repositories only, organization `RUNS_ON*` variables are visible to private repositories only, and public
-  repositories require approval before a fork's workflow runs (owner settings, R8). A job that needs macOS or Windows (Xcode, MSBuild, a Windows-only toolchain)
-  runs on a version-pinned GitHub-hosted label (`macos-15`, `windows-2025`; never `-latest`) and the profile lists it, with
-  its reason, in the `CI runners` row (D9 allows it, so it is neither an exception nor an override). Self-hosted boxes are
-  listed the same way, with their labels, their owner and until when. Connecting an account or
-  organization to Ubicloud, setting runner variables (`RUNS_ON*`) and registering or removing runners are owner-reserved
-  (R8); a workflow that targets a runner the account cannot provide queues forever, so the agent confirms coverage with the
-  owner before switching a workflow and records the confirmation in the PR with a link to where the owner said so (R8).
-- **D10 Browser and device testing on BrowserStack.** A repository with a web surface runs its end-to-end suite on
-  BrowserStack Automate against the browser matrix in `PROFILE.md › Test matrix` (browser × version × OS); a repository with
-  a mobile surface uploads the binary its CI built and runs its device suite on BrowserStack App Automate on real devices
-  against the profile's device matrix (model × OS version). The matrix runs by lane when impact selection (D2) maps the change to the surface (otherwise the evidence row reads
-  `n/a: not selected`): PR fast lane = the smoke subset on one platform per surface; integration (main) = the full matrix; release = the full matrix plus the manual oracles. Credentials
-  are the secrets `BROWSERSTACK_USERNAME` / `BROWSERSTACK_ACCESS_KEY` at organization or repository level, set by the owner;
-  agents never hold, print or copy them, and a run without them records the matrix check as `unavailable`, never as passed.
-  A matrix failure is a failure (R5): one automatic retry is allowed and recorded as a flake; nothing is removed from the
-  matrix or marked skipped without a profile change (High tier, R9). The PR evidence table links the BrowserStack build.
-  Details: `playbooks/device-cloud.md`.
+  (`playbooks/testing-and-ci.md › Runners`). Labels are written directly in the workflow with a `workflow_dispatch` input as
+  override; the `RUNS_ON*` variable indirection is for the two policy workflows only (`RUNS_ON_SMALL`), and a variable
+  still naming a self-hosted runner is legacy the owner clears. GitHub reports Ubicloud runners as `self-hosted`
+  (`runner.environment`), so never gate a step on "hosted only". A **public** repository stays on GitHub-hosted runners
+  (version-pinned `ubuntu-24.04` and friends, never `-latest`): GitHub bills nothing for them there, and pull requests from
+  forks must never reach the account's paid runners (owner decision 2026-11-01). Its `CI runners` row says so. Because a
+  fork's pull request brings its own workflow file, the rule is enforced at the account, not in YAML: the Ubicloud App
+  may be installed on all repositories only in an organization with no public repository (before any repository there is
+  made public or a public one is created, the owner re-scopes the App to selected repositories; agents never change
+  repository visibility); an account or organization with a public repository installs it on selected private
+  repositories; organization `RUNS_ON*` variables are visible to private
+  repositories only; public repositories set Actions › Fork pull request workflows from outside collaborators to "Require approval for all
+  outside collaborators" (or "… all external contributors", whichever label the GitHub UI shows; owner settings, R8); a break-glass self-hosted runner sits in a runner group restricted to
+  selected private repositories with "Allow public repositories" off (organizations; a personal account has no runner
+  groups, so there break-glass runners are registered on private repositories only). A job that
+  needs macOS or Windows (Xcode, MSBuild, a Windows-only toolchain) runs on a version-pinned GitHub-hosted label
+  (`macos-15`, `windows-2025`, never `-latest`) and the profile lists it, with its reason, in the `CI runners` row (D9 allows it, so it is
+  neither an exception nor an override); self-hosted boxes kept as break-glass are listed the same way, with labels, owner
+  and until when. Connecting an account or organization to Ubicloud, setting `RUNS_ON*` variables and registering or
+  removing runners are owner-reserved (R8). **Coverage is confirmed once, per organization or account**: the owner's
+  statement that the App covers it (linked from the PR) is the confirmation; the agent then switches the workflow without
+  asking again, and a label the account cannot provide queues forever, which is why the confirmation must name the
+  organization or account, not just say "connected". If Ubicloud is unreachable or out of credit, every job queues,
+  including CI on a revert: the profile names the break-glass (a kept self-hosted runner, or the owner re-labelling).
+- **D10 Device testing on simulators and emulators.** A repository with a mobile surface runs its UI and device tests on the
+  **iOS Simulator** (Xcode; `xcodebuild test -destination 'platform=iOS Simulator,…'`, or the repo's runner such as Maestro or
+  Detox against a booted simulator) and the **Android Emulator** (an AVD at the API levels the profile names), locally and in
+  CI. There is no device cloud and no cross-browser matrix (owner decision 2026-11-02: the BrowserStack plan did not include
+  automated testing; the BrowserStack playbook is archived in agent-rules `playbooks/archive/`, not vendored, not in force; no
+  `BROWSERSTACK_*` secret is created and no BrowserStack run is required evidence; agents do not run BrowserStack scripts, call
+  its API or read `BROWSERSTACK_*` variables: the 0.1.13 operator-mode permission is withdrawn). A web surface keeps the end-to-end suite
+  the repository already defines, on the runner, with the browser engine it already uses; no multi-browser matrix is
+  required. The profile's `## Device testing` table lists each mobile surface, its test runner, the simulator or emulator
+  targets (device model, OS version) for the PR smoke subset and for the full run, and where it runs. Lanes, when impact
+  selection (D2) maps the change to the surface (otherwise `n/a: not selected (D2)`): PR fast lane = the smoke subset on one
+  simulator or emulator per platform; integration (main) = every target in the table; release = every target plus the manual
+  oracles. iOS Simulator runs need macOS: in CI on the version-pinned hosted label the `CI runners` row lists (`macos-15`;
+  D9), or by hand on the owner's Mac, recorded as `manual (simulator, operator <owner|agent>, <date>, <sha7>, <device/OS>)`.
+  The Android Emulator in CI needs KVM on the runner (GitHub-hosted Ubuntu has it; confirm it on the Ubicloud label before
+  relying on it, else the row reads `unavailable: no KVM on runner (<label>)`). A failing device test is a failure (R5); one
+  automatic retry is allowed and recorded as a flake; a target is removed from the table only by a profile change (High tier,
+  R9). Simulators booted and AVDs created by a run are shut down and deleted by that run (R10). Details:
+  `playbooks/device-testing.md`.
 
 ## 3. Risk tiers (summary; full table in `playbooks/classification.md`)
 | Tier | Examples | Review | Checks | Merge |

@@ -6,7 +6,7 @@ ap = argparse.ArgumentParser(); ap.add_argument('--core', required=True); ap.add
 a = ap.parse_args(); errs = []
 core = open(a.core, encoding='utf-8').read(); agents = open(a.agents, encoding='utf-8').read()
 digest = hashlib.sha256(core.encode()).hexdigest()[:12]
-if '{{' in core: errs.append('.agent-rules/core.md: unresolved placeholder in the materialized core (re-run pin.py)')
+if re.search(r'(?<!\$)\{\{\s*[A-Za-z0-9_]+\s*\}\}', core): errs.append('.agent-rules/core.md: unresolved placeholder in the materialized core (re-run pin.py)')
 m = re.search(r'core-digest:\s*([0-9a-f]{12})', agents)
 # NOTE: this is an integrity check (manifest digest == in-repo copy). Drift from the published core is detected by
 # re-running agent-rules/scripts/pin.py --check against the agent-rules checkout, not by this script.
