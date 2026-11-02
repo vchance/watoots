@@ -24,6 +24,7 @@
 | {{lint}} | passed | {{sha}} | CI run {{url}} |
 | {{cargo test -p foo}} | passed (143 tests) | {{sha}} | CI run {{url}} |
 | full suite | n/a (no escalation trigger) | — | — |
+| {{browser/device matrix (D10)}} | {{passed / failed / unavailable: no secrets / n/a: not selected / n/a: no web or mobile surface}} | {{sha}} | BrowserStack build {{url}} |
 | {{manual oracle}} | unavailable (needs build box) | — | owner to run before release |
 
 ## Reviews

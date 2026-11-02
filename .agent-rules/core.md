@@ -1,6 +1,6 @@
-# Shared agent standard — core v0.1.10
+# Shared agent standard — core v0.1.11
 
-Policy id: `agent-rules/policy/core.md`  ·  Version: 0.1.10  ·  Digest: computed by scripts/pin.py
+Policy id: `agent-rules/policy/core.md`  ·  Version: 0.1.11  ·  Digest: computed by scripts/pin.py
 Applies to every repository whose `AGENTS.md` declares `policy: agent-rules/core@0.1.x`.
 The repository's `AGENTS.md` overlay and `PROFILE.md` add to this file. Composition rules are in §5.
 
@@ -76,6 +76,25 @@ authority.
 - **D7 Finding severities:** blocking / should-fix / suggestion. Suggestions never block. Each finding carries file:line,
   trigger input or state, impact, confidence, and fix.
 - **D8 Verification gating.** Gate on exit codes, not output. No new warning suppressions without a one-line reason.
+- **D9 CI runners.** GitHub Actions jobs run on Ubicloud managed runners through the Ubicloud GitHub App
+  (`runs-on: ubicloud-standard-<N>`, `-arm` for arm64; Linux only), sized per job by measurement
+  (`playbooks/testing-and-ci.md › Runners`). A job that needs macOS or Windows (Xcode, MSBuild, a Windows-only toolchain)
+  runs on a version-pinned GitHub-hosted label (`macos-15`, `windows-2025`; never `-latest`) and the profile lists it, with
+  its reason, in the `CI runners` row (D9 allows it, so it is neither an exception nor an override). Self-hosted boxes are
+  listed the same way, with their labels, their owner and until when. Connecting an account or
+  organization to Ubicloud, setting runner variables (`RUNS_ON*`) and registering or removing runners are owner-reserved
+  (R8); a workflow that targets a runner the account cannot provide queues forever, so the agent confirms coverage with the
+  owner before switching a workflow and records the confirmation in the PR with a link to where the owner said so (R8).
+- **D10 Browser and device testing on BrowserStack.** A repository with a web surface runs its end-to-end suite on
+  BrowserStack Automate against the browser matrix in `PROFILE.md › Test matrix` (browser × version × OS); a repository with
+  a mobile surface uploads the binary its CI built and runs its device suite on BrowserStack App Automate on real devices
+  against the profile's device matrix (model × OS version). The matrix runs by lane when impact selection (D2) maps the change to the surface (otherwise the evidence row reads
+  `n/a: not selected`): PR fast lane = the smoke subset on one platform per surface; integration (main) = the full matrix; release = the full matrix plus the manual oracles. Credentials
+  are the secrets `BROWSERSTACK_USERNAME` / `BROWSERSTACK_ACCESS_KEY` at organization or repository level, set by the owner;
+  agents never hold, print or copy them, and a run without them records the matrix check as `unavailable`, never as passed.
+  A matrix failure is a failure (R5): one automatic retry is allowed and recorded as a flake; nothing is removed from the
+  matrix or marked skipped without a profile change (High tier, R9). The PR evidence table links the BrowserStack build.
+  Details: `playbooks/device-cloud.md`.
 
 ## 3. Risk tiers (summary; full table in `playbooks/classification.md`)
 | Tier | Examples | Review | Checks | Merge |
