@@ -8,6 +8,14 @@
 | Supported platforms | x86_64 Linux (Ubuntu, `ubuntu-latest`) = `CI` (all four `ci.yml` jobs incl. LeakSanitizer); macOS arm64 = `manual` (the owner's development machine: AGENTS.md › Environment notes, Homebrew LLVM 22, wasi-sdk arm64-macos; no macOS CI job); Windows = `nobody` (no docs claim it, no job builds it); guests: `wasm32-wasip2` Rust guests = `CI`, C++/JS/Python guests = `manual` (CI has only the rustup toolchain; CONTRIBUTING.md › The sample plugins) |
 | Toolchain | Rust stable in CI (`dtolnay/rust-toolchain@stable`, no `rust-toolchain.toml`); MSRV `rust-version = "1.95"` (`Cargo.toml`, checked by the `msrv` job); edition 2024; target `wasm32-wasip2`; Wasmtime 48.x; CMake 3.28+ with Ninja and presets `dev` / `asan` / `release` (`CMakePresets.json`); LLVM 22 clang-format/clang-tidy (ADR-0003; CI installs from apt.llvm.org); optional guest toolchains: wit-bindgen-cli + wasi-sdk (C++), ComponentizeJS (JS), componentize-py (Python) |
 | Required services for tests | none. Host tests build their components from inline WAT (hermetic); the C++ hosts' ctests and the asset/preview e2e suites need the guests built by `tools/build-plugins.sh` and skip a guest that is not on disk (a skip is not a pass, core R5) |
+| CI runners (D9) | target `ubicloud-standard-2` (rust, msrv, cpp, sanitizers, rustsec); today hosted `ubuntu-latest`; non-Ubicloud jobs (allowed by D9): none — coverage: not yet: owner to connect the vchance account (public repo: fork PRs get no secrets); `RUNS_ON_SMALL` unset |
+
+## Test matrix (core D10; BrowserStack)
+| Surface | Framework | PR fast lane (smoke) | Integration / release (full) | Binary or URL under test |
+|---|---|---|---|---|
+| none | — | — | — | no web or mobile surface; D10 does not apply until one is added |
+
+Credentials: `BROWSERSTACK_USERNAME` / `BROWSERSTACK_ACCESS_KEY` at organization level, not yet set (owner). Parallels: owner decision (default 1 per platform).
 
 ## Components and critical paths
 Dependency graph (`crates/*/Cargo.toml`): `watoots-trace`, `watoots-capi` and `watoots-cli` depend on `watoots`; `watoots-cli` also on `watoots-trace`.
