@@ -24,6 +24,7 @@
 | {{lint}} | passed | {{sha}} | CI run {{url}} |
 | {{cargo test -p foo}} | passed (143 tests) | {{sha}} | CI run {{url}} |
 | full suite | n/a (no escalation trigger) | — | — |
+| {{CI job the change cannot affect}} | n/a: not selected (D2) | {{sha}} | CI run {{url}} (job skipped by the `changes` job) |
 | {{device tests (D10, simulators)}} | {{passed (<device/OS>, n tests) / failed / manual (simulator, operator <owner|agent>, <date>, <sha7>, <device/OS>) / unavailable: no macOS runner / unavailable: no KVM on runner (<label>) / n/a: not selected (D2) / n/a: no mobile surface}} | {{sha}} | CI job / artifacts {{url}} |
 | {{manual oracle}} | unavailable (needs build box) | — | owner to run before release |
 

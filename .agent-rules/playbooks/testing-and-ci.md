@@ -8,6 +8,72 @@
 2. Uncertain mapping → escalate to the component's full suite; say so in the PR.
 3. Docs-only (D6): doc checks only; the drift check for policy files (R9).
 
+## Selection in the workflow (D2, since 0.1.17)
+Running every job on every PR wastes runner minutes on code the change cannot affect (yuppers, 2026-11-04: an
+Android-only PR ran the backend, web, database and container jobs, about 40 runner-minutes for nothing). The
+workflow, not the agent, decides what runs, from the same table the profile publishes:
+
+1. **One `changes` job first**, on the small runner. It lists the changed files with renames split into both paths,
+   so a file moved out of a component still selects it. On `pull_request`, check out with `fetch-depth: 2` and diff the
+   test merge commit against its first parent (`git diff --name-only --no-renames HEAD^1 HEAD`, which equals the
+   merge-base diff against the current base), or check out with `fetch-depth: 0` and diff against
+   `git merge-base "origin/$BASE_REF" HEAD`, passing the base ref through `env:` rather than an inline expression. Run the
+   script with `shell: bash` (which sets `pipefail`) or check each exit status. It sets one boolean output per component
+   in `PROFILE.md › Components`, plus `all`. A third-party action (`dorny/paths-filter`) is fine if pinned by commit SHA
+   like every action, but on `pull_request` it lists files through the API, which stops at 3000 files (treat a list at
+   the cap as `all`), it has no "matched nothing" output (compare its file list with the union of the filters), and
+   negated patterns under its default `predicate-quantifier: some` match more than they appear to. Keep the path
+   patterns in one place under `.github/**` (in the job, or in a script beside the workflow such as
+   `.github/scripts/ci-changes.sh` with its own cases), in the same order as the profile's `Check selection` rows, so
+   every edit to the mapping is a `.github/**` change: High by R9, with `policy-drift` required.
+2. **Escalation (selection fails closed).** These select every job that reads them, and set `all` when that set
+   cannot be stated exactly:
+   - the repository scripts the workflow runs;
+   - lockfiles, toolchain files and build-system files (a repository-wide one, such as the root lockfile, reaches every
+     job; one that only a single component's build reads, such as that app's Gradle lockfile, reaches that component);
+   - shared or widely consumed code the profile names (map it by its consumers, traced from the build files and tests
+     that read it, including reads across components such as a test that opens another component's source).
+
+   These always set `all`:
+   - `.github/**` (workflows, composite actions and the selection script itself);
+   - a file matching no component and no "no product job" pattern (unknown paths escalate; they never skip);
+   - a file list that is empty or could not be computed (a non-zero exit, a missing merge base);
+   - any non-PR event: push to the default branch, release tags, `schedule`, `workflow_dispatch`, `merge_group`.
+
+   A mapping narrower than `all` for an escalation file is recorded in the profile with the trace that justifies it, and
+   the PR that introduces it lists it as a safeguard change (item 7). Prefer `all` unless the trace is short and checkable
+   (the build files and tests that read the file), or comes from a dependency graph the build tool reports. Such a trace
+   can go stale without any `.github/**` edit, so item 5 makes every review check it.
+
+   Paths that are known to need no product job (prose under D6, say) are listed as such, so a Markdown edit does not
+   escalate; they are a pattern in the job like any component, not a default.
+3. **Each product job** lists `changes` in its own `needs:` (a job reads `needs.changes.outputs.*` only from a direct
+   dependency, so a job that also needs `build` has `needs: [changes, build]`) and has
+   `if: needs.changes.outputs.all == 'true' || needs.changes.outputs.<c> == 'true'` for every component it covers. A
+   shared job that others consume (a build) runs on the union of its dependents' components. `always()` is never used to
+   bypass a failed dependency.
+4. **One `ci-result` job** (job id and name both `ci-result`, so the check is named that) with `needs:` listing every job,
+   `changes` included, and `if: always()`. It fails when any needed job's result is `failure` or `cancelled`, so a failed
+   `changes` job (whose dependents are all skipped) fails it, and passes when the rest are `success` or `skipped`.
+   `merge.sh` requires a `ci-result` check whenever the head's workflows define that job; where the plan allows a ruleset,
+   make it the required context there too, so a skipped job never leaves a required check pending. Policy workflows
+   (`policy-drift`, `pr-evidence`) stay as they are.
+5. **Record** each job left out as `n/a: not selected (D2)` in the PR body, with the run URL that shows it skipped; a
+   skipped job is never a pass (R5). The reviewer checks the mapping against the diff: a changed path whose job did not
+   run is a blocking finding unless the profile maps it elsewhere. The reviewer also checks whether the diff adds a reader
+   of an escalation file that has a narrowed mapping (a build-file dependency, an import, a test that opens a path in
+   another component); if it does, the same PR widens the mapping (High by R9), or the finding is blocking.
+6. **Selection misses.** The push run on the default branch runs everything, and every such run completes: give non-PR
+   runs their own concurrency group (for example keyed on `github.run_id`), because with `cancel-in-progress: false`
+   GitHub still cancels a *pending* run in the same group when a newer one queues. When it fails in a job the PR skipped, fix
+   the mapping in the same follow-up PR as the code fix and say so; the miss is evidence that the selection was too
+   narrow, never a reason to skip that run.
+7. **Changing the mapping.** Every edit to it is High by R9 (it is in `.github/**`). Adding paths to a job or adding an
+   escalation trigger widens the checks. Removing paths from a job, removing an escalation trigger or the `ci-result`
+   gate is also a safeguard reduction, and the classification says so.
+8. **Measure** the change in the PR: runner-minutes (vCPU × minutes) for a typical PR of each component before and after,
+   from `gh run view --json jobs`.
+
 ## Reuse evidence
 - One CI run per head SHA produces the evidence. Author, code reviewer and specialists read the same run.
 - Build once: the build job uploads artifacts; test/lint jobs consume them (or share sccache/rust-cache).
@@ -69,8 +135,10 @@
 ## Record
 Each check: passed / failed / skipped / unavailable / n/a + SHA + link. Zero tests discovered = failed. A job skipped by
 `if:` reports success on GitHub: treat it as `skipped` in the PR body. A workflow skipped by path filter leaves checks
-pending: do not list it as a required check unless a no-op job reports for it.
+pending: do not list it as a required check unless a no-op job reports for it. Prefer job-level selection with the
+`ci-result` gate (§ Selection in the workflow) to workflow-level `paths:` filters.
 
 ## Anti-gaming
-- Deleting or `#[ignore]`-ing a test, lowering a threshold, widening a path filter, or adding `continue-on-error` is a
-  High-tier change (R9/safeguard reduction) and must be stated in the classification.
+- Deleting or `#[ignore]`-ing a test, lowering a threshold, narrowing what a job's path selection covers (or removing an
+  escalation trigger or the `ci-result` gate), or adding `continue-on-error` is a High-tier change (R9/safeguard
+  reduction) and must be stated in the classification.

@@ -1,6 +1,6 @@
-# Shared agent standard — core v0.1.16
+# Shared agent standard — core v0.1.17
 
-Policy id: `agent-rules/policy/core.md`  ·  Version: 0.1.16  ·  Digest: computed by scripts/pin.py
+Policy id: `agent-rules/policy/core.md`  ·  Version: 0.1.17  ·  Digest: computed by scripts/pin.py
 Applies to every repository whose `AGENTS.md` declares `policy: agent-rules/core@0.1.x`.
 The repository's `AGENTS.md` overlay and `PROFILE.md` add to this file. Composition rules are in §5.
 
@@ -57,7 +57,21 @@ authority.
   rebuilding. They run something themselves only to answer a specific unresolved question, and say which.
 - **D2 Targeted validation.** PRs run the impact-selected checks in `PROFILE.md › Check selection`. Full-suite or
   full-matrix runs happen only on the escalation triggers listed there (shared code, toolchain/build changes, broad
-  refactors, uncertain impact, release candidates, or a regression that exposed bad selection).
+  refactors, uncertain impact, release candidates, or a regression that exposed bad selection). **The CI workflow enforces
+  the selection, not the agent's judgment** (since 0.1.17): a first `changes` job maps the PR's changed paths (against the
+  merge base) to the components in `Check selection`, and each product job runs only when one of its components changed
+  or an escalation trigger fired (the scripts the workflow calls, lockfiles, toolchain, shared code: each selects every
+  job that reads it, and every job when that set cannot be stated exactly; `.github/**`, any file matching no component,
+  and a file list that is empty or could not be computed select every job: selection fails closed); one
+  always-running `ci-result` job fails if any job failed or was cancelled, and is the required product check: `merge.sh`
+  requires it whenever the head's workflows define it, beside `pr-evidence` and `policy-drift`. A job left out is
+  recorded `n/a: not selected (D2)`, never as passed. Every non-PR event (push to the default branch, release refs,
+  `schedule`, `workflow_dispatch`, `merge_group`) runs every job (the integration and release lanes), so a selection miss
+  shows up on the merge revision; a failure there that the PR did not run is the
+  "regression that exposed bad selection" trigger, and the fix widens the mapping. The mapping lives in one place under
+  `.github/**` (the workflow or a script beside it, so every edit to it is High by R9) and matches the profile table;
+  narrowing it is a safeguard reduction. Details:
+  `playbooks/testing-and-ci.md › Selection in the workflow`.
 - **D3 Visual changes get a UX review** (`playbooks/ux-review.md`) with rendered evidence at the sizes/themes the profile
   lists.
 - **D4 Specialist playbooks load by trigger**, not by default: technical design, architecture, security, performance,
