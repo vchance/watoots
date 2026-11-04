@@ -39,7 +39,12 @@ workflow, not the agent, decides what runs, from the same table the profile publ
      itself);
    - a file matching no component and no "no product job" pattern (unknown paths escalate; they never skip);
    - a file list that is empty or could not be computed (a non-zero exit, a missing merge base);
-   - any non-PR event: push to the default branch, release tags, `schedule`, `workflow_dispatch`, `merge_group`.
+   - release tags, `workflow_dispatch`, `merge_group`, and the scheduled integration run when the default branch moved
+     (item 6);
+   - a push to the default branch whose previous revision cannot be read (`github.event.before` all zeros, or not
+     fetchable). Otherwise a push selects from `git diff --name-only --no-renames "$BEFORE" "$AFTER"` after
+     `git fetch --depth=1 origin "$BEFORE"` (the diff needs only the two trees; after a force-push it is still the
+     right tree diff while `before` can be fetched), exactly as a PR does.
 
    A mapping narrower than `all` for an escalation file is recorded in the profile with the trace that justifies it, and
    the PR that introduces it lists it as a safeguard change (item 7). Prefer `all` unless the trace is short and checkable
@@ -78,14 +83,50 @@ workflow, not the agent, decides what runs, from the same table the profile publ
    run is a blocking finding unless the profile maps it elsewhere. The reviewer also checks whether the diff adds a reader
    of an escalation file that has a narrowed mapping (a build-file dependency, an import, a test that opens a path in
    another component); if it does, the same PR widens the mapping (High by R9), or the finding is blocking.
-6. **Selection misses.** The push run on the default branch runs everything, and every such run completes: give non-PR
-   runs their own concurrency group (for example keyed on `github.run_id`), because with `cancel-in-progress: false`
-   GitHub still cancels a *pending* run in the same group when a newer one queues. When it fails in a job the PR skipped, fix
-   the mapping in the same follow-up PR as the code fix and say so; the miss is evidence that the selection was too
-   narrow, never a reason to skip that run.
+6. **The integration lane: scheduled, about every 4 hours, only when the default branch moved** (owner decision
+   2026-11-04; since 0.1.19 it replaces the full run on every push).
+   - Trigger: `schedule: - cron: '23 */4 * * *'` (an off-hour minute: GitHub delays or drops scheduled runs most at the
+     top of the hour) on the default branch, plus `workflow_dispatch` to run it by hand. GitHub may delay or drop a
+     scheduled run, and turns schedules off in a public repository after 60 days without activity; the lane is "about
+     every 4 hours", not a guarantee, and the staleness check below watches it.
+   - **Skip only on a covered head.** On a scheduled run, the first step of the `changes` job finds the *covering run*:
+     the latest scheduled or dispatched run of the same workflow on the default branch that executed its jobs (not a skip
+     run: one whose product jobs did not all end `skipped`, which `gh run view <id> --json jobs` shows; a skip run's log
+     also says so), queried with
+     `gh run list -R "$GITHUB_REPOSITORY" --workflow <file> --branch <default> --status completed --limit 50 --json databaseId,event,headSha,conclusion`
+     (keep `schedule` and `workflow_dispatch` events; a list with no covering run means run),
+     with job-level `permissions: { contents: read, actions: read }` and `GH_TOKEN: ${{ github.token }}`). Then:
+     - covering run on the current head with conclusion `success`: set every output false; every product job is skipped,
+       `ci-result` passes, and the log says "covered by run <id> on <sha>";
+     - covering run on the current head with conclusion `failure`: run nothing and fail `ci-result` with "carrying the
+       failure of run <id> on <sha>", so the failure stays the latest result until a merge moves the head;
+     - anything else (a different head, `cancelled`, `timed_out`, `startup_failure`, no covering run, an API error): set
+       `all`. The lane fails toward running, and an uncovered head never stays uncovered.
+
+     A skip run is not evidence for the release gate (core §4): that needs a run that executed the jobs on the revision.
+   - The run covers every merge since the previous covering run at once. When it fails in a job some of those PRs
+     skipped, bisect over them (`git log <previous>..<head>`): run the failing job's command locally on each candidate,
+     or push a temporary branch at the candidate SHA and dispatch the workflow on it (`workflow_dispatch` takes a branch
+     or tag, not a SHA, and runs every job), deleting the branch afterward (R10). Fix the mapping in the same follow-up PR
+     as the code fix and say so: the miss is evidence that the selection was too narrow, never a reason to skip the run.
+   - **Staleness check.** The agent checks at session start (and the policy-drift job may also) and warns when the default branch's newest
+     commit is more than about 8 hours newer than the head of the latest covering run, which is how a dropped or
+     disabled schedule shows.
+   - Every non-PR run completes: give non-PR runs their own concurrency group (for example keyed on `github.run_id`),
+     because with `cancel-in-progress: false` GitHub still cancels a *pending* run in the same group when a newer one
+     queues.
+   - **Deploys.** A deploy that gates on the commit's checks (Render's `checksPass`, a required-checks deploy rule) sees
+     the push run, which runs the selected jobs and `ci-result`, not the full suite. A selection miss can therefore reach
+     production before the next covering run catches it (up to about 4 hours, longer if a scheduled run is dropped). A
+     repository that deploys says in its profile which it chose, as an owner decision: accept that exposure (the push
+     run is its release gate), gate the deploy on the covering run (deploy from the scheduled run, or dispatch a full run
+     before deploying), or turn automatic deploys off and deploy only when the owner says so (the agent then checks that
+     a covering run, or a dispatched full run, is green on the revision before deploying it). A release that needs the full suite on its exact revision gets it from a
+     release ref or a dispatched run (core §4 Release).
 7. **Changing the mapping.** Every edit to it is High by R9 (it is in `.github/**`). Adding paths to a job or adding an
    escalation trigger widens the checks. Removing paths from a job, removing an escalation trigger or the `ci-result`
-   gate is also a safeguard reduction, and the classification says so.
+   gate is also a safeguard reduction, and the classification says so; so is removing or lengthening the integration
+   `schedule`, loosening the covered-head comparison, or letting a skip run pass when its covering run did not succeed.
 8. **Measure** the change in the PR: runner-minutes (vCPU × minutes) for a typical PR of each component before and after,
    from `gh run view --json jobs`.
 
@@ -138,8 +179,9 @@ workflow, not the agent, decides what runs, from the same table the profile publ
 
 ## Lanes (profile defines them)
 - PR fast lane: selected checks, target < 10 min.
-- Integration batch: full suite **once per merge to main** (push trigger), not once per PR commit. If merges are frequent,
-  batch (run on a schedule every N hours when main moved) and attribute failures by bisect.
+- Integration batch: full suite on a **schedule every 4 hours, only when the default branch moved** since the last
+  scheduled run (item 6 of § Selection in the workflow); a push to the default branch runs the selected jobs only.
+  Attribute a failure by bisecting over the merges since the previous green scheduled run.
 - Scheduled: dependency advisories (time-dependent, so they must run on unchanged code), platform matrix, soak/fuzz.
 - Device tests (D10, `playbooks/device-testing.md`): PR fast lane runs the smoke subset on one simulator or emulator per
   platform when D2 maps the change to the surface; the integration batch runs every target in the profile; release runs every

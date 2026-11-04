@@ -16,7 +16,7 @@
 - Escalation triggers hit: none | {{which}}
 
 ## Revisions
-- base: `{{sha}}` ({{branch}}) · head: `{{sha}}` · integration revision tested: `{{sha or "main@sha after merge"}}`
+- base: `{{sha}}` ({{branch}}) · head: `{{sha}}` · integration revision tested: `{{sha or "the next scheduled integration run after merge"}}`
 
 ## Evidence (per check: passed / failed / skipped / unavailable / n/a — with revision)
 | Check | Result | Revision | Where |

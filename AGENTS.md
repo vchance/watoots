@@ -1,7 +1,7 @@
 # Agent instructions — watoots
 
 <!-- agent-rules manifest (checked by policy-drift; keep these lines exact) -->
-policy: agent-rules/core@0.1.x   ·   profile: PROFILE.md   ·   core-digest: 249b2280712c
+policy: agent-rules/core@0.1.x   ·   profile: PROFILE.md   ·   core-digest: 608c1fb9deda
 
 Read, in this order: (1) `.agent-rules/core.md` — the shared standard this repository follows; (2) `PROFILE.md`; (3) the sections below. Then classify the change (core R2) before editing anything.
 

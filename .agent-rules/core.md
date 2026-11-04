@@ -1,6 +1,6 @@
-# Shared agent standard — core v0.1.18
+# Shared agent standard — core v0.1.19
 
-Policy id: `agent-rules/policy/core.md`  ·  Version: 0.1.18  ·  Digest: computed by scripts/pin.py
+Policy id: `agent-rules/policy/core.md`  ·  Version: 0.1.19  ·  Digest: computed by scripts/pin.py
 Applies to every repository whose `AGENTS.md` declares `policy: agent-rules/core@0.1.x`.
 The repository's `AGENTS.md` overlay and `PROFILE.md` add to this file. Composition rules are in §5.
 
@@ -57,7 +57,8 @@ authority.
   rebuilding. They run something themselves only to answer a specific unresolved question, and say which.
 - **D2 Targeted validation.** PRs run the impact-selected checks in `PROFILE.md › Check selection`. Full-suite or
   full-matrix runs happen only on the escalation triggers listed there (shared code, toolchain/build changes, broad
-  refactors, uncertain impact, release candidates, or a regression that exposed bad selection). **The CI workflow enforces
+  refactors, uncertain impact, release candidates, or a regression that exposed bad selection) and on the scheduled
+  integration lane below. **The CI workflow enforces
   the selection, not the agent's judgment** (since 0.1.17): a first `changes` job maps the PR's changed paths (against the
   merge base) to the components in `Check selection`, and each product job runs only when one of its components changed
   or an escalation trigger fired (the scripts the workflow calls, lockfiles, toolchain, shared code: each selects every
@@ -73,10 +74,18 @@ authority.
   files trigger cannot be canceled without refusing the merge). One
   always-running `ci-result` job fails if any job failed or was cancelled, and is the required product check: `merge.sh`
   requires it whenever the head's workflows define it, beside `pr-evidence` and `policy-drift`. A job left out is
-  recorded `n/a: not selected (D2)`, never as passed. Every non-PR event (push to the default branch, release refs,
-  `schedule`, `workflow_dispatch`, `merge_group`) runs every job (the integration and release lanes), so a selection miss
-  shows up on the merge revision; a failure there that the PR did not run is the
-  "regression that exposed bad selection" trigger, and the fix widens the mapping. The mapping lives in one place under
+  recorded `n/a: not selected (D2)`, never as passed. A push to the default branch runs the same selection for the
+  pushed commits (since 0.1.19; every job when the previous revision cannot be read). **The integration lane is a
+  scheduled full run about every 4 hours that runs only when the default branch moved** (owner decision 2026-11-04): it
+  runs every job on the branch head, unless the latest scheduled run that executed its jobs already covered that head:
+  then it runs nothing and passes if that run succeeded, carries its failure if it failed, and runs every job if it was
+  cancelled, timed out or cannot be read. A skip run is never release evidence. Release refs, `workflow_dispatch` and
+  `merge_group` run every job; release refs are the release lane. A selection miss shows up within about one scheduled
+  run (GitHub may delay or drop one); a failure there in a job the PRs since the last covering run did not run is the
+  "regression that exposed bad selection" trigger: bisect over those merges, and the fix widens the mapping. A
+  checks-gated deploy on merge sees only the push run's selected jobs, so a miss can reach production before the
+  scheduled run catches it; a repository that deploys records in its profile, as an owner decision, whether it accepts
+  that, gates the deploy on the covering run, or deploys only when the owner says so (no automatic deploy). The mapping lives in one place under
   `.github/**` (the workflow or a script beside it, so every edit to it is High by R9) and matches the profile table;
   narrowing it is a safeguard reduction. Details:
   `playbooks/testing-and-ci.md › Selection in the workflow`.
@@ -160,7 +169,7 @@ authority.
 | Build | design accepted (or n/a stated) | focused commits; tests for changed behavior; docs/contracts updated; no secrets; generated files regenerated not hand-edited | code-review.md §scope |
 | Verify | code complete | impact-selected checks green on the head SHA; escalation triggers honored; manual checks recorded with date, SHA, operator; unrun states explicit | testing-and-ci.md |
 | Review | verify evidence recorded | independent review verdict for the head SHA; triggered specialist reviews; findings dispositioned | code-review.md, ux-review.md, ... |
-| Release | review complete; integration lane green on the merge revision | version/changelog or release notes per profile; packaging artifacts; deploy/rollback procedure followed; release-lane checks and manual oracles | PROFILE.md › Release |
+| Release | review complete; integration lane green on the revision released (a scheduled, release-ref or dispatched run that executed the jobs on that revision; a skip run does not count; a checks-gated deploy on merge follows the profile's recorded choice, D2) | version/changelog or release notes per profile; packaging artifacts; deploy/rollback procedure followed; release-lane checks and manual oracles | PROFILE.md › Release |
 | Operate | released | observability signals verified for the change; runbook updated; monitoring of the rollback signal for the period the profile sets; defects fed back as tests | observability.md |
 | Retire / maintain | ongoing | dependency and advisory cadence; deprecations announced with dates; dead code and stale branches removed through the owner lane | cleanup.md, PROFILE.md › Lanes |
 
