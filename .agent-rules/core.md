@@ -1,6 +1,6 @@
-# Shared agent standard — core v0.1.17
+# Shared agent standard — core v0.1.18
 
-Policy id: `agent-rules/policy/core.md`  ·  Version: 0.1.17  ·  Digest: computed by scripts/pin.py
+Policy id: `agent-rules/policy/core.md`  ·  Version: 0.1.18  ·  Digest: computed by scripts/pin.py
 Applies to every repository whose `AGENTS.md` declares `policy: agent-rules/core@0.1.x`.
 The repository's `AGENTS.md` overlay and `PROFILE.md` add to this file. Composition rules are in §5.
 
@@ -61,8 +61,16 @@ authority.
   the selection, not the agent's judgment** (since 0.1.17): a first `changes` job maps the PR's changed paths (against the
   merge base) to the components in `Check selection`, and each product job runs only when one of its components changed
   or an escalation trigger fired (the scripts the workflow calls, lockfiles, toolchain, shared code: each selects every
-  job that reads it, and every job when that set cannot be stated exactly; `.github/**`, any file matching no component,
-  and a file list that is empty or could not be computed select every job: selection fails closed); one
+  job that reads it, and every job when that set cannot be stated exactly; `.github/**` (bar the PR template below), any
+  file matching no component, and a file list that is empty or could not be computed select every job: selection fails
+  closed). **The agent-policy files select no product job unless a job reads them** (since 0.1.18): `AGENTS.md` and
+  `CLAUDE.md` at any depth, `PROFILE.md`, `.agent-rules/**`, `.claude/**`, `.githooks/**` and
+  `.github/pull_request_template.md` (the set `policy-drift` runs on, less the workflows) are read by no build or test in
+  the ordinary case; their checks are `policy-drift` and `pr-evidence`, and R9 keeps every change to them High. They are
+  a listed pattern in the `changes` job that selects nothing. Where a job does read them (a repository-wide text check
+  over `git ls-files`, say), the profile maps them to that job only and records the trace, and that job alone runs. A
+  repository that still selects with workflow-level `paths:` filters excludes the same set there (a product run those
+  files trigger cannot be canceled without refusing the merge). One
   always-running `ci-result` job fails if any job failed or was cancelled, and is the required product check: `merge.sh`
   requires it whenever the head's workflows define it, beside `pr-evidence` and `policy-drift`. A job left out is
   recorded `n/a: not selected (D2)`, never as passed. Every non-PR event (push to the default branch, release refs,

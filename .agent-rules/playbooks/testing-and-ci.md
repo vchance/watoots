@@ -35,7 +35,8 @@ workflow, not the agent, decides what runs, from the same table the profile publ
      that read it, including reads across components such as a test that opens another component's source).
 
    These always set `all`:
-   - `.github/**` (workflows, composite actions and the selection script itself);
+   - `.github/**` except `.github/pull_request_template.md` (workflows, composite actions and the selection script
+     itself);
    - a file matching no component and no "no product job" pattern (unknown paths escalate; they never skip);
    - a file list that is empty or could not be computed (a non-zero exit, a missing merge base);
    - any non-PR event: push to the default branch, release tags, `schedule`, `workflow_dispatch`, `merge_group`.
@@ -46,7 +47,21 @@ workflow, not the agent, decides what runs, from the same table the profile publ
    can go stale without any `.github/**` edit, so item 5 makes every review check it.
 
    Paths that are known to need no product job (prose under D6, say) are listed as such, so a Markdown edit does not
-   escalate; they are a pattern in the job like any component, not a default.
+   escalate; they are a pattern in the job like any component, not a default. The agent-policy files are in that list
+   (core D2, since 0.1.18): `AGENTS.md` and `CLAUDE.md` at any depth, `PROFILE.md`, `.agent-rules/**`, `.claude/**`,
+   `.githooks/**` and `.github/pull_request_template.md`, the set `policy-drift.yml` runs on, less the workflows (an
+   adapter for another tool, `.codex/**` or `.cursor/**`, joins the set in the PR that adds it to `policy-drift.yml`).
+   In the ordinary case no build, test or workflow step reads them (`merge.sh`, the pre-push hook and `check.py` run on
+   a developer's machine or in `policy-drift`), their checks are `policy-drift` and `pr-evidence`, and R9 keeps every
+   change to them High tier with an independent review, so a re-pin that changes only these files costs no product
+   runner-minutes. **Check what reads them before listing them**: a repository-wide check that walks `git ls-files` (a
+   spelling or grammar scan, a link checker, a license-header check) reads them too; then the profile maps the set to
+   that job only, with the trace (the script and the line that lists the files), and that job alone runs for them.
+   Selection still fails closed: the set is never "no component", it is a pattern whose job list is empty or exactly
+   the readers the profile names. The rest of `.github/**` selects every job. A repository that has not adopted the
+   `changes` job yet and selects with workflow-level `paths:` filters negates the same set there (`'!.agent-rules/**'`,
+   `'!.claude/**'`, `'!.githooks/**'` beside its `'!**.md'`, which already covers the Markdown members), unless a job
+   reads them: a product run those files trigger can only be waited for, since `merge.sh` refuses a canceled check.
 3. **Each product job** lists `changes` in its own `needs:` (a job reads `needs.changes.outputs.*` only from a direct
    dependency, so a job that also needs `build` has `needs: [changes, build]`) and has
    `if: needs.changes.outputs.all == 'true' || needs.changes.outputs.<c> == 'true'` for every component it covers. A
@@ -135,7 +150,10 @@ workflow, not the agent, decides what runs, from the same table the profile publ
 ## Record
 Each check: passed / failed / skipped / unavailable / n/a + SHA + link. Zero tests discovered = failed. A job skipped by
 `if:` reports success on GitHub: treat it as `skipped` in the PR body. A workflow skipped by path filter leaves checks
-pending: do not list it as a required check unless a no-op job reports for it. Prefer job-level selection with the
+pending: do not list it as a required check unless a no-op job reports for it. The agent-policy files (§ Selection in
+the workflow, item 2) are excluded from a workflow-level filter the same way. Workflow-level filters and the `ci-result`
+gate do not mix: once a workflow defines `ci-result`, `merge.sh` requires that check on every PR, and a PR the filter
+skips can never provide it, so adopt the `changes` job and drop the filter in the same PR. Prefer job-level selection with the
 `ci-result` gate (§ Selection in the workflow) to workflow-level `paths:` filters.
 
 ## Anti-gaming
