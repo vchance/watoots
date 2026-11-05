@@ -8,7 +8,7 @@
 | Supported platforms | x86_64 Linux (Ubuntu, `ubuntu-latest`) = `CI` (all four `ci.yml` jobs incl. LeakSanitizer); macOS arm64 = `manual` (the owner's development machine: AGENTS.md › Environment notes, Homebrew LLVM 22, wasi-sdk arm64-macos; no macOS CI job); Windows = `nobody` (no docs claim it, no job builds it); guests: `wasm32-wasip2` Rust guests = `CI`, C++/JS/Python guests = `manual` (CI has only the rustup toolchain; CONTRIBUTING.md › The sample plugins) |
 | Toolchain | Rust stable in CI (`dtolnay/rust-toolchain@stable`, no `rust-toolchain.toml`); MSRV `rust-version = "1.95"` (`Cargo.toml`, checked by the `msrv` job); edition 2024; target `wasm32-wasip2`; Wasmtime 48.x; CMake 3.28+ with Ninja and presets `dev` / `asan` / `release` (`CMakePresets.json`); LLVM 22 clang-format/clang-tidy (ADR-0003; CI installs from apt.llvm.org); optional guest toolchains: wit-bindgen-cli + wasi-sdk (C++), ComponentizeJS (JS), componentize-py (Python) |
 | Required services for tests | none. Host tests build their components from inline WAT (hermetic); the C++ hosts' ctests and the asset/preview e2e suites need the guests built by `tools/build-plugins.sh` and skip a guest that is not on disk (a skip is not a pass, core R5) |
-| CI runners and storage (D9, D11) | public: GitHub-hosted (core D9, owner decision 2026-11-05): public repository, every job names one standard hosted label directly (`ubuntu-latest` for `rust`, `msrv`, `cpp`, `sanitizers`, `rustsec`; `ubuntu-24.04` for the policy workflows) with no placement gate and no `RUNS_ON_*` variable, so fork pull requests and contributors with no variables still get CI; standard labels only (no larger, paid runners); anyone with write access may run workflows; Actions › Fork pull request workflows from outside collaborators is set by the owner (R8, require approval); the scheduled `audit` lane runs hosted; no self-hosted runner, no Ubicloud, no artifact store (D11: no artifact uploads, GitHub-hosted caches are allowed on hosted runners) |
+| CI runners and storage (D9, D11) | public: GitHub-hosted (core D9, owner decision 2026-11-05): public repository, every job names one standard hosted label directly (`ubuntu-latest` for `rust`, `msrv`, `cpp`, `sanitizers`, `rustsec`; `ubuntu-24.04` for the policy workflows) with no placement gate and no `RUNS_ON_*` variable (no placement key (`github.triggering_actor`) is read), so fork pull requests and contributors with no variables still get CI; standard labels only (no larger, paid runners); anyone with write access may run workflows; Actions › Fork pull request workflows from outside collaborators is set by the owner (R8, require approval); the scheduled `audit` lane runs hosted; no self-hosted runner, no Ubicloud, no artifact store (D11: no artifact uploads, GitHub-hosted caches are allowed on hosted runners) |
 
 ## Device testing (core D10; simulators and emulators)
 | Surface | Test runner | PR fast lane (smoke) | Integration / release (full) | Where it runs |
@@ -52,9 +52,7 @@ Escalation triggers (any one → full `ci.yml`): `crates/host` (shared by every 
 broad refactor, uncertain impact, release candidate, a regression that escaped selection.
 
 ## Lanes
-Runner note: `ci.yml` and `audit.yml` run on GitHub-hosted `ubuntu-latest` (public repo). `policy-drift` and `pr-evidence`
-run on `fromJSON(vars.RUNS_ON_SMALL || '["ubuntu-24.04"]')`; the variable is unset, so they run on GitHub-hosted
-`ubuntu-24.04`. Owner action only if a different runner is wanted (repo variable `RUNS_ON_SMALL`; not changed by this PR).
+Runner note: every job (`ci.yml`, `audit.yml`, `policy-drift`, `pr-evidence`) runs on a GitHub-hosted standard label (`ubuntu-latest` or `ubuntu-24.04`; public repository, core D9, owner decision 2026-11-05): no placement gate and no `RUNS_ON_*` variable.
 
 | Lane | What runs | When | Owner of a failure |
 |---|---|---|---|

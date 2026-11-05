@@ -17,7 +17,11 @@ jobs:
         with:
           components: rustfmt, clippy
           targets: wasm32-wasip2
+      - name: Declare what this runner has (D11)
+        shell: bash
+        run: echo "CI_LOCAL_CACHE=${CI_LOCAL_CACHE:-}" >> "$GITHUB_ENV"
       - uses: Swatinem/rust-cache@v2
+        if: ${{ runner.environment == 'self-hosted' && env.CI_LOCAL_CACHE == '' }}
 
       - run: cargo fmt --all --check
       - run: cargo clippy --all-targets -- -D warnings
@@ -55,7 +59,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ steps.msrv.outputs.version }}
+      - name: Declare what this runner has (D11)
+        shell: bash
+        run: echo "CI_LOCAL_CACHE=${CI_LOCAL_CACHE:-}" >> "$GITHUB_ENV"
       - uses: Swatinem/rust-cache@v2
+        if: ${{ runner.environment == 'self-hosted' && env.CI_LOCAL_CACHE == '' }}
       - run: cargo check --workspace --all-targets
 
   cpp:
@@ -71,7 +79,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-wasip2
+      - name: Declare what this runner has (D11)
+        shell: bash
+        run: echo "CI_LOCAL_CACHE=${CI_LOCAL_CACHE:-}" >> "$GITHUB_ENV"
       - uses: Swatinem/rust-cache@v2
+        if: ${{ runner.environment == 'self-hosted' && env.CI_LOCAL_CACHE == '' }}
 
       # LLVM 22, pinned. Ubuntu's archive ships clang-format 18, and
       # `BasedOnStyle: Google` is not frozen across LLVM releases -- 18
@@ -117,7 +129,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-wasip2
+      - name: Declare what this runner has (D11)
+        shell: bash
+        run: echo "CI_LOCAL_CACHE=${CI_LOCAL_CACHE:-}" >> "$GITHUB_ENV"
       - uses: Swatinem/rust-cache@v2
+        if: ${{ runner.environment == 'self-hosted' && env.CI_LOCAL_CACHE == '' }}
       - run: sudo apt-get update && sudo apt-get install -y ninja-build
       # The failure mode of a Rust-backed C API is handle lifetime, which unit
       # tests do not catch on their own. LeakSanitizer is Linux-only, which is
