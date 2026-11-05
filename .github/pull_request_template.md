@@ -16,7 +16,7 @@
 - Escalation triggers hit: none | {{which}}
 
 ## Revisions
-- base: `{{sha}}` ({{branch}}) · head: `{{sha}}` · integration revision tested: `{{sha or "main@sha after merge"}}`
+- base: `{{sha}}` ({{branch}}) · head: `{{sha}}` · integration revision tested: `{{sha, or name this repository's actual integration lane (scheduled run, push run, release lane) and when it covers this change; "none" if it has no lane}}`
 
 ## Evidence (per check: passed / failed / skipped / unavailable / n/a — with revision)
 | Check | Result | Revision | Where |
@@ -24,7 +24,8 @@
 | {{lint}} | passed | {{sha}} | CI run {{url}} |
 | {{cargo test -p foo}} | passed (143 tests) | {{sha}} | CI run {{url}} |
 | full suite | n/a (no escalation trigger) | — | — |
-| {{browser/device matrix (D10)}} | {{passed / failed / unavailable: no secrets / n/a: not selected / n/a: no web or mobile surface}} | {{sha}} | BrowserStack build {{url}} |
+| {{CI job the change cannot affect}} | n/a: not selected (D2) | {{sha}} | CI run {{url}} (job skipped by the `changes` job) |
+| {{device tests (D10, simulators)}} | {{passed (<device/OS>, n tests) / failed / manual (simulator, operator <owner|agent>, <date>, <sha7>, <device/OS>) / unavailable: no macOS runner / unavailable: no KVM on runner (<label>) / n/a: not selected (D2) / n/a: no mobile surface}} | {{sha}} | CI job / artifacts {{url}} |
 | {{manual oracle}} | unavailable (needs build box) | — | owner to run before release |
 
 ## Reviews

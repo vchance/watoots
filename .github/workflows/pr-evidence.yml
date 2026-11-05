@@ -6,9 +6,7 @@ permissions: { pull-requests: read }
 jobs:
   pr-evidence:
     name: pr-evidence
-    # Repo/org variable RUNS_ON_SMALL (JSON list of labels) selects the runner; unset = GitHub-hosted ubuntu-24.04,
-    # which fails when the account cannot use hosted runners and then blocks every merge through merge.sh.
-    runs-on: ${{ fromJSON(vars.RUNS_ON_SMALL || '["ubuntu-24.04"]') }}
+    runs-on: ubuntu-24.04   # public repository: GitHub-hosted (PROFILE `public: GitHub-hosted`, core D9)
     timeout-minutes: 2
     steps:
       - env:

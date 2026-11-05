@@ -1,13 +1,14 @@
 # .github/workflows/policy-drift.yml (proposed; ~1 minute on the smallest runner, no build)
 # Integrity check for the pinned policy, run ONLY when policy files change (ordinary PRs pay nothing). Fails when: the
 # manifest line is missing or its digest does not match the in-repo core copy; placeholders remain; an overlay tries to
-# override an R-rule or permits pushing to the default branch; PROFILE.md lacks required sections. It does NOT prove the
+# override an R-rule or permits pushing to the default branch; PROFILE.md lacks required sections; a workflow's `runs-on` is
+# not a runner class or lacks its placement gate (D9: provider or machine label, `-latest`, a hosted default, a matrix-carried runner). It does NOT prove the
 # copy matches the published core (a PR can edit both); that is detected by `agent-rules/scripts/pin.py --check` from
 # the agent-rules checkout, which is part of the re-pin procedure.
 name: policy-drift
 on:
   pull_request:
-    paths: ['AGENTS.md', '**/AGENTS.md', 'CLAUDE.md', '**/CLAUDE.md', 'PROFILE.md', '.claude/**', '.github/**', '.agent-rules/**', '.githooks/**']
+    paths: ['AGENTS.md', '**/AGENTS.md', 'CLAUDE.md', '**/CLAUDE.md', 'GEMINI.md', '**/GEMINI.md', 'PROFILE.md', '.claude/**', '.codex/**', '.cursor/**', '.github/**', '.agent-rules/**', '.githooks/**']   # the set merge.sh requires policy-drift for
 permissions: { contents: read }
 concurrency:
   group: drift-${{ github.event.pull_request.number }}
@@ -15,9 +16,7 @@ concurrency:
 jobs:
   policy-drift:
     name: policy-drift
-    # Repo/org variable RUNS_ON_SMALL (JSON list of labels) selects the runner; unset = GitHub-hosted ubuntu-24.04,
-    # which fails when the account cannot use hosted runners and then blocks every merge through merge.sh.
-    runs-on: ${{ fromJSON(vars.RUNS_ON_SMALL || '["ubuntu-24.04"]') }}
+    runs-on: ubuntu-24.04   # public repository: GitHub-hosted (PROFILE `public: GitHub-hosted`, core D9)
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
@@ -29,5 +28,7 @@ jobs:
           # manifest. Re-pinning (pin.py) is how a newer core arrives.
           test -f .agent-rules/core.md || { echo "::error::.agent-rules/core.md missing: run agent-rules/scripts/pin.py"; exit 1; }
           grep -qE 'policy: agent-rules/core@[0-9.x]+' AGENTS.md || { echo "::error::AGENTS.md has no policy manifest line"; exit 1; }
-      - name: Check digest, placeholders, sections
-        run: python3 -I .agent-rules/check.py --core .agent-rules/core.md --agents AGENTS.md --profile PROFILE.md
+      - name: Check digest, placeholders, sections, runner classes
+        env:
+          REPO_PRIVATE: ${{ github.event.repository.private }}   # GitHub's own visibility: a private repository may not claim `public: GitHub-hosted` (D9)
+        run: python3 -I .agent-rules/check.py --core .agent-rules/core.md --agents AGENTS.md --profile PROFILE.md --workflows .github/workflows

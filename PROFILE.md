@@ -8,14 +8,14 @@
 | Supported platforms | x86_64 Linux (Ubuntu, `ubuntu-latest`) = `CI` (all four `ci.yml` jobs incl. LeakSanitizer); macOS arm64 = `manual` (the owner's development machine: AGENTS.md › Environment notes, Homebrew LLVM 22, wasi-sdk arm64-macos; no macOS CI job); Windows = `nobody` (no docs claim it, no job builds it); guests: `wasm32-wasip2` Rust guests = `CI`, C++/JS/Python guests = `manual` (CI has only the rustup toolchain; CONTRIBUTING.md › The sample plugins) |
 | Toolchain | Rust stable in CI (`dtolnay/rust-toolchain@stable`, no `rust-toolchain.toml`); MSRV `rust-version = "1.95"` (`Cargo.toml`, checked by the `msrv` job); edition 2024; target `wasm32-wasip2`; Wasmtime 48.x; CMake 3.28+ with Ninja and presets `dev` / `asan` / `release` (`CMakePresets.json`); LLVM 22 clang-format/clang-tidy (ADR-0003; CI installs from apt.llvm.org); optional guest toolchains: wit-bindgen-cli + wasi-sdk (C++), ComponentizeJS (JS), componentize-py (Python) |
 | Required services for tests | none. Host tests build their components from inline WAT (hermetic); the C++ hosts' ctests and the asset/preview e2e suites need the guests built by `tools/build-plugins.sh` and skip a guest that is not on disk (a skip is not a pass, core R5) |
-| CI runners (D9) | GitHub-hosted: today `ubuntu-latest` (rust, msrv, cpp, sanitizers, rustsec) and `ubuntu-24.04` (policy workflows); pin `ubuntu-latest` → `ubuntu-24.04` in a follow-up — public repository, stays hosted (D9, owner decision 2026-11-01: free minutes; fork PRs never on paid runners); non-Ubicloud jobs (allowed by D9, listed here, not in Exceptions): none — Ubicloud coverage confirmed by: n/a (public repo keeps hosted runners); `RUNS_ON_SMALL` unset (fallback is the intended hosted label) |
+| CI runners and storage (D9, D11) | public: GitHub-hosted (core D9, owner decision 2026-11-05): public repository, every job names one standard hosted label directly (`ubuntu-latest` for `rust`, `msrv`, `cpp`, `sanitizers`, `rustsec`; `ubuntu-24.04` for the policy workflows) with no placement gate and no `RUNS_ON_*` variable (no placement key (`github.triggering_actor`) is read), so fork pull requests and contributors with no variables still get CI; standard labels only (no larger, paid runners); anyone with write access may run workflows; Actions › Fork pull request workflows from outside collaborators is set by the owner (R8, require approval); the scheduled `audit` lane runs hosted; no self-hosted runner, no Ubicloud, no artifact store (D11: no artifact uploads, no GitHub cache is used: the `rust-cache` step(s) carry the D11 guard and are skipped on hosted runners) |
 
-## Test matrix (core D10; BrowserStack)
-| Surface | Framework | PR fast lane (smoke) | Integration / release (full) | Binary or URL under test |
+## Device testing (core D10; simulators and emulators)
+| Surface | Test runner | PR fast lane (smoke) | Integration / release (full) | Where it runs |
 |---|---|---|---|---|
-| none | — | — | — | no web or mobile surface; D10 does not apply until one is added |
+| none | — | — | — | no mobile surface; D10 does not apply until one is added |
 
-Credentials: `BROWSERSTACK_USERNAME` / `BROWSERSTACK_ACCESS_KEY` at organization level, not yet set (owner). Parallels: owner decision (default 1 per platform).
+Web surfaces: the in-repo test suite the Components table lists is the browser evidence; no multi-browser matrix (core D10, 0.1.16).
 
 ## Components and critical paths
 Dependency graph (`crates/*/Cargo.toml`): `watoots-trace`, `watoots-capi` and `watoots-cli` depend on `watoots`; `watoots-cli` also on `watoots-trace`.
@@ -52,9 +52,7 @@ Escalation triggers (any one → full `ci.yml`): `crates/host` (shared by every 
 broad refactor, uncertain impact, release candidate, a regression that escaped selection.
 
 ## Lanes
-Runner note: `ci.yml` and `audit.yml` run on GitHub-hosted `ubuntu-latest` (public repo). `policy-drift` and `pr-evidence`
-run on `fromJSON(vars.RUNS_ON_SMALL || '["ubuntu-24.04"]')`; the variable is unset, so they run on GitHub-hosted
-`ubuntu-24.04`. Owner action only if a different runner is wanted (repo variable `RUNS_ON_SMALL`; not changed by this PR).
+Runner note: every job (`ci.yml`, `audit.yml`, `policy-drift`, `pr-evidence`) runs on a GitHub-hosted standard label (`ubuntu-latest` or `ubuntu-24.04`; public repository, core D9, owner decision 2026-11-05): no placement gate and no `RUNS_ON_*` variable.
 
 | Lane | What runs | When | Owner of a failure |
 |---|---|---|---|
@@ -117,5 +115,5 @@ Moved into `AGENTS.md › Overrides` only once the owner accepts it; until then 
 | CI caches | `Swatinem/rust-cache` entries | GitHub evicts | n/a |
 
 ## Budgets
-- CI: ≈ 11 job-minutes per `ci.yml` run (main @ `fc8be12`, 2026-10-22: rust 4.5, cpp 3.8, sanitizers 2.6, msrv 0.4 min, warm cache); audit run median ≈ 3 min, CI median 320 s wall over 30 runs (audit `evidence/remote-github.md`). Public repo: hosted minutes are not billed. No timeouts set in `ci.yml`/`audit.yml` (audit F10; follow-up).
+- CI: ≈ 11 job-minutes per `ci.yml` run (main @ `fc8be12`, 2026-10-22: rust 4.5, cpp 3.8, sanitizers 2.6, msrv 0.4 min, warm cache; these timings predate core 0.1.21, which uses no cache on hosted runners); audit run median ≈ 3 min, CI median 320 s wall over 30 runs (audit `evidence/remote-github.md`). Public repo: hosted minutes are not billed. No timeouts set in `ci.yml`/`audit.yml` (audit F10; follow-up).
 - Performance: `docs/PERFORMANCE.md` (boundary bench); a change to the call path re-runs `cargo bench -p watoots --bench boundary` locally.
