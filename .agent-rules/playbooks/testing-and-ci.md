@@ -67,6 +67,21 @@ workflow, not the agent, decides what runs, from the same table the profile publ
    `changes` job yet and selects with workflow-level `paths:` filters negates the same set there (`'!.agent-rules/**'`,
    `'!.claude/**'`, `'!.githooks/**'` beside its `'!**.md'`, which already covers the Markdown members), unless a job
    reads them: a product run those files trigger can only be waited for, since `merge.sh` refuses a canceled check.
+   Copy-ready workflow-level list (use it as `paths-ignore:` under `pull_request:` and `push:`, or as the "no product job"
+   pattern in the `changes` job; add the Markdown pattern your repository already uses):
+   ```yaml
+   paths-ignore:
+     - 'AGENTS.md'
+     - '**/AGENTS.md'
+     - 'CLAUDE.md'
+     - '**/CLAUDE.md'
+     - 'PROFILE.md'
+     - '.agent-rules/**'
+     - '.claude/**'
+     - '.githooks/**'
+     - '.github/pull_request_template.md'
+   ```
+   `paths-ignore` and the `ci-result` gate do not mix (see Record): a PR the filter skips never provides `ci-result`, which `merge.sh` requires. Use this list as a workflow-level filter only where the repository has no `ci-result` (since 0.1.21 that means a workflow whose gated jobs are all `# d9-opt-in`, or one with no gated jobs; `check.py` flags a filter beside a `ci-result` job). Where it has one, put the same patterns in the `changes` job as the pattern that selects nothing, and drop the filter in the same PR.
 3. **Each product job** lists `changes` in its own `needs:` (a job reads `needs.changes.outputs.*` only from a direct
    dependency, so a job that also needs `build` has `needs: [changes, build]`) and has
    `if: needs.changes.outputs.all == 'true' || needs.changes.outputs.<c> == 'true'` for every component it covers. A
@@ -76,8 +91,37 @@ workflow, not the agent, decides what runs, from the same table the profile publ
    `changes` included, and `if: always()`. It fails when any needed job's result is `failure` or `cancelled`, so a failed
    `changes` job (whose dependents are all skipped) fails it, and passes when the rest are `success` or `skipped`.
    `merge.sh` requires a `ci-result` check whenever the head's workflows define that job; where the plan allows a ruleset,
-   make it the required context there too, so a skipped job never leaves a required check pending. Policy workflows
+   make it the required context there too, so a skipped job never leaves a required check pending. A ruleset does not
+   enforce placement, though: GitHub counts a job skipped by `if:` as passing, so only `merge.sh` refuses a skipped `ci-result` (core D9). Policy workflows
    (`policy-drift`, `pr-evidence`) stay as they are.
+   **With D9 placement (0.1.21) `ci-result` is also where an unplaced person is caught**: a job skipped because the triggering
+   person has no `RUNS_ON_<CLASS>__<login>` looks exactly like a job D2 did not select, and `merge.sh` accepts skipped
+   product checks. So `ci-result` itself runs on `SMALL` behind the same gate (unplaced `SMALL` = `ci-result` skipped =
+   `merge.sh` refuses), reads the placement of every other required class, and fails when one is missing:
+   ```yaml
+     ci-result:
+       name: ci-result
+       needs: [changes, build, test]
+       if: ${{ vars[format('RUNS_ON_SMALL__{0}', github.triggering_actor)] != '' && (always()) }}
+       runs-on: ${{ fromJSON(vars[format('RUNS_ON_SMALL__{0}', github.triggering_actor)] || '["unplaced"]') }}
+       env:
+         NEEDS: ${{ toJSON(needs) }}
+         PLACED_MEDIUM: ${{ vars[format('RUNS_ON_MEDIUM__{0}', github.triggering_actor)] != '' }}
+         PLACED_ARM: ${{ vars[format('RUNS_ON_ARM__{0}', github.triggering_actor)] != '' }}   # listed `known unplaced: ARM` in PROFILE
+       steps:
+         - run: |
+             [ "$PLACED_MEDIUM" = true ] || { echo "::error::no RUNS_ON_MEDIUM__<login> for the triggering person: MEDIUM jobs were skipped, not passed"; exit 1; }
+             [ "$PLACED_ARM" = true ] || echo "::warning::no RUNS_ON_ARM__<login>: ARM jobs skipped (known unplaced, PROFILE CI runners row)"
+             python3 -c 'import json,os,sys; n=json.loads(os.environ["NEEDS"]); sys.exit(1 if [k for k,v in n.items() if v["result"] in ("failure","cancelled")] else 0)'
+   ```
+   One `PLACED_<CLASS>` line per required class other than `SMALL`: an `::error::` and `exit 1`, or, for a class the `CI runners`
+   row lists as `known unplaced: <CLASS>` (owner decision 2026-11-05: a missing runner that is known is fine), an `::warning::`
+   only; the PR evidence records those jobs `skipped: no placement`. A public repository (`public: GitHub-hosted`) places
+   nothing and needs none of this (core D9). The in-repo lint requires this: a `pull_request`
+   workflow with a gated job that is not opt-in must define `ci-result`, and `ci-result` must mention `RUNS_ON_<CLASS>__`
+   for each such class. An **opt-in** job (a platform nobody has runners for, covered another way, recorded in the profile
+   `CI runners` row) ends its `if:` line with `# d9-opt-in` and is excluded from both. Policy workflows (`policy-drift`,
+   `pr-evidence`) stay as they are: `merge.sh` requires them to have run and passed.
 5. **Record** each job left out as `n/a: not selected (D2)` in the PR body, with the run URL that shows it skipped; a
    skipped job is never a pass (R5). The reviewer checks the mapping against the diff: a changed path whose job did not
    run is a blocking finding unless the profile maps it elsewhere. The reviewer also checks whether the diff adds a reader
@@ -153,29 +197,114 @@ workflow, not the agent, decides what runs, from the same table the profile publ
 - Never reuse a pass by PR number alone. Evidence is keyed by SHA.
 
 ## Runners (D9)
-- Public repositories keep GitHub-hosted runners on version-pinned labels (`ubuntu-24.04`, `macos-15`, `windows-2025`);
-  everything below applies to private repositories. Reason: hosted minutes are free for public repos, and a fork PR must
-  never run on the account's Ubicloud runners.
-- Default labels: `ubicloud-standard-2` for small jobs (policy-drift, pr-evidence, lint, docs), `ubicloud-standard-4` for
-  build/test until measured. Make the size a `workflow_dispatch` input with the default as fallback
-  (`runs-on: ${{ inputs.heavy || 'ubicloud-standard-4' }}`) so sizes can be measured without a code change; pick the size by
-  cost per run (vCPU × rounded-up minutes), wall-clock as tie-breaker, and post the table in the PR.
-- Write the labels in the workflow (`runs-on: ${{ inputs.heavy || 'ubicloud-standard-4' }}`); do not route product jobs
-  through `RUNS_ON` / `CONTAINER_RUNS_ON` variables (squishhoard's still pointed at self-hosted runners after the switch; the
-  owner clears them). The only variable indirection is `fromJSON(vars.RUNS_ON_SMALL || '["ubuntu-24.04"]')` in the two
-  policy workflows, so they move when the owner sets the variable; where hosted minutes are refused by billing (Synerlytics)
-  the owner sets it per repo or org. Switch once the owner has confirmed the App covers that organization or account (link
-  the statement in the PR body; no per-repo re-confirmation); an uncovered label queues forever and never fails.
-- GitHub reports Ubicloud runners as `self-hosted` (`runner.environment`). Never gate a step on "hosted only" (cache
-  steps, persistent builders); remove such conditions in the switch PR.
-- Keep one break-glass path named in the profile (a self-hosted runner left registered, or the owner re-labelling), because
-  an Ubicloud outage or exhausted credit queues every job, including the CI on a revert.
-- Runners are thrown away after each job: install prebuilt tools, `apt-get update` before install, cache with the normal
-  GitHub cache actions (Ubicloud serves them from its own store; `gh cache list` shows nothing). The clock is not
-  synchronised and disk latency varies between VMs: grep for wall-clock assertions and `timedatectl` before moving a suite.
-- macOS and Windows jobs stay on version-pinned GitHub-hosted labels, listed in the PROFILE `CI runners` row (D9); keep them to the lanes that
-  need them (an iOS `.ipa` for App Automate on main and release, not on every PR commit) because hosted macOS minutes cost
-  10× Linux. The long form with worked numbers lives in the agent-rules repository: `docs/adopting-ubicloud-runners.md`.
+- A workflow names a **runner class**, never a provider or a machine, and **no placement means the job is skipped**: there is no
+  hosted default (owner decisions 2026-11-05, `docs/2026-11-05-no-hosted-fallback.md`). Every job carries both lines:
+  ```yaml
+    build:
+      if: ${{ vars[format('RUNS_ON_MEDIUM__{0}', github.triggering_actor)] != '' }}
+      runs-on: ${{ fromJSON(vars[format('RUNS_ON_MEDIUM__{0}', github.triggering_actor)] || '["unplaced"]') }}
+  ```
+  A job with its own condition keeps it behind the gate, in parentheses so `||` inside it cannot escape; `always()`,
+  `!cancelled()` and `needs.*` stay valid there (the gate is the leftmost conjunct, the rest is one parenthesized group, one line; the lint rejects `&& a || b`):
+  `if: ${{ vars[format('RUNS_ON_MEDIUM__{0}', github.triggering_actor)] != '' && (always() && needs.build.result == 'success') }}`.
+  A `workflow_dispatch` size override goes first in both lines, with the input's `default` left empty:
+  `if: ${{ (inputs.heavy || vars[format('RUNS_ON_LARGE__{0}', github.triggering_actor)]) != '' }}` and
+  `runs-on: ${{ fromJSON(inputs.heavy || vars[format('RUNS_ON_LARGE__{0}', github.triggering_actor)] || '["unplaced"]') }}`.
+  Classes (no defaults): `SMALL` (policy-drift, pr-evidence, lint, docs); `MEDIUM` (builds, test suites); `LARGE` (container
+  builds, heavy integration); `ARM`; `MACOS` (Xcode, simulators); `WINDOWS` (MSBuild). Use a platform class only where the
+  repo has such a job. The in-repo `check.py` (policy-drift) fails on `ubicloud-*`, `self-hosted`, box names, `-latest`,
+  `matrix.`-carried runners, block-form `runs-on:` lists, a fallback other than `["unplaced"]`, a job without the leading gate,
+  the old `github.actor` key and a PR workflow without `ci-result` (see Selection in the workflow, item 4); `pin.py` lists the
+  findings in its notes when a repo is re-pinned, and the re-pin PR rewrites them.
+- **Explicit hosted placement.** A person who may use GitHub-hosted runners (and owns the minutes) sets their variable to a hosted
+  label, for example `RUNS_ON_MACOS__vchance` = `["macos-15"]`. That is the only way a job reaches a hosted runner. It exists only
+  in the variable, which the lint cannot see, so the profile `CI runners` row records each hosted placement with the owner's
+  call-out (date, link). Unset = skipped. Never put a hosted label in a workflow file or an input default.
+- Placement is **per person**: the variable `RUNS_ON_<CLASS>__<login>` (JSON list of labels, e.g. `["self-hosted","synerlytics"]`
+  or `["ubicloud-standard-8"]`) is read for every run that person started **or re-ran** (`github.triggering_actor`; `github.actor`
+  stays the original actor on a re-run, so it is not used). Pushes, dispatches, merges, and also editing or labeling someone
+  else's PR or re-running their run, run on the triggering person's machines. No variable for that login, and every bot actor
+  (`dependabot[bot]`, merge queue) = skipped, and `merge.sh` refuses to merge a PR whose `pr-evidence`, `policy-drift`
+  (policy paths changed) or `ci-result` was skipped. **Before a collaborator's first PR can merge they set their variables**
+  (they or the owner: variable setting is owner-reserved, R8); a bot's PR is made mergeable by a placed person re-running its
+  checks (Actions › Re-run all jobs in each skipped workflow run: pr-evidence, policy-drift, CI; the re-run is attributed to the
+  person who clicked) or by closing and reopening it (editing the body re-runs only pr-evidence). An unplaced person, app or bot
+  that edits a PR body after the pass re-runs pr-evidence as skipped, which blocks the merge by design (fail closed); a placed
+  person re-runs it. A login with `-` cannot be a variable name: that repo keys on `github.actor_id` with
+  `RUNS_ON_<CLASS>__ID_{0}` (no re-run placement there: close and reopen the PR instead); the lint fails a mix. Variables are
+  repository-level, or organization-level (access "Private repositories", a per-variable setting) where the plan shares them;
+  GitHub Free organizations do not share organization variables with private repositories. A public repository never carries a
+  self-hosted or paid label (hosted minutes are free there, and a fork PR must never land on a paid or self-hosted runner);
+  how its jobs are placed is an owner decision in its profile. Set a variable only where runners with those labels are
+  registered (a runner serves the org or repo it was registered in). Only the owner holds the variables permission (it cannot
+  be scoped per person), connects Ubicloud and registers runners (R8); an agent proposes the JSON and records the placement in
+  the PROFILE `CI runners` row.
+- The class form is hygiene, not a control: any writer can put a label in a branch and the job runs before policy-drift fails
+  the PR, and the triggering person is not the code's author. A self-hosted pool is reachable by every writer of every repo it
+  serves: register such runners ephemeral, in a runner group restricted to selected private repos with public repos off, and
+  keep `pull_request_target` / `workflow_run` / secret-bearing jobs off a pool that runs PR code (D9).
+- Moving a class is a variable change, no commit, effective on the next run. There is no automatic overflow between pools
+  (labels are a conjunction; GitHub has no failover): watch queue time per pool (`gh run list --json` / the Ubicloud dashboard)
+  and add runners or move a class when a pool waits.
+- **`schedule` and `push` runs.** A `schedule` run is attributed to the user who last modified the cron schedule in the workflow
+  file, so the integration lane follows that person's variables; a push to the default branch to whoever merged. If that
+  person has no placement the run is all-skipped: green on GitHub, not a failure, not evidence (D2). Say in the profile whose
+  lane it is; that operator makes the last change to the cron line, and after the first scheduled run you check it executed
+  jobs (`gh run view <id> --json triggeringActor,jobs`). Release needs a covering run that executed (core §4), so an unplaced lane
+  blocks a release, not a merge. A checks-gated deploy on merge treats a skipped push run as not passed.
+- Facts that still hold from the Ubicloud move: GitHub reports Ubicloud and self-hosted runners as `self-hosted`
+  (`runner.environment`), so never gate a step on "hosted only" (persistent builders, cache steps). A label the account cannot
+  provide queues forever and never fails: unset or change the variable before decommissioning runners (the jobs are then
+  skipped), and keep a break-glass path in the profile (the owner edits their variables; a runner group restricted to
+  selected private repos with "Allow public repositories" off). Ubicloud runners are thrown away after each job: install
+  prebuilt tools, `apt-get update` before install; the clock is not synchronized and disk latency varies between VMs.
+  Artifacts and caches follow D11 (below, § Artifacts and caches (D11)). Self-hosted
+  runners are not thrown away: a job must not depend on a clean workspace or leave root-owned files behind. Keep `MACOS` and
+  `WINDOWS` jobs to the lanes that need them (hosted macOS minutes cost about ten times Linux). The design notes with the
+  measured data live in the agent-rules repository: `docs/2026-11-05-runner-classes.md`, `docs/2026-11-05-no-hosted-fallback.md`.
+
+## Artifacts and caches (D11)
+- Placement stays each person's (D9); D11 is decided at run time from what the runner declares. The store host's runners declare
+  `CI_ARTIFACT_STORE=/data/ci-artifacts` and `CI_LOCAL_CACHE=/data/sccache` in the runner's `.env` file (an operator task on the
+  box; the runner reads `.env` at start; that its entries reach job steps is not in GitHub's docs and is confirmed on the first box run, design doc › Storage). A runner without them is not the box.
+- sccache: never set `SCCACHE_GHA_ENABLED` (sccache's GitHub cache backend, a GitHub storage service; `check.py` flags any value
+  but an explicit off, in `env:`, an `export` or a `GITHUB_ENV` write; best effort, not exhaustive: review catches other forms). On
+  the box point it at the local cache (`SCCACHE_DIR=$CI_LOCAL_CACHE/<org>/<repo>/sccache` after the declaration step).
+  `mozilla-actions/sccache-action` installs sccache; it does not enable the GitHub backend by itself.
+- GitHub's `env` context "does not contain variables inherited by the runner process" (docs, contexts › env), so a step-level
+  `if: env.CI_LOCAL_CACHE == ''` cannot see the `.env` value by itself. The documented way is a first step that copies it into the
+  job's env (`GITHUB_ENV`), after which `env.*` is available in every later step's `if` (`env` is in the step-`if` context list).
+  `runner.name` would hard-code box names into the repository, which D9 forbids, so it is not used.
+  ```yaml
+      steps:
+        - uses: actions/checkout@<sha>
+        - name: Declare what this runner has (D11)
+          shell: bash   # bash syntax; a WINDOWS job's default shell is pwsh
+          run: echo "CI_LOCAL_CACHE=${CI_LOCAL_CACHE:-}" >> "$GITHUB_ENV"
+        - name: Cache (a provider that redirects the cache service off GitHub: Ubicloud; never a hosted runner)
+          if: ${{ runner.environment == 'self-hosted' && env.CI_LOCAL_CACHE == '' }}
+          uses: actions/cache@<sha>
+          with: { path: ~/.cargo/registry, key: cargo-${{ hashFiles('**/Cargo.lock') }} }
+        - name: Local cache (the build box)
+          if: env.CI_LOCAL_CACHE != ''
+          run: |
+            mkdir -p "$CI_LOCAL_CACHE/$GITHUB_REPOSITORY/cargo"      # the repo's own subdirectory (org/repo, like the artifact path), never the root
+            echo "CARGO_HOME=$CI_LOCAL_CACHE/$GITHUB_REPOSITORY/cargo" >> "$GITHUB_ENV"
+  ```
+  The same pair applies to setup-action `cache:` inputs (set `cache:` on the guarded variant only), `Swatinem/rust-cache` and Docker
+  `type=gha` (`cache-from`/`cache-to` on the guarded variant; sccache/ccache directories point at `$CI_LOCAL_CACHE/<org>/<repo>/…` on the box). A GitHub-hosted runner (explicit placement) never uses GitHub's cache: the `runner.environment == 'self-hosted'` conjunct makes it run uncached. Setup actions that cache by default (setup-go; setup-node v5 with `packageManager`) and `enable-cache:` inputs are checked in review; set `cache: false` on the unguarded variant.
+  `check.py` requires both conjuncts on the step's own `if:` line and, per job, the `GITHUB_ENV` declaration before the first use; it cannot see placement.
+- Artifact write (never `upload-artifact`; never `mkdir -p` the root; fail loudly where there is no store):
+  ```yaml
+        - name: Store artifacts (D11)
+          run: |
+            test -n "$CI_ARTIFACT_STORE" && test -d "$CI_ARTIFACT_STORE" || { echo '::error::no artifact store on this runner (D11)'; exit 1; }
+            d="$CI_ARTIFACT_STORE/$GITHUB_REPOSITORY/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/test-reports"
+            mkdir -p "$d" && cp -r target/reports/. "$d"/
+            echo "stored: $d ($(du -sh "$d" | cut -f1))"
+  ```
+  Put the path, the exit code and a one-line summary in the evidence row: reviewers and cloud sessions cannot read the box. A job
+  handoff between jobs is one job, or both jobs write and read the same run directory on the box (both placed on it).
 
 ## Lanes (profile defines them)
 - PR fast lane: selected checks, target < 10 min.

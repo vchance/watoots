@@ -16,7 +16,7 @@
 - Escalation triggers hit: none | {{which}}
 
 ## Revisions
-- base: `{{sha}}` ({{branch}}) · head: `{{sha}}` · integration revision tested: `{{sha or "the next scheduled integration run after merge"}}`
+- base: `{{sha}}` ({{branch}}) · head: `{{sha}}` · integration revision tested: `{{sha, or name this repository's actual integration lane (scheduled run, push run, release lane) and when it covers this change; "none" if it has no lane}}`
 
 ## Evidence (per check: passed / failed / skipped / unavailable / n/a — with revision)
 | Check | Result | Revision | Where |

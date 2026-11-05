@@ -19,8 +19,9 @@ this one is archived in agent-rules `playbooks/archive/device-cloud-browserstack
   udid) and delete it at the end (`xcrun simctl delete <udid>`); shut down what the run booted (`xcrun simctl shutdown <udid>`).
   Never `xcrun simctl erase`, `delete` or `shutdown` a simulator the run did not create or boot (by udid, never `all`), and
   never `erase all` (R10).
-- CI: a macOS job on the hosted label the `CI runners` row lists (`macos-15`, never `-latest`), `timeout-minutes` set, derived
-  data cached per Xcode version. Hosted macOS minutes cost about ten times Linux: run on PR only when D2 maps the change to
+- CI: a macOS job on the `MACOS` runner class (D9: `if: ${{ vars[format('RUNS_ON_MACOS__{0}', github.triggering_actor)] != '' && (<existing>) }}`
+  and `runs-on: ${{ fromJSON(vars[format('RUNS_ON_MACOS__{0}', github.triggering_actor)] || '["unplaced"]') }}`; nobody has a Mac runner
+  until an operator places the class, so the job is skipped and the row reads `unavailable: no macOS runner`), `timeout-minutes` set, derived data cached per Xcode version. Hosted macOS minutes cost about ten times Linux: run on PR only when D2 maps the change to
   the iOS surface, full set on main and release.
 - No macOS runner available: run on the owner's Mac and record `manual (simulator, operator <owner|agent>, <date>, <sha7>,
   <device/OS>)` from a clean working tree at the PR head; the row carries the test command's exit code (D8).
@@ -34,8 +35,8 @@ this one is archived in agent-rules `playbooks/archive/device-cloud-browserstack
   Maestro/Detox flows, then stop only the emulator the run started (`adb -s emulator-<port> emu kill`, never `pkill emulator` or `adb kill-server`)
   and delete the AVD the run created.
 - CI needs hardware acceleration: GitHub-hosted Ubuntu runners expose `/dev/kvm` once the udev rule step from the
-  android-emulator-runner README grants the runner user access; check an Ubicloud label once (`test -w /dev/kvm` after that
-  step) before relying on it and record `unavailable: no KVM on runner (<label>)` if absent. A pinned
+  android-emulator-runner README grants the runner user access; check the machines an operator placed `MEDIUM` on once (`test -w /dev/kvm` after that
+  step) before relying on it and record `unavailable: no KVM on runner (<class>, <operator>)` if absent. A pinned
   `reactivecircus/android-emulator-runner` action (by commit SHA, `playbooks/security.md`) wraps the above.
 - Lane: PR smoke on one emulator when D2 maps the change to the Android surface; full set on main and release.
 
@@ -45,7 +46,8 @@ this one is archived in agent-rules `playbooks/archive/device-cloud-browserstack
   `n/a: no mobile surface`. A skipped job is never read as a pass.
 - One automatic retry per target, recorded as a flake with the failing test name; never loosen a timeout or assertion to get a
   target green; removing or downgrading a target is a profile change (High tier, R9).
-- Screenshots and videos the runner produces are uploaded as workflow artifacts (retention 14 days) and linked from the row.
+- Screenshots and videos the runner produces are written to the artifact store (D11: `$CI_ARTIFACT_STORE/<org>/<repo>/<run_id>-<run_attempt>/<name>/`
+  on the build box, retention 14 days) behind the run-time guard in `testing-and-ci.md` § Artifacts and caches, and the path, exit code and a one-line summary are in the row; they are not uploaded to GitHub, and a runner with no store fails the step.
   Flows use dedicated test accounts and fixtures, never real credentials; logcat and device logs are not uploaded unless the
   profile asks; in a public repository artifacts are downloadable by anyone with read access.
 
