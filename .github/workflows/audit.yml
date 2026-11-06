@@ -13,7 +13,8 @@ on:
     paths:
       - "**/Cargo.toml"
       - "**/Cargo.lock"
-      - ".github/workflows/audit.yml"
+      # (the workflow's own file is not listed: core 0.1.22 makes .github/** select no product job; the weekly
+      # schedule and workflow_dispatch exercise it)
   pull_request:
     paths:
       - "**/Cargo.toml"
