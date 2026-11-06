@@ -22,4 +22,6 @@ before editing and again whenever scope changes.
    `n/a` up front so nobody later mistakes "not run" for "passed".
 5. **Escalation triggers hit?** shared code · toolchain/build · broad refactor · uncertain impact · release candidate ·
    escaped regression. Any yes → full suite for the affected component(s); say which.
+   A change confined to `.github/**` is none of these since core 0.1.22 (D2): it selects no product job, and the
+   scheduled integration run first exercises it.
 6. **Owner-reserved?** Check `AGENTS.md › Owner decisions`. If the change touches one, stop and ask before coding.

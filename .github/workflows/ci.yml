@@ -3,7 +3,29 @@ name: CI
 on:
   push:
     branches: [main]
+    paths-ignore:
+      # Core D2 (0.1.22): the agent-policy set and .github/** select no product job.
+      - 'AGENTS.md'
+      - '**/AGENTS.md'
+      - 'CLAUDE.md'
+      - '**/CLAUDE.md'
+      - 'PROFILE.md'
+      - '.agent-rules/**'
+      - '.claude/**'
+      - '.githooks/**'
+      - '.github/**'
   pull_request:
+    paths-ignore:
+      # Core D2 (0.1.22): the agent-policy set and .github/** select no product job.
+      - 'AGENTS.md'
+      - '**/AGENTS.md'
+      - 'CLAUDE.md'
+      - '**/CLAUDE.md'
+      - 'PROFILE.md'
+      - '.agent-rules/**'
+      - '.claude/**'
+      - '.githooks/**'
+      - '.github/**'
 
 env:
   CARGO_TERM_COLOR: always

@@ -28,26 +28,24 @@ workflow, not the agent, decides what runs, from the same table the profile publ
    every edit to the mapping is a `.github/**` change: High by R9, with `policy-drift` required.
 2. **Escalation (selection fails closed).** These select every job that reads them, and set `all` when that set
    cannot be stated exactly:
-   - the repository scripts the workflow runs;
+   - the repository scripts the workflow runs from outside `.github/**` (those under it are CI configuration: below);
    - lockfiles, toolchain files and build-system files (a repository-wide one, such as the root lockfile, reaches every
      job; one that only a single component's build reads, such as that app's Gradle lockfile, reaches that component);
    - shared or widely consumed code the profile names (map it by its consumers, traced from the build files and tests
      that read it, including reads across components such as a test that opens another component's source).
 
    These always set `all`:
-   - `.github/**` except `.github/pull_request_template.md` (workflows, composite actions and the selection script
-     itself);
    - a file matching no component and no "no product job" pattern (unknown paths escalate; they never skip);
    - a file list that is empty or could not be computed (a non-zero exit, a missing merge base);
    - release tags, `workflow_dispatch`, `merge_group`, and the scheduled integration run when the default branch moved
-     (item 6);
+     (item 7);
    - a push to the default branch whose previous revision cannot be read (`github.event.before` all zeros, or not
      fetchable). Otherwise a push selects from `git diff --name-only --no-renames "$BEFORE" "$AFTER"` after
      `git fetch --depth=1 origin "$BEFORE"` (the diff needs only the two trees; after a force-push it is still the
      right tree diff while `before` can be fetched), exactly as a PR does.
 
    A mapping narrower than `all` for an escalation file is recorded in the profile with the trace that justifies it, and
-   the PR that introduces it lists it as a safeguard change (item 7). Prefer `all` unless the trace is short and checkable
+   the PR that introduces it lists it as a safeguard change (item 8). Prefer `all` unless the trace is short and checkable
    (the build files and tests that read the file), or comes from a dependency graph the build tool reports. Such a trace
    can go stale without any `.github/**` edit, so item 5 makes every review check it.
 
@@ -63,10 +61,24 @@ workflow, not the agent, decides what runs, from the same table the profile publ
    spelling or grammar scan, a link checker, a license-header check) reads them too; then the profile maps the set to
    that job only, with the trace (the script and the line that lists the files), and that job alone runs for them.
    Selection still fails closed: the set is never "no component", it is a pattern whose job list is empty or exactly
-   the readers the profile names. The rest of `.github/**` selects every job. A repository that has not adopted the
-   `changes` job yet and selects with workflow-level `paths:` filters negates the same set there (`'!.agent-rules/**'`,
-   `'!.claude/**'`, `'!.githooks/**'` beside its `'!**.md'`, which already covers the Markdown members), unless a job
-   reads them: a product run those files trigger can only be waited for, since `merge.sh` refuses a canceled check.
+   the readers the profile names.
+
+   **The CI configuration** (since 0.1.22, owner decision 2026-11-05) is a second such pattern: the rest of
+   `.github/**`, meaning the workflows, composite actions and the selection script, toolchain pins and build flags set
+   there included. Its checks are `policy-drift` (whose `check.py` lints the D9 placement gate and the D11 cache and
+   artifact rules, not the jobs' logic) and `pr-evidence`; the `changes` job and `ci-result` still run. What that gives
+   up, stated in core D2: the changed workflow's product jobs first run on the default branch, in the scheduled
+   integration run (item 7), because the merge's push run selects nothing for it either; jobs that run only on release
+   refs, `merge_group`, a deploy or `workflow_dispatch`, a workflow with no `schedule` trigger, and the scheduled lane's
+   own definition are first exercised when next needed; the selection script's fail-closed path is not exercised by the
+   PR that changes it. A `workflow_dispatch` run on the PR branch runs the changed workflow and every job before merge,
+   when someone wants that. A PR that changes a workflow and product paths runs the product paths' jobs under the
+   changed workflow.
+
+   A repository that has not adopted the `changes` job yet and selects with workflow-level `paths:` filters negates both
+   sets there (`'!.agent-rules/**'`, `'!.claude/**'`, `'!.githooks/**'`, `'!.github/**'` beside its `'!**.md'`, which
+   already covers the Markdown members), unless a job reads them: a product run those files trigger can only be waited
+   for, since `merge.sh` refuses a canceled check.
    Copy-ready workflow-level list (use it as `paths-ignore:` under `pull_request:` and `push:`, or as the "no product job"
    pattern in the `changes` job; add the Markdown pattern your repository already uses):
    ```yaml
@@ -79,7 +91,7 @@ workflow, not the agent, decides what runs, from the same table the profile publ
      - '.agent-rules/**'
      - '.claude/**'
      - '.githooks/**'
-     - '.github/pull_request_template.md'
+     - '.github/**'
    ```
    `paths-ignore` and the `ci-result` gate do not mix (see Record): a PR the filter skips never provides `ci-result`, which `merge.sh` requires. Use this list as a workflow-level filter only where the repository has no `ci-result` (since 0.1.21 that means a workflow whose gated jobs are all `# d9-opt-in`, or one with no gated jobs; `check.py` flags a filter beside a `ci-result` job). Where it has one, put the same patterns in the `changes` job as the pattern that selects nothing, and drop the filter in the same PR.
 3. **Each product job** lists `changes` in its own `needs:` (a job reads `needs.changes.outputs.*` only from a direct
@@ -126,52 +138,96 @@ workflow, not the agent, decides what runs, from the same table the profile publ
    skipped job is never a pass (R5). The reviewer checks the mapping against the diff: a changed path whose job did not
    run is a blocking finding unless the profile maps it elsewhere. The reviewer also checks whether the diff adds a reader
    of an escalation file that has a narrowed mapping (a build-file dependency, an import, a test that opens a path in
-   another component); if it does, the same PR widens the mapping (High by R9), or the finding is blocking.
-6. **The integration lane: scheduled, about every 4 hours, only when the default branch moved** (owner decision
-   2026-11-04; since 0.1.19 it replaces the full run on every push).
-   - Trigger: `schedule: - cron: '23 */4 * * *'` (an off-hour minute: GitHub delays or drops scheduled runs most at the
-     top of the hour) on the default branch, plus `workflow_dispatch` to run it by hand. GitHub may delay or drop a
-     scheduled run, and turns schedules off in a public repository after 60 days without activity; the lane is "about
-     every 4 hours", not a guarantee, and the staleness check below watches it.
-   - **Skip only on a covered head.** On a scheduled run, the first step of the `changes` job finds the *covering run*:
-     the latest scheduled or dispatched run of the same workflow on the default branch that executed its jobs (not a skip
-     run: one whose product jobs did not all end `skipped`, which `gh run view <id> --json jobs` shows; a skip run's log
-     also says so), queried with
-     `gh run list -R "$GITHUB_REPOSITORY" --workflow <file> --branch <default> --status completed --limit 50 --json databaseId,event,headSha,conclusion`
-     (keep `schedule` and `workflow_dispatch` events; a list with no covering run means run),
-     with job-level `permissions: { contents: read, actions: read }` and `GH_TOKEN: ${{ github.token }}`). Then:
+   another component); if it does, the same PR widens the mapping (High by R9), or the finding is blocking. For a change
+   to `ci-result` the reviewer checks when it prints `tested-tree` (item 6) and that it echoes no PR-controlled text.
+6. **A push carries its pull request's result when the trees match** (core D2, since 0.1.23). The PR run publishes the
+   tree it tested; the push run looks for it and carries the result instead of re-running the same content. Tree identity
+   covers repository content only: secrets, `vars`, time, external services, base and runner images and advisories are
+   covered by the integration lane and the flake rule, not by the carry.
+   - **When the PR run publishes.** `ci-result`, as its last step, prints
+     `echo "::notice title=tested-tree::$(git rev-parse HEAD^{tree})"` (the checkout is the merge ref, so this is the
+     merged tree, not the PR head's) only when every job the selection chose ended `success` (none skipped for placement,
+     none failed or canceled) and the PR changes nothing under `.github/**` (a PR that changes the CI configuration, its
+     scripts included, never carries; it selects no product job anyway, 0.1.22). A run that selected no
+     product job may publish too: the push of an equal tree selects the same nothing. No other job prints a
+     `tested-tree` notice, and `ci-result` never echoes PR-controlled text (titles, branch names, test output).
+   - **How the push run finds it.** The `changes` job starts with every output set to "select" (item 1) and sets
+     `carried` only on an explicit match, so any failed command fails closed. It:
+     1. finds the merged PR: `gh api repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/pulls`, keeping the one with
+        `merged_at` set and `merge_commit_sha == $GITHUB_SHA` (retry twice, 5 seconds apart, when the list is empty);
+     2. takes that PR's final `head.sha` (for a merge commit, also check it equals the pushed commit's second parent);
+     3. lists runs on exactly that commit: `gh run list --workflow <file> --commit <head.sha> --event pull_request --status success --limit 50 --json databaseId,url,updatedAt`,
+        keeping runs that completed within the last 7 days;
+     4. in each, takes the `ci-result` job id (`gh run view <id> --json jobs`, `databaseId` of the job named `ci-result`,
+        which is its check-run id) and reads `gh api --paginate "repos/$GITHUB_REPOSITORY/check-runs/<job id>/annotations?per_page=100"`;
+        exactly one annotation titled `tested-tree` whose message equals `git rev-parse HEAD^{tree}` is a match (zero,
+        several or a different value is no match).
+     Match: every product output false, `carried=<run url>`; `ci-result` passes and prints "carried from <run url> (tree
+     <tree>)". Anything else selects by the pushed range (item 1).
+   - Job-level `permissions: { contents: read, actions: read, checks: read, pull-requests: read }`, `GH_TOKEN: ${{ github.token }}`;
+     about 5–10 API calls per push.
+   - Record the push run as `carried from <run>`; it is never "passed" in its own right (R5) and never release evidence
+     (core §4). A rebase or a merge from a stale base changes the tree, so it simply runs.
+   - The reviewer of any `.github/**` change checks what `ci-result` prints and when (item 5).
+7. **The integration lane: an hourly scheduled run with a 4-hour gate, only when the default branch moved** (owner
+   decision 2026-11-04; since 0.1.19 it replaces the full run on every push; since 0.1.23 it survives dropped scheduled runs).
+   - Trigger: `schedule: - cron: '23 * * * *'` (an off-hour minute: GitHub delays or drops scheduled runs most at the top
+     of the hour) on the default branch, plus `workflow_dispatch` to run it by hand. GitHub may delay or drop any scheduled
+     run, and turns schedules off in a public repository after 60 days without activity. A head is covered within about 5
+     hours however many runs are dropped; a run that decides to do nothing costs only the `changes` job, on the smallest
+     class (about 24 short jobs a day). A repository that keeps a 4-hourly cron instead states in its profile how it keeps
+     the cadence.
+   - **Find the covering run.** The first step of the `changes` job finds the *covering run*: the latest scheduled or
+     dispatched run of the same workflow on the default branch that executed its jobs (not a skip run). First look on the
+     current head (`gh api "repos/$GITHUB_REPOSITORY/actions/workflows/<file>/runs?head_sha=<head>&status=completed&per_page=100"`):
+     keep only `schedule` and `workflow_dispatch` runs whose `head_branch` is the default branch (the API's `event` filter
+     takes one value, so filter client-side; the head's `push` and `pull_request` runs never count) and take the latest by
+     start time among those whose product jobs did not all end `skipped`. A covering run there answers the success and
+     failure cases below without a long scan, however quiet the branch has been. Otherwise page newest-first through at least 200 runs
+     (`gh run list -R "$GITHUB_REPOSITORY" --workflow <file> --branch <default> --status completed --limit 200 --json databaseId,event,headSha,conclusion,startedAt,displayTitle`,
+     or more pages; an hourly lane makes about 24 runs a day)
+     (keep `schedule` and `workflow_dispatch` events) and stop at the first run whose product jobs did not all end
+     `skipped` (`gh run view <id> --json jobs`); a list with no covering run means run. (`run-name` cannot carry the
+     decision: GitHub sets it before any job runs. The `changes` job may also print a `lane-decision` annotation to make
+     the log readable, but the job conclusions are what count.) Job-level
+     `permissions: { contents: read, actions: read }` and `GH_TOKEN: ${{ github.token }}`. Then:
      - covering run on the current head with conclusion `success`: set every output false; every product job is skipped,
        `ci-result` passes, and the log says "covered by run <id> on <sha>";
      - covering run on the current head with conclusion `failure`: run nothing and fail `ci-result` with "carrying the
        failure of run <id> on <sha>", so the failure stays the latest result until a merge moves the head;
-     - anything else (a different head, `cancelled`, `timed_out`, `startup_failure`, no covering run, an API error): set
-       `all`. The lane fails toward running, and an uncovered head never stays uncovered.
+     - **the 4-hour gate:** the head has moved, the covering run *succeeded*, and it *started* less than 4 hours ago: run
+       nothing and pass with "lane gate: covering run <id> started <time>" (not evidence of anything);
+     - anything else (the head moved and the covering run failed, was `cancelled`, `timed_out` or `startup_failure`; it
+       started 4 or more hours ago; no covering run; an API error): set `all`, at once. The lane fails toward running, and
+       a failure is never held back by the gate.
 
-     A skip run is not evidence for the release gate (core §4): that needs a run that executed the jobs on the revision.
+     A skip, gate or carried run is not evidence for the release gate (core §4): that needs a run that executed the jobs
+     on the revision.
    - The run covers every merge since the previous covering run at once. When it fails in a job some of those PRs
      skipped, bisect over them (`git log <previous>..<head>`): run the failing job's command locally on each candidate,
      or push a temporary branch at the candidate SHA and dispatch the workflow on it (`workflow_dispatch` takes a branch
      or tag, not a SHA, and runs every job), deleting the branch afterward (R10). Fix the mapping in the same follow-up PR
      as the code fix and say so: the miss is evidence that the selection was too narrow, never a reason to skip the run.
    - **Staleness check.** The agent checks at session start (and the policy-drift job may also) and warns when the default branch's newest
-     commit is more than about 8 hours newer than the head of the latest covering run, which is how a dropped or
-     disabled schedule shows.
+     commit is more than about 8 hours newer than the head of the latest covering run. With the hourly scheduled run and gate this
+     is the alarm that the backup did not work (schedules disabled, every scheduled run failing), not the main safeguard.
    - Every non-PR run completes: give non-PR runs their own concurrency group (for example keyed on `github.run_id`),
      because with `cancel-in-progress: false` GitHub still cancels a *pending* run in the same group when a newer one
      queues.
    - **Deploys.** A deploy that gates on the commit's checks (Render's `checksPass`, a required-checks deploy rule) sees
      the push run, which runs the selected jobs and `ci-result`, not the full suite. A selection miss can therefore reach
-     production before the next covering run catches it (up to about 4 hours, longer if a scheduled run is dropped). A
+     production before the next covering run catches it (up to about 5 hours with the hourly run and gate); a carried push
+     run executes no product job at all, so a deploy gated on it sees only its PR run's result. A
      repository that deploys says in its profile which it chose, as an owner decision: accept that exposure (the push
      run is its release gate), gate the deploy on the covering run (deploy from the scheduled run, or dispatch a full run
      before deploying), or turn automatic deploys off and deploy only when the owner says so (the agent then checks that
      a covering run, or a dispatched full run, is green on the revision before deploying it). A release that needs the full suite on its exact revision gets it from a
      release ref or a dispatched run (core §4 Release).
-7. **Changing the mapping.** Every edit to it is High by R9 (it is in `.github/**`). Adding paths to a job or adding an
+8. **Changing the mapping.** Every edit to it is High by R9 (it is in `.github/**`). Adding paths to a job or adding an
    escalation trigger widens the checks. Removing paths from a job, removing an escalation trigger or the `ci-result`
    gate is also a safeguard reduction, and the classification says so; so is removing or lengthening the integration
    `schedule`, loosening the covered-head comparison, or letting a skip run pass when its covering run did not succeed.
-8. **Measure** the change in the PR: runner-minutes (vCPU × minutes) for a typical PR of each component before and after,
+9. **Measure** the change in the PR: runner-minutes (vCPU × minutes) for a typical PR of each component before and after,
    from `gh run view --json jobs`.
 
 ## Reuse evidence
@@ -190,6 +246,31 @@ workflow, not the agent, decides what runs, from the same table the profile publ
   changed, comparing with the PR base, or on main with the last *successful* main run. Details for Ubicloud runners:
   `docs/adopting-ubicloud-runners.md` › Caching in the agent-rules repository (private; not copied into this repo).
 - Cancel superseded runs (`concurrency: {group: pr-${{ github.event.pull_request.number }}, cancel-in-progress: true}`).
+
+## Batch fix pushes (guidance)
+- Every push to a PR is a full selected run. In a review round, fix every finding locally, run the repository's fast
+  local checks (format, lint, the touched tests), then push once; not one push per finding. In historian a PR took two
+  to four CI runs where one would have done (2026-11-06).
+
+## Flakes (core D2, since 0.1.23)
+- A check that fails and then passes on a re-run of the same revision is a failure the first time (R5). Re-run once at
+  most, and only for a test outside the components the PR touches, or after stating in the PR why the failure is
+  unrelated to the change; a failure in touched code is investigated, not re-run. Record it in the PR's evidence before
+  merge as `flake: <test>, failed in <run url>, passed in <run url>`; a flake on the default branch is recorded as a
+  comment on the merged PR, plus the tally.
+- The profile names one tally per repository, preferably an issue titled `Flaky tests` (a file such as `docs/flakes.md`
+  costs a PR per occurrence); add a dated line per occurrence with the revision and both runs.
+- A test that flakes again within the profile's window (default 14 days) is fixed, or quarantined by a stated profile
+  change that names the test, why, and the issue that tracks the fix. A quarantine (a skip, an exclude) is a safeguard
+  reduction and High wherever it lives. Re-running the same test again and again is not allowed.
+- Device tests keep their one automatic retry (`device-testing.md`), recorded the same way.
+
+## After the merge (core D5, since 0.1.23)
+- Whoever merges follows the default branch's push run for that merge to its end (`gh run watch` or a background
+  poll). A failure there is the merger's: re-run once and record a flake, fix it, or report it to the owner. A failure on
+  the default branch does not wait for the integration lane. A push that carried its PR's result (item 6) has little
+  to watch; say so and stop. A session that cannot stay until the run ends records in the PR that the push run is
+  unwatched and names who follows it (the owner, or the next session in the repository).
 
 ## Revalidate the delta
 - A new commit re-runs the checks whose inputs it touched; earlier passes for untouched components remain valid **only if**
@@ -308,8 +389,8 @@ workflow, not the agent, decides what runs, from the same table the profile publ
 
 ## Lanes (profile defines them)
 - PR fast lane: selected checks, target < 10 min.
-- Integration batch: full suite on a **schedule every 4 hours, only when the default branch moved** since the last
-  scheduled run (item 6 of § Selection in the workflow); a push to the default branch runs the selected jobs only.
+- Integration batch: full suite on an **hourly scheduled run with a 4-hour gate, only when the default branch moved**,
+  covering the head within about 5 hours (item 7 of § Selection in the workflow); a push to the default branch runs the selected jobs only.
   Attribute a failure by bisecting over the merges since the previous green scheduled run.
 - Scheduled: dependency advisories (time-dependent, so they must run on unchanged code), platform matrix, soak/fuzz.
 - Device tests (D10, `playbooks/device-testing.md`): PR fast lane runs the smoke subset on one simulator or emulator per
