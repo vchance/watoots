@@ -32,21 +32,21 @@ Dependency graph (`crates/*/Cargo.toml`): `watoots-trace`, `watoots-capi` and `w
 | `docs/**` (`SPEC.md` = scope source of truth, `SECURITY.md` threat model, `MANIFEST.md`, `adr/` 14 ADRs), `README.md`, `CHANGELOG.md`, crate `README.md`s (each is the crates.io page) | owner | spec/ADR changes are design decisions | none automated beyond `cargo doc` (rustdoc only) | users, crates.io |
 
 ## Check selection (impact-based; core D2)
-Today `ci.yml` has no `paths` filter and every push to `main` and every pull request runs all four jobs (`rust`, `msrv`,
-`cpp`, `sanitizers`); `audit.yml` runs on `Cargo.toml`/`Cargo.lock` changes, weekly and on dispatch. The rows below are
+Today `ci.yml` has no per-crate selection: every push to `main` and every pull request that changes anything outside the agent-policy set and `.github/**` runs all four jobs (`rust`, `msrv`,
+`cpp`, `sanitizers`). `ci.yml` carries a workflow-level `paths-ignore` (the agent-policy set and `.github/**`, core D2 0.1.22) on `pull_request` and `push`, so such a change selects no product job (`policy-drift` and `pr-evidence` still run); `audit.yml` runs on `Cargo.toml`/`Cargo.lock` changes, weekly and on dispatch, and never on `.github/**`. The rows below are
 what reviewers use to judge whether the evidence covers a change; the deviation from D2 is recorded under Proposed
 D-rule overrides.
 
 | Changed paths | Checks that run on the PR | Evidence recorded as |
 |---|---|---|
 | `**/*.md` (not `AGENTS.md`, `PROFILE.md`, `CLAUDE.md`; not `docs/SPEC.md` or `docs/adr/**` when they change a decision; not crate READMEs, which are packaged) | PR review; full `ci.yml` runs anyway (no paths filter) | CI per job; build/test effectively `n/a` |
-| `AGENTS.md`, `PROFILE.md`, `CLAUDE.md`, `.agent-rules/**`, `.githooks/**`, `.claude/**`, `.github/**` | `policy-drift` + `pr-evidence` + full `ci.yml`; **high tier** (R9) | per check |
+| `AGENTS.md`, `PROFILE.md`, `CLAUDE.md`, `.agent-rules/**`, `.githooks/**`, `.claude/**`, `.github/**` | `policy-drift` + `pr-evidence`; no product job (core D2, 0.1.22: `ci.yml` and `audit.yml` ignore these paths on pull_request and push); **high tier** (R9) | per check |
 | `crates/host/**`, `Cargo.toml`, `Cargo.lock` | **escalation: full `ci.yml`** + `audit` (lockfile/manifest) | per job |
 | `crates/trace/**` | target: `cargo fmt --all --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test -p watoots-trace -p watoots-cli` (today: full `ci.yml`) | per command |
 | `crates/cli/**` | target: fmt, clippy, `cargo test -p watoots-cli`, `tools/demo.sh`, `tools/demo-preview.sh` (today: full `ci.yml`) | per command |
 | `crates/host-capi/**` | target: fmt, clippy, `cargo test -p watoots-capi`, header-current step, cpp + sanitizers jobs (today: full `ci.yml`) | per job |
 | `examples/**`, `tools/**`, `CMakeLists.txt`, `CMakePresets.json`, `cmake/**`, `.clang-*` | cpp + sanitizers jobs + `cargo test --workspace`; a change to `examples/wit/asset` or an asset guest also needs all four asset guests built locally (manual with evidence) | per job / pasted output |
-| `.github/workflows/ci.yml`, `audit.yml`, toolchain or MSRV change, release candidate, >1 crate touched or uncertain mapping | **escalation: full `ci.yml`** + `audit` (dispatch) + `cargo publish --workspace --dry-run` for a release | per job |
+| toolchain or MSRV change (a `.github/**` edit selects no product job, core D2 0.1.22; run `ci.yml` and `audit.yml` by `workflow_dispatch` on the branch when wanted), release candidate, >1 crate touched or uncertain mapping | **escalation: full `ci.yml`** + `audit` (dispatch) + `cargo publish --workspace --dry-run` for a release | per job |
 
 Escalation triggers (any one → full `ci.yml`): `crates/host` (shared by every crate), toolchain/build-system change,
 broad refactor, uncertain impact, release candidate, a regression that escaped selection.
@@ -74,6 +74,8 @@ Runner note: every job (`ci.yml`, `audit.yml`, `policy-drift`, `pr-evidence`) ru
 
 ## Merge authority
 - Low/Standard: `.agent-rules/merge.sh <n>` once core R3–R6 hold (D5).
+- Whoever merges follows the default branch's push run to its end and owns a failure there (core D5, 0.1.23).
+- Flakes (core D2, 0.1.23): tallied in issue `Flaky tests` (to be opened at the first flake); a test that flakes again within 14 days is fixed or quarantined by a profile change.
 - High: `.agent-rules/merge.sh <n>` once core R3–R6 hold and the independent review verdict `ready` for the head is recorded (D5); no owner acceptance step (owner decision 2026-11-01). Emergency (e.g. a Wasmtime advisory fix): declared only by the owner (vchance), never by the agent; the PR names the declarer; follow-up PR within 7 days.
 - Server-side enforcement available: **rulesets are available (public repo) but none are set.** Owner action (audit F2):
   add a `main` ruleset requiring a PR and the `rust`, `msrv`, `cpp`, `sanitizers` checks, blocking force-push and
@@ -90,7 +92,7 @@ D-rule is an override, not an exception: in force only as an `overrides: Dn` blo
 
 ### Proposed D-rule overrides (not in force)
 Moved into `AGENTS.md › Overrides` only once the owner accepts it; until then the core default stands as written.
-- proposed `overrides: D2` — every push and PR runs all four `ci.yml` jobs (no `paths` filter, no per-crate selection) — why: ≈ 11 job-minutes per run on free public-repo runners; selection would save little — authority: owner decision pending — scope: `.github/workflows/ci.yml` — review: 2027-01-31
+- proposed `overrides: D2` — every push and PR that touches product paths runs all four `ci.yml` jobs (no per-crate selection; the policy set and `.github/**` are ignored) — why: ≈ 11 job-minutes per run on free public-repo runners; selection would save little — authority: owner decision pending — scope: `.github/workflows/ci.yml` — review: 2027-01-31
 
 ## Release and operations (core R11)
 | Field | Value |
