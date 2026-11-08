@@ -1,7 +1,6 @@
 # Playbook: device testing on simulators and emulators (core D10)
 Applies when the repository has a mobile surface (native iOS, native Android, Expo / React Native, Flutter). Web surfaces keep
-their in-repo end-to-end suite and browser engine; nothing here adds a browser matrix. The BrowserStack playbook that preceded
-this one is archived in agent-rules `playbooks/archive/device-cloud-browserstack.md` (owner decision 2026-11-02).
+their in-repo end-to-end suite and browser engine; nothing here adds a browser matrix or a device cloud (owner decision 2026-11-02).
 
 ## Targets (profile-owned)
 - `PROFILE.md › Device testing` names, per surface: the test runner (XCUITest, Espresso, Maestro, Detox, Flutter integration

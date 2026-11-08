@@ -1,6 +1,6 @@
-# Shared agent standard — core v0.1.23
+# Shared agent standard — core v0.1.24
 
-Policy id: `agent-rules/policy/core.md`  ·  Version: 0.1.23  ·  Digest: computed by scripts/pin.py
+Policy id: `agent-rules/policy/core.md`  ·  Version: 0.1.24  ·  Digest: computed by scripts/pin.py
 Applies to every repository whose `AGENTS.md` declares `policy: agent-rules/core@0.1.x`.
 The repository's `AGENTS.md` overlay and `PROFILE.md` add to this file. Composition rules are in §5.
 
@@ -241,10 +241,8 @@ authority.
 - **D10 Device testing on simulators and emulators.** A repository with a mobile surface runs its UI and device tests on the
   **iOS Simulator** (Xcode; `xcodebuild test -destination 'platform=iOS Simulator,…'`, or the repo's runner such as Maestro or
   Detox against a booted simulator) and the **Android Emulator** (an AVD at the API levels the profile names), locally and in
-  CI. There is no device cloud and no cross-browser matrix (owner decision 2026-11-02: the BrowserStack plan did not include
-  automated testing; the BrowserStack playbook is archived in agent-rules `playbooks/archive/`, not vendored, not in force; no
-  `BROWSERSTACK_*` secret is created and no BrowserStack run is required evidence; agents do not run BrowserStack scripts, call
-  its API or read `BROWSERSTACK_*` variables: the 0.1.13 operator-mode permission is withdrawn). A web surface keeps the end-to-end suite
+  CI. There is no device cloud and no cross-browser matrix (owner decision 2026-11-02): no device-cloud secret is created, no device-cloud run is required
+  evidence, and agents run no device-cloud script, call no device-cloud API and read no device-cloud credential. A web surface keeps the end-to-end suite
   the repository already defines, on the runner, with the browser engine it already uses; no multi-browser matrix is
   required. The profile's `## Device testing` table lists each mobile surface, its test runner, the simulator or emulator
   targets (device model, OS version) for the PR smoke subset and for the full run, and where it runs. Lanes, when impact
