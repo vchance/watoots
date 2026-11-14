@@ -98,7 +98,10 @@ workflow, not the agent, decides what runs, from the same table the profile publ
    dependency, so a job that also needs `build` has `needs: [changes, build]`) and has
    `if: needs.changes.outputs.all == 'true' || needs.changes.outputs.<c> == 'true'` for every component it covers. A
    shared job that others consume (a build) runs on the union of its dependents' components. `always()` is never used to
-   bypass a failed dependency.
+   bypass a failed dependency. **No job runs outside the gate** (core D2, since 0.1.26): a check that used to run on every PR
+   or push whatever changed (a repository-wide register or tree check, an audit) needs `changes` too and runs on `all` or on
+   the components it reads, so a policy-only PR or push runs only `policy-drift`, `pr-evidence`, `changes` and `ci-result`.
+   If it really reads the policy files, the profile maps that set to it with the trace (item 2) instead.
 4. **One `ci-result` job** (job id and name both `ci-result`, so the check is named that) with `needs:` listing every job,
    `changes` included, and `if: always()`. It fails when any needed job's result is `failure` or `cancelled`, so a failed
    `changes` job (whose dependents are all skipped) fails it, and passes when the rest are `success` or `skipped`.
@@ -211,6 +214,18 @@ workflow, not the agent, decides what runs, from the same table the profile publ
    - **Staleness check.** The agent checks at session start (and the policy-drift job may also) and warns when the default branch's newest
      commit is more than about 8 hours newer than the head of the latest covering run. With the hourly scheduled run and gate this
      is the alarm that the backup did not work (schedules disabled, every scheduled run failing), not the main safeguard.
+   - **Lanes a push can start** (core D2, since 0.1.26). A workflow with a `push:` trigger on the default branch that runs
+     a lane (a merge-time gate, "a full run when the last covering run is more than 4 hours old"; an audit; a device run)
+     starts with the same `changes` job the PR workflow uses, applied to `"$BEFORE".."$AFTER"` as in item 2, and its lane
+     jobs need it. When every pushed path is in the agent-policy set or `.github/**`, the job prints
+     `lane: policy-only push <before>..<after>` and sets every output false; the lane's own gate (staleness, covering run)
+     is not even evaluated, and its `ci-result` passes. An unreadable `before`, a file list that cannot be computed, or any
+     other path runs the lane by its gate as before (fail toward running). The profile's `Lanes` row names the workflow and
+     its gate. A policy-only push is never a covering run, and the staleness check below leaves it out: it compares the
+     newest commit that is not policy-only with the latest covering run, so a repository whose only lane is push-started
+     does not warn after a policy-only or `.github/**`-only merge. That head stays uncovered until the next product push,
+     scheduled run or dispatch, which extends core D2's stated reduction for `.github/**` changes (first exercised when
+     next needed) to the push-started lane.
    - Every non-PR run completes: give non-PR runs their own concurrency group (for example keyed on `github.run_id`),
      because with `cancel-in-progress: false` GitHub still cancels a *pending* run in the same group when a newer one
      queues.

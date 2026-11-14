@@ -12,7 +12,14 @@ sha=$(gh pr view "$n" --json headRefOid -q .headRefOid); [ -n "$sha" ] || { echo
 checks=$(gh pr checks "$n" --json name,state,bucket 2>/dev/null) || true
 [ -n "$checks" ] || checks=$(gh pr checks "$n" --json name,state 2>/dev/null) || true
 [ -n "$checks" ] || checks='[]'
-files=$(gh pr diff "$n" --name-only)
+# The changed paths come from the pull-request files API, not `gh pr diff --name-only`: GitHub refuses a diff over 20,000 lines
+# (HTTP 406, "diff exceeded the maximum number of lines"), which made every large PR unmergeable (0.1.25). A rename lists its old
+# path too, so moving a file out of a policy path still requires policy-drift. The API lists at most 3,000 files: refuse a
+# short list rather than judge the PR on part of it.
+listing=$(gh api --paginate "repos/{owner}/{repo}/pulls/$n/files" -q '.[] | [.filename, (.previous_filename // "")] | @tsv')
+listed=$(printf '%s\n' "$listing" | grep -c . || true); want=$(gh pr view "$n" --json changedFiles -q .changedFiles)
+[ "$listed" = "$want" ] || { echo "not mergeable: the files API listed $listed of the $want changed files of PR $n (it stops at 3,000)"; exit 1; }
+files=$(printf '%s\n' "$listing" | tr '\t' '\n' | grep . || true)
 # core D2 (0.1.17): when the head's workflows define the ci-result gate job, its check is required too.
 # Fetch through gh's credential helper with prompts off: a keychain helper can hang a non-interactive shell.
 GIT_TERMINAL_PROMPT=0 git -c credential.helper= -c credential.helper='!gh auth git-credential' fetch -q origin "$sha" 2>/dev/null \

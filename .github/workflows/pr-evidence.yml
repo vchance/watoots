@@ -18,4 +18,12 @@ jobs:
           printf '%s\n' "$B" | grep -qiE 'head: `?[0-9a-f]{7,}' || { echo "::error::PR body lacks head SHA"; ok=0; }
           printf '%s\n' "$B" | grep -qE '^## Acceptance criteria' || { echo "::error::PR body lacks '## Acceptance criteria' (core R11)"; ok=0; }
           printf '%s\n' "$B" | grep -qE '^## Resources left' || { echo "::error::PR body lacks '## Resources left' (core R10)"; ok=0; }
+          sec() { printf '%s\n' "$B" | awk -v h="$1" '/^## /{on=(index($0,h)==1)} on'; }  # lines of the section whose heading starts with $1
+          # a Reviews row still holding a template {{…}} placeholder; GitHub expressions are stripped first, they are not placeholders
+          sec '## Reviews' | grep -E '^\|' | sed -E 's/\$\{\{[^}]*\}\}//g' | grep -qF '{{' && { echo "::error::'## Reviews' still has a template placeholder row ({{…}}): fill it or delete it"; ok=0; }
+          if printf '%s\n' "$B" | grep -qE '^- Triggered playbooks:.*compliance ✔'; then  # core D12 (0.1.26)
+            printf '%s\n' "$B" | grep -qE '^## Compliance' || { echo "::error::compliance is ticked but the PR body lacks '## Compliance' (core D12)"; ok=0; }
+            sec '## Compliance' | grep -qE '^- Deviations: ' || { echo "::error::'## Compliance' lacks a '- Deviations: none | …' line (core D12)"; ok=0; }
+            sec '## Reviews' | grep -qiE '^\| *compliance\b' || { echo "::error::compliance is ticked but '## Reviews' has no 'compliance' row (core D12)"; ok=0; }
+          fi
           test $ok = 1
