@@ -12,8 +12,13 @@
 ## Classification (core R2)
 - Tier: {{low or standard or high or emergency — exactly one word}}
 - Surfaces: {{components / platforms / user-visible?}}
-- Triggered playbooks: code ✔ · ux ☐ · technical-design ☐ · architecture ☐ · security ☐ · performance ☐ · observability ☐
+- Triggered playbooks: code ✔ · ux ☐ · technical-design ☐ · architecture ☐ · security ☐ · performance ☐ · observability ☐ · compliance ☐
 - Escalation triggers hit: none | {{which}}
+
+## Compliance (core D12) — only when compliance is ticked; see `.agent-rules/playbooks/compliance.md`
+- Standard: {{<repo>@<tag> (<sha>)}} · checklist: {{file}} · sections read: {{§…}}
+- Surfaces: {{audit trail, signature, … | none}}
+- Deviations: none | {{<item> — <section> — <reason> — <follow-up>}}
 
 ## Revisions
 - base: `{{sha}}` ({{branch}}) · head: `{{sha}}` · integration revision tested: `{{sha, or name this repository's actual integration lane (scheduled run, push run, release lane) and when it covers this change; "none" if it has no lane}}`
@@ -32,6 +37,7 @@
 | Review | Reviewer | Verdict | Findings (blocking/should-fix/suggestion) | Re-review of fixes |
 |---|---|---|---|---|
 | code | pr-reviewer @ {{sha}} | pending (the reviewer writes `ready`, or `ready once blocking and should-fix are done`) | 0 / 0 / 0 | — |
+<!-- only when compliance is ticked, add as a row: | compliance | compliance-reviewer @ <sha> | pending | 0 / 0 / 0 | — | -->
 
 ## Limitations and not done
 {{what was not tested, platforms not covered, assumptions}}

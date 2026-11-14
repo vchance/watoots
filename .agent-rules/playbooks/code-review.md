@@ -3,7 +3,8 @@
 Reviewer input: PR number, the classification block, base/head SHAs. Not the author's conclusions.
 Reviewer output: findings with severity, file:line, trigger, impact, confidence, fix; verdict; evidence used.
 
-1. **Gather.** `gh pr view`, `gh pr diff`, `gh pr checks`. Read `AGENTS.md`, `PROFILE.md`, and the nested `AGENTS.md`
+1. **Gather.** `gh pr view`, `gh pr diff`, `gh pr checks` (GitHub refuses a diff over 20,000 lines: then fetch the head and
+   read `git diff <base>...<head>`). Read `AGENTS.md`, `PROFILE.md`, and the nested `AGENTS.md`
    next to the changed files. Read changed files whole and their callers, not only hunks.
 2. **Verify the classification** before the code. Wrong tier or missing trigger is itself a blocking finding.
 3. **Verify evidence, do not recreate it (D1).** For each check the PR lists: does a CI result for the *head SHA* exist,
@@ -18,4 +19,12 @@ Reviewer output: findings with severity, file:line, trigger, impact, confidence,
 7. **Report.** Severities: blocking / should-fix / suggestion (suggestions never block). Each finding: file:line,
    concrete trigger, impact, confidence (high/medium/low), fix. Verdict: *ready* or *ready once blocking + should-fix
    are done*. On re-review list each earlier finding as resolved / not resolved / withdrawn.
-8. **Bound the loop (R7).** Two cycles without agreement → write the disagreement in the PR and request owner decision.
+8. **Re-pin PRs (core D1, 0.1.27).** A PR `scripts/pin.py` generated is checked mechanically first: check out agent-rules at
+   the tag the PR pins (`git -C ~/development/agent-rules worktree add <scratch dir> v<version>`, removed afterwards, R10),
+   check out the PR head, and run that checkout's `scripts/pin.py <PR head checkout>` (dry run). It must print
+   `0 file(s) would change`; read its `note:` lines. Confirm the commit trailers. One evidence line. Every file in the diff
+   that pin.py does not manage, and any difference the dry run reports, gets steps 4–6. `.agent-rules/core.md` and the
+   playbooks were reviewed in agent-rules and are not read again; the other managed files are covered by the byte
+   equality. A pin.py bug is outside this check. Compliance (D12) is `compliance-reviewer`'s, not this
+   review's; this review checks only that a regulated path ticks it.
+9. **Bound the loop (R7).** Two cycles without agreement → write the disagreement in the PR and request owner decision.
