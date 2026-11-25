@@ -26,3 +26,9 @@ before editing and again whenever scope changes.
    A change confined to `.github/**` is none of these since core 0.1.22 (D2): it selects no product job, and the
    scheduled integration run first exercises it.
 6. **Owner-reserved?** Check `AGENTS.md › Owner decisions`. If the change touches one, stop and ask before coding.
+7. **Size (core R3, since 0.1.30).** One stage or wave of a plan per PR. A change that would span more is split into one
+   PR per stage, each branched from the default branch after the one before it merged (no stack for reviewed work:
+   `testing-and-ci.md` › Batch fix pushes). Say in the PR which stage it is.
+8. **Design sketch owed? (core §4, since 0.1.30)** A change that adds a protocol, flow, contract or data model needs the
+   one-page sketch passed by the security and technical-design reviews before the build (`technical-design.md`). Name the
+   sketch, or say why none is owed.

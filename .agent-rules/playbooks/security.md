@@ -1,6 +1,8 @@
 # Playbook: security review (trigger: trust boundary, authn/authz, sensitive data, external input, uploads, dependencies, permissions, build/release pipeline)
 
-When: at design time and before merge. Sources: OWASP ASVS (pick the chapters that apply), OWASP threat-modeling cheat
+When: at design time and before merge. At design time, for a change that adds a protocol, flow, contract or data model,
+this review passes the one-page sketch before the build (core §4, `technical-design.md`), so the trust boundaries, what each
+request carries and the failure, cancel and timeout cases are settled before code. Sources: OWASP ASVS (pick the chapters that apply), OWASP threat-modeling cheat
 sheet, GitHub Actions security hardening, NIST SSDF PW.4/PW.7/PW.8/PS.1 (see `../../evidence/sources.md`).
 Evidence: assets, actors and abuse cases for the change; controls and where they are tested (negative tests);
 dependency diff reviewed (new deps: license, maintenance, transitive count); residual risks stated.
