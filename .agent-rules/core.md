@@ -1,6 +1,6 @@
-# Shared agent standard — core v0.1.27
+# Shared agent standard — core v0.1.31
 
-Policy id: `agent-rules/policy/core.md`  ·  Version: 0.1.27  ·  Digest: computed by scripts/pin.py
+Policy id: `agent-rules/policy/core.md`  ·  Version: 0.1.31  ·  Digest: computed by scripts/pin.py
 Applies to every repository whose `AGENTS.md` declares `policy: agent-rules/core@0.1.x`.
 The repository's `AGENTS.md` overlay and `PROFILE.md` add to this file. Composition rules are in §5.
 
@@ -14,18 +14,26 @@ with rule id, rationale, authority, scope and expiry.
   risk tier (low / standard / high / emergency), affected surfaces, triggered reviews, and the checks that will serve
   as evidence. Re-classify when scope changes. Put it in the PR body.
 - **R3 Pull request only.** Nothing reaches `main` except through a PR from an up-to-date base.
-  No force-push to shared branches. One topic per PR.
+  No force-push to shared branches. One topic per PR, and at most one stage or wave of a plan (since 0.1.30;
+  `playbooks/classification.md` step 7): a change that would span more is split.
 - **R4 Independent review.** Every PR gets a review by a reviewer that did not author it (agent or human), given the
   PR number and the classification, not the author's conclusions. For High-risk PRs the reviewer also confirms the
   tier, the triggered specialist reviews and the recorded evidence (manual checks included) before giving a verdict;
   a recorded verdict of **ready** for the head revision, from every triggered review, is the merge gate for every tier
-  (the mechanism is D5). Owner acceptance is not a merge step (owner decision 2026-11-01); owner-reserved decisions stay
+  (the mechanism is D5); a verdict given at an earlier revision counts for the head only when `merge.sh` carries it there
+  (D5 › Carry, since 0.1.30). **Rounds stop** (since 0.1.30, on the owner decision cited at D5 › Carry;
+  `playbooks/code-review.md` › Stopping rule): a suggestion never
+  opens a review round; from round 3 on, only a blocking finding, or a should-fix that the latest diff introduced, opens one;
+  any other should-fix is recorded in the PR's `## Follow-ups` (an issue or an open item) and a reviewer may give **ready**
+  over a recorded follow-up, never over an unrecorded one. Owner acceptance is not a merge step (owner decision 2026-11-01); owner-reserved decisions stay
   with the owner through R8, and the reviewer treats an owner authority it cannot verify as a blocking finding.
 - **R5 Evidence, not claims.** Each check is recorded as passed / failed / skipped / unavailable / not-applicable,
   with the revision it ran against. Queued, stale, canceled or zero-test results are not passes. Never edit, disable
-  or weaken a check to get green.
+  or weaken a check to get green. A review verdict carried to a later head (D5 › Carry) is recorded `carried from <X>`,
+  never as a review of that head.
 - **R6 Scope invalidates evidence.** A new commit invalidates the evidence for the checks it could affect and re-runs
-  only those (playbook `testing-and-ci.md` §Revalidate). A base-branch or dependency change is a scope change.
+  only those (playbook `testing-and-ci.md` §Revalidate). A review verdict is evidence too: it holds for a later head only as D5 › Carry
+  proves. A base-branch or dependency change is a scope change.
 - **R7 Bounded loops.** After two unsuccessful remediation cycles on the same finding set, stop, summarize the
   disagreement and ask the owner. Never silently waive a blocking finding.
 - **R8 Boundaries.** No secrets in files, commits or command lines. No edits to sibling repositories (flag the needed
@@ -98,7 +106,7 @@ authority.
   when the author or reviewer wants that. A PR that also changes product paths selects by those paths as usual, under the
   changed workflow. A repository that still selects with workflow-level `paths:` filters excludes both sets there,
   `.github/**` included (a product run those files trigger cannot be canceled without refusing the merge). One
-  `ci-result` job, which runs whenever the triggering person is placed on `SMALL` (D9), fails if any job failed or was canceled, and is the required product check: `merge.sh`
+  `ci-result` job, which runs whenever the triggering person is placed on `SMALL` (D9) and the run was not canceled (since 0.1.29), fails if any job failed or was canceled, and is the required product check: `merge.sh`
   requires it whenever the head's workflows define it, beside `pr-evidence` and `policy-drift`. A job left out is
   recorded `n/a: not selected (D2)`, never as passed; a job skipped because the triggering person has no placement (D9) is recorded
   `skipped: no placement`, which is neither of those and never satisfies `merge.sh`'s required checks. A push to the default branch runs the same selection for the
@@ -157,8 +165,52 @@ authority.
 - **D5 Auto-merge.** Once R3–R6 hold for the head revision and no blocking finding is open, the agent merges with the
   repository's merge wrapper, `.agent-rules/merge.sh <n>` (which verifies the checks on the head SHA and the tier, then
   runs `gh pr merge --merge`), without asking — for every tier. The wrapper additionally requires every row of the PR
-  body's `## Reviews` table to carry the verdict **ready** and the head revision's short SHA (R4); `pending` or
-  `ready once …` rows refuse the merge. High and emergency carry no owner acceptance step; they differ from standard in
+  body's `## Reviews` table to carry the verdict **ready** for the head revision (R4), and the table to have a code-review
+  row (R4's review): a label that is, or lists, `code`, `code review`, `code-review` or `pr-reviewer` (`code and security`
+  and `code + ux` count; `docs`, `design`, `typo`, `fidelity`, `ux and security` or a compliance row alone do not). A row
+  names the revision its reviewer read as `@ <sha>`. A row any of whose `@ <sha>` in the Reviewer or Verdict cell is the
+  head passes. Otherwise the Verdict cell's `@ <sha>` is used when there is one (a re-review records the new revision
+  there, or in the Reviewer cell), else the Reviewer cell's, and a row with `@ X` for an earlier X passes only when
+  `merge.sh` carries it (below), even if another cell mentions the head without `@`; a row with no `@ <sha>` at all must contain the head's short
+  SHA. `pending` or `ready once …` rows refuse the merge. `merge.sh --check <n>` runs this gate alone and prints the carried,
+  `note:` and refused lines without merging or posting anything.
+  **Carry** (since 0.1.30; owner decision 2026-11-18 in the Encompass360 standards Claude Code session
+  https://claude.ai/code/session_01MNGBU39PR46yZMd4fGPR8w, answering two proposals to reduce review cycles, the first of
+  them offered as "Carry a verdict forward when the change since it does not touch that reviewer's area": "ok, let's make
+  all the suggested changes"; D1 already did the same for re-pin PRs). A row reading **ready @ X** counts for the head H when
+  `merge.sh` proves all of: X is an ancestor of H and not an ancestor of the base branch tip (a revision of this PR, not of
+  the default branch); and the PR's own change (merge base with the base branch to the commit), with the generated paths left
+  out, is the same at X and at H within that review's scope, path by path. For a path the base branch did not change between
+  the two merge bases, "the same" means the file (blob and mode) is identical at X and at H; for a path the base branch did
+  change, it means the same changed lines with the same three lines of context, blob ids and line numbers aside. The scope of
+  the code review is the whole diff. The scope of any other review is the globs in its row of the `PROFILE.md › Review
+  triggers` column whose header starts with `Carry scope`; it is the whole diff when there is no such column or row, the cell
+  is `—` or names no glob, a glob uses `{ } [ ]` or a leftover placeholder, or a glob matches no path at the merge base or
+  at H (`merge.sh` prints a `note:` saying which); a row whose label lists several reviews has the whole diff as its scope.
+  Where a symlink in scope at X or H points inside the repository, its target is in scope too, followed through chains of
+  symlinks and through symlinked directories a target path runs through; one that points at the repository root makes
+  the scope the whole diff. In a scope `x/**` also matches `x`; in `Generated paths` it matches only what is below `x`. `merge.sh` reads the column at the base branch tip, the merge base, X and H and uses the union,
+  and reads `PROFILE.md › Generated paths` at the base tip, the merge base and H and uses only the entries in all three, so a
+  PR can neither narrow a scope nor declare its own files generated. So a merge of the default branch that resolves no
+  conflict in the PR's own files and changed nothing within three lines of the PR's own changes, or a regeneration of
+  generated paths, changes no scope. The comparison pins the git settings that change diff output and ignores git config
+  set through the environment; it runs from the top of the work tree. The wrapper prints `` `<review>`: carried from X to
+  H: no change in <scope> `` for each carried row, naming the generated paths that changed since X, posts those lines as a
+  PR comment before it merges (no comment, no merge; a re-run posts no second copy, counting as the record only a comment
+  by the same GitHub account with exactly that text), and refuses when the comparison did not run to its end (the program's
+  last line counts the rows it checked; an empty or cut-off program is refused),
+  and refuses, naming the paths, when it cannot prove the carry. Whoever records it writes `carried from X` (R5); the row
+  keeps `@ X` and is never rewritten to `@ H` unless the reviewer reviewed H. **Stated safeguard reduction:** a reviewer does
+  not see a later change outside its scope (a backend change that alters what a screen shows, under a carried UX verdict),
+  nor what the default branch merged in around the PR's lines beyond the three lines of context; those are the code
+  review's and each merged PR's own. Where the default branch changed a file, an edit the PR moved to another place with the
+  same three lines of context still compares equal. A path is listed under `Generated paths` only with the command that
+  regenerates it and the check that fails when it is stale, a required check of the merge (`ci-result` or a check
+  `merge.sh` requires; a repository without CI lists none), so a hand edit there after X is caught by that check, not by a
+  reviewer. **Residual trust in the author:** the rows are the author's statement: `merge.sh` proves the diff, not that the
+  named reviewer read X, nor that the row's label (which picks the scope) names the review that was run; the independent
+  reviewer's own report is the evidence for those (`templates/merge-guard.md`). The owner approved this reduction in the
+  words above. High and emergency carry no owner acceptance step; they differ from standard in
   review depth (specialists, escalation triggers) and in the post-release watch the PR must name. Emergency is declared
   by the owner (or a human the profile names), never by the agent; the PR records who declared it and the dated
   follow-up PR (R11).
@@ -264,13 +316,24 @@ authority.
   contributors", whichever label the GitHub UI shows; owner settings, R8); the Ubicloud App may cover all repositories
   only in an organization with no public repository, otherwise selected private repositories, and coverage is confirmed
   once per organization or account by the owner's statement (linked from the PR), naming the organization or account.
-- **D10 Device testing on simulators and emulators.** A repository with a mobile surface runs its UI and device tests on the
+- **D10 Device and browser testing.** A repository with a mobile surface runs its UI and device tests on the
   **iOS Simulator** (Xcode; `xcodebuild test -destination 'platform=iOS Simulator,…'`, or the repo's runner such as Maestro or
   Detox against a booted simulator) and the **Android Emulator** (an AVD at the API levels the profile names), locally and in
-  CI. There is no device cloud and no cross-browser matrix (owner decision 2026-11-02): no device-cloud secret is created, no device-cloud run is required
-  evidence, and agents run no device-cloud script, call no device-cloud API and read no device-cloud credential. A web surface keeps the end-to-end suite
-  the repository already defines, on the runner, with the browser engine it already uses; no multi-browser matrix is
-  required. The profile's `## Device testing` table lists each mobile surface, its test runner, the simulator or emulator
+  CI. There is no device cloud for mobile device testing (owner decision 2026-11-02): no device-cloud secret is created, no device-cloud run is required
+  evidence, and agents run no device-cloud script, call no device-cloud API and read no device-cloud credential.
+  **Browser testing** (since 0.1.31; owner decisions of 2026-11-24 in the Encompass360 standards Claude Code session
+  https://claude.ai/code/session_01MNGBU39PR46yZMd4fGPR8w, quoted in `CHANGELOG.md`; for web surfaces they replace the
+  2026-11-02 "no cross-browser matrix"): a web surface runs its end-to-end suite, where the repository defines one, through a
+  third-party browser-testing service that covers every browser the repository states as supported, on the current
+  version and the one before. The supported browsers are listed on the profile's `Web surfaces` line; a profile that lists
+  none adds the list at the repository's next profile change. The owner selects the service and holds its account and
+  credentials (owner settings, R8), and the profile names it; agents select no service and sign up for none. **None is
+  selected yet.** Until one is selected: a web surface runs its end-to-end suite on at least Chrome (the rule counts
+  browsers, not engines; a suite on Chromium meets it); Chrome is the minimum, so a suite that already runs further
+  browsers keeps them, and no repository is asked to add any further browser; no multi-browser matrix is required; the profile names each
+  supported browser that is not tested meanwhile; no browser-testing-service secret is created and no such run is required
+  evidence; and agents run no such script, call no such API and read no such credential. Once a service is selected, a
+  run without its credentials is `unavailable`, never `passed` (R5). The profile's `## Device testing` table lists each mobile surface, its test runner, the simulator or emulator
   targets (device model, OS version) for the PR smoke subset and for the full run, and where it runs. Lanes, when impact
   selection (D2) maps the change to the surface (otherwise `n/a: not selected (D2)`): PR fast lane = the smoke subset on one
   simulator or emulator per platform; integration (main) = every target in the table; release = every target plus the manual
@@ -323,24 +386,46 @@ authority.
   Annex 11, or an organization's own standards repository) says so in `PROFILE.md › Review triggers` with a `compliance` row: the
   standard, its pinned revision (`<repo>@<tag> (<sha>)`), the checklist file the standard keeps (if any) and the paths that are
   regulated surfaces. A PR touching such a path triggers the compliance playbook (`playbooks/compliance.md`; D4): its classification
-  ticks `compliance ✔`, its body carries a `## Compliance` section (surfaces touched, sections of the standard read, deviations), and
+  marks `compliance ✔`, its body carries a `## Compliance` section (surfaces touched, sections of the standard read, deviations), and
   its `## Reviews` table a `compliance` row, so the merge gate (D5) waits for that verdict. That verdict comes from
   `compliance-reviewer` (since 0.1.27, owner decision 2026-11-13 in the agent-rules Claude Code session https://claude.ai/code/session_01MNGBU5eGYC7BpmoJ8AMkYm,
   answering the proposal to add a compliance reviewer, give `pr-reviewer` a re-pin mode and install the reviewers in agent-rules:
   "go with your suggestion"), a reviewer of its own
-  in a fresh context, not `pr-reviewer`, which checks only that a regulated path ticks compliance. **Block or warn.** A finding is
+  in a fresh context, not `pr-reviewer`, which checks only that a regulated path marks compliance. **Block or warn.** A finding is
   **blocking** when it would ship a broken control: it weakens or lets a person disable an audit trail, or leaves a regulated change
   without its who / what / when / why; signs a record in a way the standard's signature rule does not allow; deletes, overwrites or
-  makes unreadable (by an earlier or later release) a regulated record; loosens access to a regulated function; contradicts a
+  makes unreadable (by an earlier or later release) a regulated record (one case is not this: a regulated record or an audit-trail entry deleted, retired or anonymized after the retention period
+  that applies to it under the pinned bound standard's own rule (a period the standard states, or a per-record-type setting
+  the standard requires to be audited when set or changed; never a value that a repository's `PROFILE.md`, `AGENTS.md`, a
+  code default or the pull request supplies), by the audited end-of-retention path that same pinned standard defines, which
+  refuses records still inside their period. That run is not a weakened audit trail either, provided it writes its own audit
+  event with who, what, when and why and deletes nothing beyond the path. A checklist item that blocks the same deletion
+  still blocks until the standard narrows it. A deletion inside the period, outside the path, of a record type with no period
+  stated or set, or where the pinned standard defines no such path still blocks); loosens access to a regulated function; contradicts a
   recorded owner decision of the standard or cites an owner authority without a link (R8); or changes a surface the standard reserves
   for its own review without that review. The standard's checklist adds to this list, never subtracts; `playbooks/compliance.md`
-  repeats it as the reviewer's steps. Every other possible deviation (documentation or traceability
+  repeats it as the reviewer's steps. The end-of-retention case in the deletion item is D12's own (since 0.1.28; owner
+  decision 2026-11-13 in the Encompass360 standards Claude Code session https://claude.ai/code/session_01MNGBU39PR46yZMd4fGPR8w,
+  asked whether to open this change, answered "Yes, open the change (Recommended)"; owner note
+  https://github.com/vchance/agent-rules/pull/40#issuecomment-6874020292), not a standard's: it applies only where
+  the pinned standard defines the period rule and the path. Every other possible deviation (documentation or traceability
   lagging the behavior, regulated behavior with no requirement id, convention drift, a stale pin, a citation the standard marks
   unverified) is a **should-fix the author corrects, or records**: the author fixes it when it is in the PR's scope, otherwise writes it
   under `## Compliance › Deviations` with the reason and the follow-up (a PR, issue or the standard's open item), and the reviewer may
   give **ready** over a recorded deviation, never over an unrecorded one. A reviewer that cannot read the pinned standard says so, and
-  that is a blocking finding. PRs that touch no regulated surface write `- Surfaces: none` and need no compliance row. `pr-evidence`
-  checks only that the section and row exist when compliance is ticked; whether it should have been ticked is the reviewer's
+  that is a blocking finding. **Once, last** (since 0.1.30, on the owner decision cited at D5 › Carry, answering the
+  proposal offered as "Run compliance once, last", "Body fixes do not re-gate the other reviews" and "Record minor findings
+  rather than fixing them in another round"): the compliance review runs once the `code` and `security` rows (where
+  triggered) are **ready** at the head or carried to it (D5), so it sees the final design and does not re-run on every
+  fix round. A finding that is not a broken control (wording, a citation, numbering, the PR body) is recorded as a
+  deviation or a follow-up, and after round 1 it opens no round (the round-1 allowance is the recording session's reading of
+  the proposal offered as "Record minor findings rather than fixing them in another round"). A fix to the PR body alone (`## Compliance`, the
+  deviations, a stale line) does not move the head, so it re-gates no review; a fix that changes a file does, and the other
+  rows carry over it only as D5 › Carry allows. A deviation from the bound standard goes under `## Compliance ›
+  Deviations`; any other recorded finding goes under `## Follow-ups`. **The trade-off, stated:** the reviews now run in
+  sequence (code and security, then compliance), so a PR that needs all three waits longer before its compliance verdict,
+  in exchange for fewer compliance rounds. None of this shortens the block list above. PRs that touch no regulated surface write `- Surfaces: none` and need no compliance row. `pr-evidence`
+  checks only that the section and row exist when compliance is marked; whether it should have been marked is the reviewer's
   classification check (R2).
 
 ## 3. Risk tiers (summary; full table in `playbooks/classification.md`)
@@ -355,8 +440,8 @@ authority.
 | Phase | Entry | Exit evidence | Playbook / owner |
 |---|---|---|---|
 | Requirements | a task, issue or request | acceptance criteria written in the PR (or linked issue); owner-reserved decisions identified; classification (R2) | classification.md |
-| Design | Standard or High tier; any new contract, data model, boundary | design note or ADR; alternatives; failure modes; verification plan; security and performance triggers assessed | technical-design.md, architecture.md, security.md |
-| Build | design accepted (or n/a stated) | focused commits; tests for changed behavior; docs/contracts updated; no secrets; generated files regenerated not hand-edited | code-review.md §scope |
+| Design | Standard or High tier; any new contract, data model, boundary | design note or ADR; alternatives; failure modes; verification plan; security and performance triggers assessed. **A change that adds a protocol, flow, contract or data model** (since 0.1.30) needs a one-page sketch: the flows, what each request carries, what is stored where, and the failure, cancel and timeout cases; the security and technical-design reviews pass the sketch before the build starts, and the PR links it and their verdicts (`n/a` is not accepted for such a change) | technical-design.md, architecture.md, security.md |
+| Build | design accepted (the sketch passed, where one is owed; or n/a stated) | focused commits; tests for changed behavior; docs/contracts updated; no secrets; generated files regenerated not hand-edited, once before merge (in CI or one final commit, not every round; `testing-and-ci.md` › Generated files) | code-review.md §scope |
 | Verify | code complete | impact-selected checks green on the head SHA; escalation triggers honored; manual checks recorded with date, SHA, operator; unrun states explicit | testing-and-ci.md |
 | Review | verify evidence recorded | independent review verdict for the head SHA; triggered specialist reviews; findings dispositioned | code-review.md, ux-review.md, ... |
 | Release | review complete; integration lane green on the revision released (a scheduled, release-ref or dispatched run that executed the jobs on that revision; a skip run does not count; a checks-gated deploy on merge follows the profile's recorded choice, D2) | version/changelog or release notes per profile; packaging artifacts; deploy/rollback procedure followed; release-lane checks and manual oracles | PROFILE.md › Release |

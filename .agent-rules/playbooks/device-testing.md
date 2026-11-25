@@ -1,6 +1,7 @@
 # Playbook: device testing on simulators and emulators (core D10)
-Applies when the repository has a mobile surface (native iOS, native Android, Expo / React Native, Flutter). Web surfaces keep
-their in-repo end-to-end suite and browser engine; nothing here adds a browser matrix or a device cloud (owner decision 2026-11-02).
+Applies when the repository has a mobile surface (native iOS, native Android, Expo / React Native, Flutter). Web surfaces are
+core D10 › Browser testing (since 0.1.31): a third-party browser-testing service the owner selects, none selected yet, and until
+then the in-repo end-to-end suite on at least Chrome, a suite that already runs further browsers keeping them. Nothing here adds a device cloud for mobile testing (owner decision 2026-11-02).
 
 ## Targets (profile-owned)
 - `PROFILE.md › Device testing` names, per surface: the test runner (XCUITest, Espresso, Maestro, Detox, Flutter integration

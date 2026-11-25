@@ -7,7 +7,7 @@ in minutes; a High change may take days. The sequence is the same.
 | Phase | Low tier | Standard tier | High tier | NIST SSDF 1.1 practices (reference) |
 |---|---|---|---|---|
 | Requirements | one-line acceptance criterion in the PR | acceptance criteria as observable outcomes; owner-reserved decisions checked | criteria + threat/abuse cases; owner consulted before design | PO.1 (define requirements), PW.1 (design to meet requirements) |
-| Design | n/a stated | short design note in PR for new contracts/data models | ADR; alternatives; failure modes; rollback; security and performance triggers answered | PW.1, PW.2 (design review), PO.5 (secure environments) |
+| Design | n/a stated | short design note in PR for new contracts/data models; a new protocol, flow, contract or data model: the one-page sketch, passed by security and technical-design before the build (core §4) | ADR; alternatives; failure modes; rollback; security and performance triggers answered; the sketch as for Standard | PW.1, PW.2 (design review), PO.5 (secure environments) |
 | Build | focused commit | tests for changed behavior; docs/contracts updated | plus negative tests for denied paths; migrations with down path; no new suppressions | PW.4 (reuse well-secured components), PW.5 (secure coding), PW.6 (compiler/toolchain checks) |
 | Verify | doc checks | impact-selected checks on head SHA; manual checks recorded | plus escalation triggers; full component suite; manual oracles with date/SHA/operator | PW.7 (code review), PW.8 (testing), PO.3 (toolchains) |
 | Review | independent code review | + triggered specialist playbooks; findings dispositioned; bounded loops | + specialist playbooks' verdicts recorded; reviewer confirms tier and evidence | PW.7, RV.1 (identify vulnerabilities) |
@@ -18,8 +18,10 @@ in minutes; a High change may take days. The sequence is the same.
 ## Gate rules
 1. **No silent skips.** Each phase appears in the PR body: evidence, or `n/a: <reason>`. The evidence lint checks the
    headings exist; the reviewer checks the reasons are honest.
-2. **Order matters.** Design before substantial build (so the approach can still change cheaply); verify before
-   review (so the reviewer reads evidence, not promises); release only from the integration-tested revision.
+2. **Order matters.** Design before substantial build (so the approach can still change cheaply; since core 0.1.30 the
+   sketch for a new protocol, flow, contract or data model is passed before the build, not reviewed with it); verify before
+   review (so the reviewer reads evidence, not promises); release only from the integration-tested revision. The
+   compliance review (D12) comes last, after the code and security reviews are ready.
 3. **Traceability.** Acceptance criteria → tests → PR → release notes. Repos with a requirements/traceability matrix
    (historian) update it in the same PR; others link the issue or task.
 4. **Documentation is part of Build**, not a later phase: README, user guide, runbook, API contract and changelog change

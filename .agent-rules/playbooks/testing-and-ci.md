@@ -103,11 +103,20 @@ workflow, not the agent, decides what runs, from the same table the profile publ
    the components it reads, so a policy-only PR or push runs only `policy-drift`, `pr-evidence`, `changes` and `ci-result`.
    If it really reads the policy files, the profile maps that set to it with the trace (item 2) instead.
 4. **One `ci-result` job** (job id and name both `ci-result`, so the check is named that) with `needs:` listing every job,
-   `changes` included, and `if: always()`. It fails when any needed job's result is `failure` or `cancelled`, so a failed
-   `changes` job (whose dependents are all skipped) fails it, and passes when the rest are `success` or `skipped`.
+   `changes` included, and the condition `!cancelled()` behind the placement gate, `${{ <gate> != '' && (!cancelled()) }}` as in the example
+   below (since core 0.1.29; `always()` before). It fails when any needed job's result is
+   `failure` or `cancelled`, so a failed `changes` job (whose dependents are all skipped) fails it, and passes when the rest
+   are `success` or `skipped`. `!cancelled()` runs it whenever the run itself was not canceled: a run that a newer push to
+   the same PR cancels (concurrency, `cancel-in-progress`) skips `ci-result` instead of taking a runner to report a failure on
+   a head nobody will merge. A job that times out (or a matrix leg that fail-fast cancels) leaves the run not canceled, so
+   `ci-result` still runs and fails, and a skipped `ci-result` on the head never satisfies `merge.sh` (core D9). **Stated
+   safeguard reduction (0.1.29):** a run on the head that someone cancels by hand, with no newer run after it, now skips
+   `ci-result`, and a ruleset and the web merge button count that skip as passing; only `merge.sh` refuses it (before, the
+   gate ran and failed). Found in workspace-service on
+   2026-11-15: 13 superseded runs each took the one Linux runner to report a red `ci-result`.
    `merge.sh` requires a `ci-result` check whenever the head's workflows define that job; where the plan allows a ruleset,
    make it the required context there too, so a skipped job never leaves a required check pending. A ruleset does not
-   enforce placement, though: GitHub counts a job skipped by `if:` as passing, so only `merge.sh` refuses a skipped `ci-result` (core D9). Policy workflows
+   enforce placement, though: GitHub counts a job skipped by `if:` as passing, so only `merge.sh` refuses a skipped `ci-result` (core D9), whether an unplaced person or a canceled run skipped it. Policy workflows
    (`policy-drift`, `pr-evidence`) stay as they are.
    **With D9 placement (0.1.21) `ci-result` is also where an unplaced person is caught**: a job skipped because the triggering
    person has no `RUNS_ON_<CLASS>__<login>` looks exactly like a job D2 did not select, and `merge.sh` accepts skipped
@@ -117,7 +126,7 @@ workflow, not the agent, decides what runs, from the same table the profile publ
      ci-result:
        name: ci-result
        needs: [changes, build, test]
-       if: ${{ vars[format('RUNS_ON_SMALL__{0}', github.triggering_actor)] != '' && (always()) }}
+       if: ${{ vars[format('RUNS_ON_SMALL__{0}', github.triggering_actor)] != '' && (!cancelled()) }}
        runs-on: ${{ fromJSON(vars[format('RUNS_ON_SMALL__{0}', github.triggering_actor)] || '["unplaced"]') }}
        env:
          NEEDS: ${{ toJSON(needs) }}
@@ -266,6 +275,28 @@ workflow, not the agent, decides what runs, from the same table the profile publ
 - Every push to a PR is a full selected run. In a review round, fix every finding locally, run the repository's fast
   local checks (format, lint, the touched tests), then push once; not one push per finding. In historian a PR took two
   to four CI runs where one would have done (2026-11-06).
+- **Self-check before every push** (since 0.1.30): run the list in `PROFILE.md › Self-check` (the rules that keep coming
+  back as findings in this repository) against the diff, fix what it finds, and record it in the PR
+  (`- Self-check: run at <sha7>`). Add a rule to the list when a review finds the same kind of thing a second time.
+- **No stacked PRs for reviewed work** (since 0.1.30; replaces the 0.1.29 stacking guidance): merge the base PR first,
+  then branch the next PR from the default branch. In batch-control #47–#54 each stacked PR had 8 to 19 fix commits, most
+  of them inherited from the PRs below it. Where a stack cannot be avoided, the PR says why, each PR is
+  reviewed on its own diff against its base only, and a fix that flows up from a lower PR carries the upper PRs' verdicts
+  when it does not change their own diff (core D5 › Carry); push the fixes up once per round, bottom to top, and merge one
+  PR at a time, letting its runs finish before the next.
+- **Merging the default branch in** is done when the PR needs it (a conflict, a required change on main), not every round:
+  a merge that resolves no conflict in the PR's own files and changed nothing within three lines of the PR's own changes
+  carries the verdicts (core D5 › Carry), but it still starts a run.
+
+## Generated files (core §4 Build, D5; since 0.1.30)
+- A generated file (a traceability matrix, a validation package, a rendered document) is regenerated **once**, before
+  merge: by CI, or in one final commit after the last review round, not in every round. In workspace-service #103 half the
+  commits were "regenerate … (review N)".
+- List each one in `PROFILE.md › Generated paths` with the command that regenerates it and the check that fails when it is
+  stale. Only listed paths are left out of a review's scope when `merge.sh` carries a verdict (core D5 › Carry), so a
+  regeneration after the review does not re-open it; a path with no such check is not listed, and stays in scope.
+- Never hand-edit a generated path (code-review.md step 5); the check that compares it with a fresh regeneration is what
+  catches one.
 
 ## Flakes (core D2, since 0.1.23)
 - A check that fails and then passes on a re-run of the same revision is a failure the first time (R5). Re-run once at
