@@ -288,6 +288,36 @@ workflow, not the agent, decides what runs, from the same table the profile publ
   a merge that resolves no conflict in the PR's own files and changed nothing within three lines of the PR's own changes
   carries the verdicts (core D5 › Carry), but it still starts a run.
 
+## Keeping the round trip short (guidance, since 0.1.32)
+The aim is minutes from push to merge for an ordinary change. A repository that cannot get there may record in its profile
+what its pull request time is and what holds it back. This is guidance and changes no D2, D9 or D11 duty. Moving a job out
+of a pull request's run **or out of the integration lane**, which D2 has run every job, is a stated safeguard reduction: it
+needs the owner's decision and is recorded in the profile with what it gives up (§ Selection in the workflow, item 8).
+- **Measure first.** Read the step times of the last few runs. In a compiled language the build usually costs more than the
+  tests, and cutting tests then saves little. (historian, 2026-11-25: of a 33-minute test job, about 25 minutes compiled.)
+- **Three lanes.** On a pull request, the checks that answer "is this change wrong?": format, lint, the selected tests.
+  After merge, slower tests that still find real defects (a second platform, a long second pass). On a daily schedule,
+  work that mostly packages what was already compiled or changes with time: release and cross builds, container images,
+  artifact checks, size measures, advisories. A daily run is never a covering run or release evidence for a commit it did
+  not build; a PR whose review needs its evidence dispatches the workflow on its branch; and someone is named to read the
+  scheduled runs, since a failed or missing one blocks nothing.
+- **Start warm, and check that it did.** Read the log for a cache hit; a miss on an ordinary PR is a defect. A cache a
+  pull request saves is usually not visible to other pull requests, so a cache others read is one the default branch saved,
+  under D11's guards. On a self-hosted runner that declares `CI_LOCAL_CACHE`, the place for what outlives a job is D11's
+  `$CI_LOCAL_CACHE/<org>/<repo>/`: a build directory there is one per runner, with a size limit and a free-space minimum,
+  on a fast drive and never a small or memory-backed one (a runner's owner chooses where `CI_LOCAL_CACHE` points).
+  **A residual risk under D9:** what one pull request's job leaves there the next job builds on, and a self-hosted pool is
+  reachable by every writer of every repository it serves. D9's answer is a runner that is ephemeral or re-imaged between
+  jobs, which keeps no build directory, in a runner group restricted to selected private repositories. A repository that
+  keeps one on a runner that is neither records that in its profile, with the owner's decision, and keeps some lane that
+  builds from nothing.
+- **A bigger runner changes the tests.** A script that runs as many test programs at once as there are CPUs runs four times
+  as many on a 16-CPU machine as on a 4-CPU one, and tests that assert wall-clock times then fail. Set the number, and give
+  timing tests the machine to themselves.
+- **A shared machine keeps what a job leaves.** A container a job starts gets a name and a port of the run's own, and a
+  step that always runs removes it.
+- **Time it before and after**, warm and from nothing, and with a real change, not only an unchanged tree.
+
 ## Generated files (core §4 Build, D5; since 0.1.30)
 - A generated file (a traceability matrix, a validation package, a rendered document) is regenerated **once**, before
   merge: by CI, or in one final commit after the last review round, not in every round. In workspace-service #103 half the

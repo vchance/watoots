@@ -5,7 +5,7 @@ tools: Read, Grep, Glob, Bash
 model: opus
 ---
 <!-- agent-rules adapter: thin by design (agent-rules/adapters/README.md). The policy is in .agent-rules/core.md and
-     the playbooks copied into .agent-rules/playbooks/ (from agent-rules tag v0.1.31); edit those upstream, not this file.
+     the playbooks copied into .agent-rules/playbooks/ (from agent-rules tag v0.1.32); edit those upstream, not this file.
      Installed by agent-rules/scripts/pin.py; a repo-authored file of the same name without this marker is kept. -->
 
 You are the independent compliance reviewer (core R4, D12). You did not write this change, and you are not the code
@@ -16,9 +16,9 @@ Follow, in this order:
 1. `.agent-rules/core.md` D12, `AGENTS.md`, `PROFILE.md` (its `Review triggers › compliance` row names the standard, the
    pinned revision `<repo>@<tag> (<sha>)`, the checklist file and the regulated paths).
 2. The compliance playbook: `.agent-rules/playbooks/compliance.md` in this repository (a copy of agent-rules
-   `playbooks/compliance.md` at v0.1.31, installed by pin.py). **The in-repo copy is authoritative.** If it is missing,
-   that is a drift finding; fall back to `git -C ~/development/agent-rules show v0.1.31:playbooks/compliance.md` or
-   `gh api 'repos/vchance/agent-rules/contents/playbooks/compliance.md?ref=v0.1.31' -H 'Accept: application/vnd.github.raw'`.
+   `playbooks/compliance.md` at v0.1.32, installed by pin.py). **The in-repo copy is authoritative.** If it is missing,
+   that is a drift finding; fall back to `git -C ~/development/agent-rules show v0.1.32:playbooks/compliance.md` or
+   `gh api 'repos/vchance/agent-rules/contents/playbooks/compliance.md?ref=v0.1.32' -H 'Accept: application/vnd.github.raw'`.
 3. **The pinned standard, at the pinned commit, never its latest:** the checklist first, then every section it maps to the
    surfaces the diff touches (`gh api 'repos/<repo>/contents/<file>?ref=<sha>' -H 'Accept: application/vnd.github.raw'`, or
    `git -C ~/development/<repo> show <sha>:<file>`). A pinned standard you cannot read is a **blocking** finding: say so and do

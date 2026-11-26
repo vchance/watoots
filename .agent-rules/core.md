@@ -1,6 +1,6 @@
-# Shared agent standard — core v0.1.31
+# Shared agent standard — core v0.1.32
 
-Policy id: `agent-rules/policy/core.md`  ·  Version: 0.1.31  ·  Digest: computed by scripts/pin.py
+Policy id: `agent-rules/policy/core.md`  ·  Version: 0.1.32  ·  Digest: computed by scripts/pin.py
 Applies to every repository whose `AGENTS.md` declares `policy: agent-rules/core@0.1.x`.
 The repository's `AGENTS.md` overlay and `PROFILE.md` add to this file. Composition rules are in §5.
 
@@ -21,10 +21,10 @@ with rule id, rationale, authority, scope and expiry.
   tier, the triggered specialist reviews and the recorded evidence (manual checks included) before giving a verdict;
   a recorded verdict of **ready** for the head revision, from every triggered review, is the merge gate for every tier
   (the mechanism is D5); a verdict given at an earlier revision counts for the head only when `merge.sh` carries it there
-  (D5 › Carry, since 0.1.30). **Rounds stop** (since 0.1.30, on the owner decision cited at D5 › Carry;
+  (D5 › Carry, since 0.1.30). **Rounds stop** (since 0.1.30; since 0.1.32 should-fix findings get two rounds at most, owner 2026-11-26, https://claude.ai/code/session_01MNGBU3ijd2rHQJ21pyCMSx,
   `playbooks/code-review.md` › Stopping rule): a suggestion never
-  opens a review round; from round 3 on, only a blocking finding, or a should-fix that the latest diff introduced, opens one;
-  any other should-fix is recorded in the PR's `## Follow-ups` (an issue or an open item) and a reviewer may give **ready**
+  opens a review round; in round 2 and later, only a blocking finding opens another (rounds are counted for each review);
+  any should-fix left is recorded in the PR's `## Follow-ups` (an issue or an open item) and a reviewer may give **ready**
   over a recorded follow-up, never over an unrecorded one. Owner acceptance is not a merge step (owner decision 2026-11-01); owner-reserved decisions stay
   with the owner through R8, and the reviewer treats an owner authority it cannot verify as a blocking finding.
 - **R5 Evidence, not claims.** Each check is recorded as passed / failed / skipped / unavailable / not-applicable,
@@ -219,7 +219,9 @@ authority.
   cannot stay records in the PR that the push run is unwatched and who follows it.
 - **D6 Documentation-only changes** run document checks (links, spelling/lint if configured, policy-drift check) and PR
   review; builds and test suites are recorded `not-applicable`. A Markdown change that alters agent authority, generated
-  docs, requirements or executable examples is **not** documentation-only (R9).
+  docs, requirements or executable examples is **not** documentation-only (R9). **One reviewer** (since 0.1.32; owner 2026-11-26, https://claude.ai/code/session_01MNGBU3ijd2rHQJ21pyCMSx, quoted in the CHANGELOG): a
+  documentation-only change needs the code review row and no specialist review, except where another rule requires one: the
+  compliance review when it touches a regulated surface (D12), and the reviews a design sketch owes (core §4).
 - **D7 Finding severities:** blocking / should-fix / suggestion. Suggestions never block. Each finding carries file:line,
   trigger input or state, impact, confidence, and fix.
 - **D8 Verification gating.** Gate on exit codes, not output. No new warning suppressions without a one-line reason.
@@ -443,7 +445,7 @@ authority.
 | Design | Standard or High tier; any new contract, data model, boundary | design note or ADR; alternatives; failure modes; verification plan; security and performance triggers assessed. **A change that adds a protocol, flow, contract or data model** (since 0.1.30) needs a one-page sketch: the flows, what each request carries, what is stored where, and the failure, cancel and timeout cases; the security and technical-design reviews pass the sketch before the build starts, and the PR links it and their verdicts (`n/a` is not accepted for such a change) | technical-design.md, architecture.md, security.md |
 | Build | design accepted (the sketch passed, where one is owed; or n/a stated) | focused commits; tests for changed behavior; docs/contracts updated; no secrets; generated files regenerated not hand-edited, once before merge (in CI or one final commit, not every round; `testing-and-ci.md` › Generated files) | code-review.md §scope |
 | Verify | code complete | impact-selected checks green on the head SHA; escalation triggers honored; manual checks recorded with date, SHA, operator; unrun states explicit | testing-and-ci.md |
-| Review | verify evidence recorded | independent review verdict for the head SHA; triggered specialist reviews; findings dispositioned | code-review.md, ux-review.md, ... |
+| Review | verify evidence recorded; since 0.1.32 a review may start while CI runs, and gives ready for a revision only after reading its finished run | independent review verdict for the head SHA; triggered specialist reviews; findings dispositioned | code-review.md, ux-review.md, ... |
 | Release | review complete; integration lane green on the revision released (a scheduled, release-ref or dispatched run that executed the jobs on that revision; a skip run does not count; a checks-gated deploy on merge follows the profile's recorded choice, D2) | version/changelog or release notes per profile; packaging artifacts; deploy/rollback procedure followed; release-lane checks and manual oracles | PROFILE.md › Release |
 | Operate | released | observability signals verified for the change; runbook updated; monitoring of the rollback signal for the period the profile sets; defects fed back as tests | observability.md |
 | Retire / maintain | ongoing | dependency and advisory cadence; deprecations announced with dates; dead code and stale branches removed through the owner lane | cleanup.md, PROFILE.md › Lanes |

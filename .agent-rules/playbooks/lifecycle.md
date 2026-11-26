@@ -20,7 +20,8 @@ in minutes; a High change may take days. The sequence is the same.
    headings exist; the reviewer checks the reasons are honest.
 2. **Order matters.** Design before substantial build (so the approach can still change cheaply; since core 0.1.30 the
    sketch for a new protocol, flow, contract or data model is passed before the build, not reviewed with it); verify before
-   review (so the reviewer reads evidence, not promises); release only from the integration-tested revision. The
+   a ready verdict (so the reviewer reads evidence, not promises; since core 0.1.32 the reading of the diff may start while
+   CI runs); release only from the integration-tested revision. The
    compliance review (D12) comes last, after the code and security reviews are ready.
 3. **Traceability.** Acceptance criteria → tests → PR → release notes. Repos with a requirements/traceability matrix
    (historian) update it in the same PR; others link the issue or task.

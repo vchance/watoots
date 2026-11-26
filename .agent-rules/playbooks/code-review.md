@@ -31,15 +31,28 @@ Reviewer output: findings with severity, file:line, trigger, impact, confidence,
    review's; this review checks only that a regulated path marks it.
 9. **Bound the loop (R7).** Two cycles without agreement → write the disagreement in the PR and request owner decision.
 
-## Stopping rule (core R4, since 0.1.30)
-A round is one review verdict and the fix push that answers it. What may open the next one:
+## When reviews start, and what they read (since 0.1.32)
+- **At open, side by side.** The code review and every triggered specialist review start when the PR opens, in parallel
+  with each other and with CI. The one exception is compliance, which still runs once and last (D12, `compliance.md`). A
+  reviewer may read the diff and report findings while checks run, but gives **ready** for a revision only after reading
+  its finished run (step 3): which jobs ran, what they selected and ran, and that none that matters was skipped.
+- **One review at the head.** A PR that holds several commits or combines several changes is reviewed once, on its diff at
+  its head. No review of a part is required, and a part review is not a gate row. This does not widen what one PR may
+  hold: R3's one topic and one stage or wave still apply.
+- **Documentation-only** (D6): one reviewer, with D6's exceptions.
+
+## Stopping rule (core R4, since 0.1.30; changed in 0.1.32)
+A round is one review verdict and the fix push that answers it, counted for each review (a specialist review that first runs
+later starts at its own round 1). What may open the next one:
 - **A suggestion never opens a round.** Take it in the same push as other fixes, or leave it.
-- **Rounds 1 and 2:** a blocking finding or a should-fix.
-- **From round 3 on:** only a blocking finding, or a should-fix that the latest diff itself introduced (a line that round's
-  fix push added or changed). Any other should-fix (one that was there at the earlier round and was missed, or a new
-  reading of unchanged text) is not fixed in another round: the author records it under the PR's `## Follow-ups` as
-  `<finding> — <file:line> — <issue URL or open item>`, and the reviewer lists it as `follow-up` and may give **ready**
-  over it. Never over an unrecorded one, and never over a blocking finding, whatever the round.
+- **Round 1:** a blocking finding or a should-fix.
+- **Round 2 and later:** only a blocking finding, so should-fix findings get two rounds at most. In round 2 a reviewer that finds no blocking finding gives **ready** for the
+  revision it read. Every should-fix left, including one that round 1's fix push introduced, is not fixed in another
+  round: the author records it under the PR's `## Follow-ups` as `<finding> — <file:line> — <issue URL or open item>`,
+  and the reviewer lists it as `follow-up`. Never ready over an unrecorded one, and never over a blocking finding,
+  whatever the round. Editing the PR body to record it does not move the head.
+- A later round, opened by a blocking finding, checks that finding's fix and what its diff introduced; the same rule
+  applies to its should-fix findings.
 - A finding of a broken control under a bound standard is blocking (D12) and is never turned into a follow-up.
 - Before asking for another round, run `.agent-rules/merge.sh --check <n>` (it merges and posts nothing): it shows which verdicts carry to the head
   and which do not, so only the reviews whose scope changed are asked to look again.
